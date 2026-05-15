@@ -1,0 +1,70 @@
+# Datos personales y secretos
+# Todo lo que esté acá NUNCA debe ir al repo público
+data/
+*.zip
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+
+# Documento de contexto interno (handoff doc, no es para usuarios)
+MEMEX.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv/
+
+# Testing y coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Type checking
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# IDEs y editores
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Notebooks scratch
+.ipynb_checkpoints/
+
+# Memoria local de Claude Code (si llega a aparecer en el working dir)
+.claude/
