@@ -108,20 +108,28 @@ def search_chats(query: str, limit: int = 5, source: str | None = None) -> str:
 
 
 @server.tool(run_in_thread=False)
-def get_chat(uuid: str) -> str:
-    """Trae una conversación entera de Claude.ai por uuid.
+def get_chat(uuid: str, messages_limit: int = 20, messages_offset: int = 0) -> str:
+    """Trae una conversación de Claude.ai por uuid, paginada por mensajes.
 
     Args:
         uuid: UUID del chat (normalmente obtenido vía `search_chats` o
             `list_recent_chats`).
+        messages_limit: Cuántos mensajes traer empezando desde el offset
+            (default 20, max 100). Los mensajes individuales se truncan a
+            3000 chars para que la respuesta total quepa en el tope de
+            tokens del cliente MCP.
+        messages_offset: Cuántos mensajes saltear desde el inicio del chat
+            (default 0). Usá esto para paginar en chats largos: primer
+            llamada con offset=0, segunda con offset=20, etc.
 
     Returns:
-        JSON con metadata, project asociado (si aplica), y todos los mensajes
-        en orden cronológico. Si la conversación es muy larga (cientos de
-        mensajes), el payload puede ser grande.
+        JSON con metadata del chat (título, summary, source, project si
+        aplica), `total_messages`, `messages_returned`, `truncated` (bool
+        que indica si hay más mensajes después del offset+limit), y la
+        lista `messages` en orden cronológico ascendente.
     """
     try:
-        result = tools.get_chat(_get_conn(), uuid)
+        result = tools.get_chat(_get_conn(), uuid, messages_limit, messages_offset)
     except Exception as e:
         logger.exception("Error en get_chat")
         result = {"error": f"Error interno: {e}"}

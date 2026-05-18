@@ -18,9 +18,15 @@ from memex.core.embeddings.base import Embedder, EmbedderError
 from memex.core.models import Project, Source
 from memex.core.storage import repo
 
-# Límites duros para evitar payloads desproporcionados.
+# Límites duros para evitar payloads desproporcionados. Los clientes MCP
+# (incluido Claude Code) suelen tener un tope de ~25-30k tokens por respuesta;
+# pasarse devuelve el resultado a un archivo aparte y rompe la experiencia.
 SEARCH_LIMIT_MAX = 50
+SEARCH_SUMMARY_MAX_CHARS = 500  # Algunos summaries pesan 2-3k chars, los recortamos.
 LIST_LIMIT_MAX = 100
+GET_CHAT_MESSAGES_LIMIT_DEFAULT = 20
+GET_CHAT_MESSAGES_LIMIT_MAX = 100
+GET_CHAT_MESSAGE_TEXT_MAX_CHARS = 3000  # Code dumps largos explotan solos sin esto.
 
 
 def search_chats(
@@ -76,7 +82,7 @@ def search_chats(
                 "rank": i + 1,
                 "conversation_uuid": h.conversation.uuid,
                 "title": h.conversation.title,
-                "summary": h.conversation.summary,
+                "summary": _truncate(h.conversation.summary, SEARCH_SUMMARY_MAX_CHARS),
                 "source": h.conversation.source.value,
                 "project_uuid": h.conversation.project_uuid,
                 "distance": round(h.distance, 4),
@@ -89,23 +95,45 @@ def search_chats(
     }
 
 
-def get_chat(conn: sqlite3.Connection, uuid: str) -> dict[str, Any]:
-    """Trae una conversación entera con todos sus mensajes en orden cronológico.
+def get_chat(
+    conn: sqlite3.Connection,
+    uuid: str,
+    messages_limit: int = GET_CHAT_MESSAGES_LIMIT_DEFAULT,
+    messages_offset: int = 0,
+) -> dict[str, Any]:
+    """Trae una conversación con sus mensajes en orden cronológico.
 
-    Si la conversación tiene project, incluye sus metadatos (uuid, name,
-    description, prompt_template) en la respuesta. Útil para que el cliente
-    entienda el contexto del chat.
+    Por defecto devuelve los primeros 20 mensajes desde el inicio del chat.
+    Para chats largos, paginar con `messages_offset`. Cada mensaje se trunca
+    a `GET_CHAT_MESSAGE_TEXT_MAX_CHARS` para que el response total quepa en
+    el tope de tokens típico de un cliente MCP.
 
-    Devuelve `{"error": ...}` si el uuid no existe.
+    Si el chat referencia un project, se incluyen sus metadatos
+    (uuid, name, description, prompt_template).
+
+    El campo `raw_content` de los mensajes (JSON original con bloques tool_use
+    y tool_result) se omite siempre: pesa mucho y solo es útil para análisis
+    especializado. Si en el futuro hace falta, se agrega via parámetro
+    `include_raw_content=True`.
+
+    Devuelve `{"error": ...}` si el uuid no existe o está vacío.
     """
     if not uuid.strip():
         return {"error": "El uuid no puede estar vacío."}
+
+    messages_limit = max(1, min(messages_limit, GET_CHAT_MESSAGES_LIMIT_MAX))
+    messages_offset = max(0, messages_offset)
 
     conv = repo.get_conversation(conn, uuid)
     if conv is None:
         return {"error": f"No se encontró conversación con uuid='{uuid}'."}
 
-    messages = repo.get_messages_for_conversation(conn, uuid)
+    all_messages = repo.get_messages_for_conversation(conn, uuid)
+    total = len(all_messages)
+    end = messages_offset + messages_limit
+    window = all_messages[messages_offset:end]
+    truncated = end < total
+
     project = repo.get_project(conn, conv.project_uuid) if conv.project_uuid else None
 
     return {
@@ -116,18 +144,21 @@ def get_chat(conn: sqlite3.Connection, uuid: str) -> dict[str, Any]:
         "project": _project_dict(project) if project else None,
         "created_at": conv.created_at.isoformat(),
         "updated_at": conv.updated_at.isoformat(),
-        "message_count": len(messages),
+        "total_messages": total,
+        "messages_offset": messages_offset,
+        "messages_returned": len(window),
+        "truncated": truncated,
         "messages": [
             {
                 "uuid": m.uuid,
                 "parent_uuid": m.parent_uuid,
                 "sender": m.sender.value,
-                "text": m.text,
+                "text": _truncate(m.text, GET_CHAT_MESSAGE_TEXT_MAX_CHARS),
                 "created_at": m.created_at.isoformat(),
                 "has_tool_use": m.has_tool_use,
                 "has_attachments": m.has_attachments,
             }
-            for m in messages
+            for m in window
         ],
     }
 
@@ -181,3 +212,16 @@ def _project_dict(p: Project) -> dict[str, Any]:
         "description": p.description,
         "prompt_template": p.prompt_template,
     }
+
+
+def _truncate(s: str | None, max_chars: int) -> str | None:
+    """Recorta el string a `max_chars` y agrega `…[truncated]` si se pasó.
+
+    Devuelve `None` tal cual. Útil para summaries y mensajes largos que
+    explotan el límite de tokens del cliente MCP.
+    """
+    if s is None:
+        return None
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars].rstrip() + "…[truncated]"

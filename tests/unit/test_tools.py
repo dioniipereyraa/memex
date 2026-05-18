@@ -135,6 +135,36 @@ class TestSearchChats:
             ):
                 assert key in r0
 
+    def test_long_summary_is_truncated(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        """Summaries de varios miles de chars hinchan el response. Se truncan."""
+        repo.insert_project(db, project)
+        huge_summary = "S" * 3000
+        conv = Conversation(
+            uuid="big-summary",
+            title="Conv",
+            summary=huge_summary,
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, conv)
+        embedder = FakeEmbedder(dim=768)
+        chunk = Chunk(
+            conversation_uuid=conv.uuid,
+            text="hola",
+            char_start=0,
+            char_end=4,
+            created_at=conv.updated_at,
+        )
+        repo.add_chunk(db, chunk, embedder.embed_one("hola"))
+
+        result = tools.search_chats(db, embedder, query="hola", limit=1)
+        assert result["results"]
+        assert len(result["results"][0]["summary"]) < 3000
+        assert result["results"][0]["summary"].endswith("…[truncated]")
+
 
 class TestGetChat:
     def test_basic_get(
@@ -143,10 +173,20 @@ class TestGetChat:
         result = tools.get_chat(populated_db, conversation.uuid)
         assert result["uuid"] == conversation.uuid
         assert result["title"] == conversation.title
-        assert result["message_count"] == 2
+        assert result["total_messages"] == 2
+        assert result["messages_returned"] == 2
+        assert result["truncated"] is False
         assert len(result["messages"]) == 2
         assert result["messages"][0]["sender"] == Sender.HUMAN.value
         assert result["messages"][1]["sender"] == Sender.ASSISTANT.value
+
+    def test_raw_content_is_stripped(
+        self, populated_db: sqlite3.Connection, conversation: Conversation
+    ) -> None:
+        """raw_content pesa mucho y rara vez es útil; no debe estar en el response."""
+        result = tools.get_chat(populated_db, conversation.uuid)
+        for msg in result["messages"]:
+            assert "raw_content" not in msg
 
     def test_get_includes_project_when_linked(
         self,
@@ -179,6 +219,97 @@ class TestGetChat:
         result = tools.get_chat(populated_db, conversation.uuid)
         timestamps = [m["created_at"] for m in result["messages"]]
         assert timestamps == sorted(timestamps)
+
+
+class TestGetChatPagination:
+    @pytest.fixture
+    def long_chat(self, db: sqlite3.Connection) -> str:
+        """Crea una conversación con 50 mensajes para testear pagination."""
+        conv = Conversation(
+            uuid="long-chat",
+            title="Chat largo",
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, conv)
+        for i in range(50):
+            msg = Message(
+                uuid=f"msg-{i:03d}",
+                conversation_uuid=conv.uuid,
+                sender=Sender.HUMAN if i % 2 == 0 else Sender.ASSISTANT,
+                text=f"mensaje número {i}",
+                created_at=datetime(2026, 5, 1, 10, i, tzinfo=UTC),
+                updated_at=datetime(2026, 5, 1, 10, i, tzinfo=UTC),
+            )
+            repo.insert_message(db, msg)
+        return conv.uuid
+
+    def test_default_returns_first_20(
+        self, db: sqlite3.Connection, long_chat: str
+    ) -> None:
+        result = tools.get_chat(db, long_chat)
+        assert result["total_messages"] == 50
+        assert result["messages_returned"] == 20
+        assert result["messages_offset"] == 0
+        assert result["truncated"] is True
+        assert result["messages"][0]["uuid"] == "msg-000"
+        assert result["messages"][-1]["uuid"] == "msg-019"
+
+    def test_offset_paginates(
+        self, db: sqlite3.Connection, long_chat: str
+    ) -> None:
+        result = tools.get_chat(db, long_chat, messages_limit=20, messages_offset=20)
+        assert result["messages_offset"] == 20
+        assert result["messages_returned"] == 20
+        assert result["truncated"] is True
+        assert result["messages"][0]["uuid"] == "msg-020"
+        assert result["messages"][-1]["uuid"] == "msg-039"
+
+    def test_last_page_truncated_false(
+        self, db: sqlite3.Connection, long_chat: str
+    ) -> None:
+        result = tools.get_chat(db, long_chat, messages_limit=20, messages_offset=40)
+        assert result["messages_returned"] == 10
+        assert result["truncated"] is False
+
+    def test_limit_clamped_to_max(
+        self, db: sqlite3.Connection, long_chat: str
+    ) -> None:
+        result = tools.get_chat(db, long_chat, messages_limit=9999)
+        assert result["messages_returned"] <= 100
+
+    def test_limit_clamped_to_min(
+        self, db: sqlite3.Connection, long_chat: str
+    ) -> None:
+        result = tools.get_chat(db, long_chat, messages_limit=0)
+        assert result["messages_returned"] >= 1
+
+    def test_message_text_truncated_when_too_long(
+        self, db: sqlite3.Connection
+    ) -> None:
+        conv = Conversation(
+            uuid="truncate-test",
+            title="Test",
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, conv)
+        long_text = "x" * 5000  # más de GET_CHAT_MESSAGE_TEXT_MAX_CHARS (3000)
+        msg = Message(
+            uuid="m1",
+            conversation_uuid=conv.uuid,
+            sender=Sender.ASSISTANT,
+            text=long_text,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_message(db, msg)
+        result = tools.get_chat(db, conv.uuid)
+        msg_out = result["messages"][0]
+        assert len(msg_out["text"]) < 5000
+        assert msg_out["text"].endswith("…[truncated]")
 
 
 class TestListRecentChats:

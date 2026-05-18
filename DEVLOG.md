@@ -6,6 +6,35 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-18 — Fix: get_chat excedía max-tokens de Claude Code
+
+**Qué pasó:**
+Después del primer commit de Fase 1, primera sesión real en Claude Code llamando `get_chat` sobre un chat de 32 mensajes (uuid `00ef7e7b-…`, "Exportal Companion extension") falló con `result (107.581 characters) exceeds maximum allowed tokens`. Claude Code derivó el resultado a un archivo aparte y tuvo que leerlo en chunks manualmente. UX rota para chats no triviales.
+
+Esto era exactamente el riesgo que la auditoría de Fase 0 había anticipado y que dejé como "agrego pagination si pasa". Pasó en el primer chat real, no en uno extremo de 264 mensajes.
+
+**Qué se hizo:**
+1. `get_chat` ahora acepta `messages_limit` (default 20, max 100) y `messages_offset` (default 0). Permite a Claude paginar chats largos.
+2. `get_chat` strippea `raw_content` (JSON de tool_use/tool_result blocks) de la respuesta siempre. Es ~10-30% del peso y rara vez se usa por Claude.
+3. Cada `text` de mensaje se trunca a `GET_CHAT_MESSAGE_TEXT_MAX_CHARS=3000` con marker `…[truncated]`. Code dumps de Claude saltaban solos el límite.
+4. La respuesta incluye `total_messages`, `messages_returned`, `truncated: bool`, `messages_offset` para que Claude sepa si hay más y cómo pedirlos.
+5. `search_chats` ahora trunca el `summary` de cada resultado a `SEARCH_SUMMARY_MAX_CHARS=500`. Algunos summaries del export pesaban 2-3k chars y se acumulaban en respuestas de 5 resultados.
+6. Helper `_truncate(s, max_chars)` agrega marker `…[truncated]` si recortó.
+7. 8 tests nuevos: 6 de pagination en `get_chat`, 1 de raw_content stripped, 1 de summary truncation en `search_chats`.
+
+**Validación post-fix:**
+Llamando `get_chat` al mismo uuid de 32 mensajes que rompió antes:
+- Tamaño: 31.6k chars (era 107.5k, **70% reducción**).
+- `total_messages: 32`, `messages_returned: 20`, `truncated: true`. Claude puede pedir los otros 12 con `messages_offset=20`.
+- `raw_content` ausente en cada mensaje.
+- Texts intactos (ninguno excedía los 3000 chars individuales en este chat).
+
+**Tests:**
+- 151 unit tests verdes (era 143, +8).
+- Ruff y mypy clean.
+
+---
+
 ## 2026-05-18 — Fase 1 MVP: MCP server stdio
 
 **Qué se hizo:**
