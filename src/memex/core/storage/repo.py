@@ -318,6 +318,28 @@ def count_chunks(conn: sqlite3.Connection) -> int:
     return int(row["n"])
 
 
+def delete_chunks_for_conversation(conn: sqlite3.Connection, conversation_uuid: str) -> int:
+    """Borra todos los chunks (y sus embeddings) de una conversación.
+
+    Necesario antes de re-chunkear una conversación, porque las inserciones nuevas
+    no reemplazan las viejas (los ids son AUTOINCREMENT). Devuelve la cantidad de
+    chunks borrados.
+    """
+    rows = conn.execute(
+        "SELECT id FROM chunks WHERE conversation_uuid = ?",
+        (conversation_uuid,),
+    ).fetchall()
+    if not rows:
+        return 0
+    ids = [r["id"] for r in rows]
+    placeholders = ",".join("?" * len(ids))
+    conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", ids)
+    conn.execute(
+        "DELETE FROM chunks WHERE conversation_uuid = ?", (conversation_uuid,)
+    )
+    return len(ids)
+
+
 def _row_to_chunk(row: sqlite3.Row) -> Chunk:
     return Chunk(
         id=row["id"],

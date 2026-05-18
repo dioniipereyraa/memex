@@ -6,6 +6,33 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-18 — Pipeline end-to-end + CLI funcional
+
+**Qué se hizo:**
+- `core/ingest/pipeline.py`: orquestador completo. Toma zip + DB + Embedder, hace parse → render → chunk → embed → store. Orden: projects → design_chats → conversations → memories. Transacción por conversación (un error no rompe el resto). Idempotente vía upserts + `delete_chunks_for_conversation` antes de re-chunkear.
+- `cli/main.py` con `typer` + `rich`: comandos `memex ingest <zip>`, `memex search "<query>" [-n N]`, `memex stats`. Tablas y output con colores.
+- `repo.delete_chunks_for_conversation()`: helper para limpiar chunks viejos + sus vectores antes de re-ingest.
+- 6 tests unitarios nuevos (pipeline end-to-end, idempotencia, FK orphan handling, etc.). Total: 103 unit tests verdes.
+- `tests/integration/test_full_flow.py`: integration test que parsea el export real con OllamaEmbedder.
+
+**Bug real cazado por smoke test sobre el corpus completo:**
+- Los 7 design_chats apuntan a `project_uuid`s que NO están en `projects/*.json` del export (el usuario tiene projects que no fueron exportados). Fallaban con FK violation y se ingestaban con `errores=7`. Fix: si el `project_uuid` referenciado no existe, se setea a `None` antes del insert (orfanidad benigna). Test agregado para no regresionar.
+
+**Smoke test contra el export real (1.71 MB, generación de embeddings ~1-2 min):**
+- 2 projects, 74 conversaciones (66 sueltas + 7 design_chats + 1 memoria curada), 1024 mensajes, 614 chunks indexados, 147 mensajes vacíos saltados, **0 errores**.
+- `memex search "Chrome extension para exportar chats"` → top-3 con distancias 0.67-0.69, devuelve exactamente las tres conversaciones del usuario sobre Exportal (su otro proyecto Chrome ext). El retrieval anda.
+- `memex search "decision sobre stack tecnologico python o rust"` → distancia más alta (0.88), resultados menos precisos (es una query más vaga).
+- `memex stats`: muestra distribución por source (conversations=66, design_chat=7, memory=1).
+
+**Estado:**
+- `uv run pytest tests/unit`: 103 passed.
+- `uv run ruff check`, `uv run mypy`: clean.
+- CLI funcional end-to-end con datos reales.
+
+**Fase 0 lista para cerrar.** Quedaría evaluación formal (10 búsquedas representativas) y, si los resultados son satisfactorios, auditoría de cierre de fase y luego Fase 1 (MCP server).
+
+---
+
 ## 2026-05-18 — Módulo de embeddings: interfaz + Ollama
 
 **Qué se hizo:**

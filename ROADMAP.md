@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-18
 
-**Estado actual:** Fase 0 (validar retrieval), en progreso. Storage layer + ingest + embeddings cerrados. 97 unit tests + 7 integration tests verdes. Sanity semántico OK con Ollama real. Próximo: orquestador end-to-end + CLI, después las 10 búsquedas reales para cerrar Fase 0.
+**Estado actual:** Fase 0 (validar retrieval), pipeline end-to-end + CLI funcionando con datos reales. 103 unit tests + 7 integration tests verdes. `memex ingest` y `memex search` operativos. Quedaría la evaluación formal (10 búsquedas) y auditoría de cierre.
 
 ## Principio rector
 
@@ -22,10 +22,10 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 - [x] Implementar `core/ingest/content_renderer.py` que convierte `content[]` de Claude.ai a texto plano. Tool blocks se renderizan con markers: `[tool_use: <name>] <input>`, `[result] <texto>`.
 - [x] Implementar `core/ingest/chunker.py` (~500 tokens con overlap 50, char-based con factor `chars_per_token` configurable).
 - [x] Implementar `core/embeddings/` (interfaz `Embedder` + cliente Ollama con `nomic-embed-text`, más `FakeEmbedder` determinístico para tests). 7 integration tests verdes contra Ollama real.
-- [ ] Implementar `core/retrieval/search.py` (búsqueda semántica con sqlite-vec, joins con `messages` y `conversations` para hidratar resultados).
-- [ ] CLI mínima: `memex ingest <path>`, `memex search "<query>"`, `memex stats`.
-- [ ] Tests unitarios de chunker, content_renderer y parser. Un integration test del flujo completo (fixture chico).
-- [ ] Ejecutar 10 búsquedas reales sobre el corpus completo (73 chats, 900 mensajes).
+- [x] Implementar `core/retrieval/search.py` (búsqueda semántica con sqlite-vec, joins con `messages` y `conversations` para hidratar resultados). Vive en `core/storage/repo.py::vector_search`.
+- [x] CLI mínima: `memex ingest <path>`, `memex search "<query>"`, `memex stats`.
+- [x] Tests unitarios de chunker, content_renderer, parser y pipeline. Un integration test del flujo completo contra el export real.
+- [ ] Ejecutar 10 búsquedas reales sobre el corpus completo (74 chats, 1024 mensajes, 614 chunks).
 - [ ] Auditoría de cierre de fase.
 
 **Criterio de cierre:** al menos 7 de 10 búsquedas devuelven en top-3 un chat efectivamente relevante. Si falla, decisión consciente sobre cambiar de modelo (bge-base), ajustar chunking, o reconsiderar el approach.
