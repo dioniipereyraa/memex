@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-18
 
-**Estado actual:** Fase 0 (validar retrieval), en progreso. Storage layer + módulo de ingest (renderer, chunker, parsers) cerrados con 82 tests verdes y smoke test sobre el export real OK. Próximo: módulo de embeddings (Ollama).
+**Estado actual:** Fase 0 (validar retrieval), en progreso. Storage layer + ingest + embeddings cerrados. 97 unit tests + 7 integration tests verdes. Sanity semántico OK con Ollama real. Próximo: orquestador end-to-end + CLI, después las 10 búsquedas reales para cerrar Fase 0.
 
 ## Principio rector
 
@@ -21,7 +21,7 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 - [x] Implementar `core/ingest/claude_export.py` con cuatro parsers: `parse_project`, `parse_conversations_list`, `parse_design_chat`, `parse_memories`. La memoria curada se modela como conversación sintética con uuid estable.
 - [x] Implementar `core/ingest/content_renderer.py` que convierte `content[]` de Claude.ai a texto plano. Tool blocks se renderizan con markers: `[tool_use: <name>] <input>`, `[result] <texto>`.
 - [x] Implementar `core/ingest/chunker.py` (~500 tokens con overlap 50, char-based con factor `chars_per_token` configurable).
-- [ ] Implementar `core/embeddings/` (interfaz `Embedder` + cliente Ollama con `nomic-embed-text`).
+- [x] Implementar `core/embeddings/` (interfaz `Embedder` + cliente Ollama con `nomic-embed-text`, más `FakeEmbedder` determinístico para tests). 7 integration tests verdes contra Ollama real.
 - [ ] Implementar `core/retrieval/search.py` (búsqueda semántica con sqlite-vec, joins con `messages` y `conversations` para hidratar resultados).
 - [ ] CLI mínima: `memex ingest <path>`, `memex search "<query>"`, `memex stats`.
 - [ ] Tests unitarios de chunker, content_renderer y parser. Un integration test del flujo completo (fixture chico).

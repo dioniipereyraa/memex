@@ -6,6 +6,37 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-18 — Módulo de embeddings: interfaz + Ollama
+
+**Qué se hizo:**
+- `core/embeddings/base.py`: ABC `Embedder` con `dim`, `model_name`, `embed(texts)` y helper `embed_one(text)`. Función pública `l2_normalize` para que toda implementación pueda devolver unit vectors (alinea L2 con coseno en sqlite-vec).
+- `core/embeddings/fake.py`: `FakeEmbedder` determinístico para tests. Hashea texto con SHA-256, lo descompone en int32 normalizados a [-1, 1], aplica L2 normalize. Mismo texto → mismo vector. Útil para tests del pipeline sin tocar Ollama.
+- `core/embeddings/ollama.py`: `OllamaEmbedder` usando el cliente oficial `ollama` 0.6.2. Lee `model` y `host` de settings. Detecta `dim` real al primer embed. L2 normaliza por default.
+- `tests/unit/test_embeddings.py`: 15 tests (l2_normalize + FakeEmbedder).
+- `tests/integration/test_ollama_embedder.py`: 7 tests que hablan con Ollama real. Skip automático si el servicio no responde en `OLLAMA_HOST`. Incluye sanity test semántico: "perro labrador marrón" debe estar más cerca de "labrador chocolate jugando" que de "fórmulas matemáticas avanzadas".
+
+**Resultados:**
+- 97 unit tests verdes (era 82, +15).
+- 7 integration tests verdes con Ollama corriendo local.
+- Sanity semántico passes: el ranking por similitud refleja afinidad real entre textos.
+- `nomic-embed-text` confirma dim=768, embeddings normalizables, determinístico.
+
+**Decisiones de implementación:**
+- `FakeEmbedder` en `core/embeddings/fake.py` (no en `tests/`) para que esté disponible si alguien quiere usarlo sin Ollama en su propio código.
+- Integration tests marcados con `pytestmark = [integration, skipif(not _ollama_available())]`. Hace `urllib.request.urlopen(f"{host}/api/tags")` al colectar; salta limpio si Ollama no responde.
+- Default normalize=True. Si futuras implementaciones usan un modelo que ya devuelve unit vectors, pueden desactivar.
+- Dim se lee al primer embed real, no se hardcodea (a parte del fallback en settings).
+
+**Estado:**
+- `uv run pytest tests/unit`: 97 passed.
+- `uv run pytest tests/integration`: 7 passed.
+- `uv run ruff check`: clean. `uv run mypy`: clean.
+
+**Próximo paso:**
+- Orquestador end-to-end: `core/ingest/pipeline.py` que toma el path al zip y hace parse → chunk → embed → store. CLI con typer: `memex ingest <zip>`, `memex search "<query>"`, `memex stats`. Después: 10 búsquedas reales sobre el corpus → criterio de cierre de Fase 0.
+
+---
+
 ## 2026-05-18 — Módulo de ingest: renderer, chunker, parsers
 
 **Qué se hizo:**
