@@ -42,16 +42,16 @@ src/memex/
 │   ├── ingest/          ← parsers + chunker + pipeline (DONE: content_renderer, chunker, claude_export, pipeline)
 │   ├── embeddings/      ← interfaz Embedder + Ollama + Fake (DONE)
 │   └── retrieval/       ← (vacío; vector_search vive en storage/repo.py)
-├── transports/          ← bindings MCP (PENDIENTE, Fase 1)
-│   ├── tools.py         ← definiciones de tools compartidas (TBD)
-│   ├── stdio.py         ← entrypoint stdio (TBD)
-│   └── http.py          ← SSE/HTTP (TBD, Fase 4)
+├── transports/          ← bindings MCP
+│   ├── tools.py         ← lógica pura de las 3 tools (DONE)
+│   ├── stdio.py         ← entrypoint stdio con FastMCP (DONE)
+│   └── http.py          ← SSE/HTTP (TBD, Fase 4)  ← no existe el archivo todavía
 └── cli/                 ← CLI con typer (DONE: ingest, search, stats)
 ```
 
 **Regla de dependencias:** `core/` no importa de `transports/` ni de `cli/`. Las flechas apuntan para adentro.
 
-**Estado al cierre de Fase 0 (2026-05-18):** todo lo marcado `(DONE)` está implementado y testeado. El `vector_search` está en `core/storage/repo.py` (no en `core/retrieval/`) por simplicidad inicial; si `retrieval/` necesita crecer (filtros complejos, híbrido FTS+vector, re-ranking) se va a mover ahí.
+**Estado al cierre de Fase 1 (2026-05-18):** todo lo marcado `(DONE)` está implementado y testeado, incluido el MCP server stdio. El `vector_search` está en `core/storage/repo.py` (no en `core/retrieval/`) por simplicidad inicial; si `retrieval/` necesita crecer (filtros complejos, híbrido FTS+vector, re-ranking) se va a mover ahí. `transports/http.py` no existe aún; lo agrega Fase 4 cuando arme el remote MCP.
 
 ## Comandos habituales
 
@@ -62,7 +62,7 @@ uv run ruff check src tests   # lint
 uv run ruff format src tests  # format
 uv run mypy src/memex/core    # type check (estricto en core)
 uv run memex --help           # CLI (ingest, search, stats)
-# uv run memex-mcp            # MCP server stdio — se registra en Fase 1
+uv run memex-mcp              # MCP server stdio (Fase 1)
 ```
 
 ## Multi-Claude con git worktrees

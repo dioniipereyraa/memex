@@ -6,6 +6,36 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-18 — Cierre de Fase 1: auditoría + sync de docs
+
+**Auditoría de cierre (sub-agent):**
+
+Sin bloqueantes. Veredicto: cierra como está. Items accionables encontrados:
+
+1. **Dead code**: `except EmbedderError` en `stdio.search_chats` nunca se ejecuta porque `tools.search_chats` ya atrapa la excepción y devuelve `{"error": ...}`. Fixed: removido del wrapper, dejado el `except Exception` general. También removido import inútil de `EmbedderError` en `stdio.py`.
+2. **Docs desincronizadas (varios)**: arregladas.
+   - `CLAUDE.md`: `transports/` decía `(PENDIENTE, Fase 1)`, ahora marca `tools.py` y `stdio.py` como DONE. Comentario obsoleto sobre `memex-mcp` actualizado.
+   - `README.md`: descripción de `search_chats` mencionaba un parámetro fantasma `date_range?` (no existe; el real es `source`). Sacados párrafos "en construcción en Fase 1". Agregado `messages_limit`/`messages_offset` a la descripción de `get_chat`.
+   - `ROADMAP.md`: test count desactualizado.
+3. **Gaps de tests**: agregados 2 nuevos.
+   - `test_embedder_error_becomes_json_error`: valida que `tools.search_chats` atrapa `EmbedderError` y lo convierte a `{"error": ...}`. Documenta el contrato que justifica haber sacado el `except` del stdio wrapper.
+   - `test_offset_beyond_total_returns_empty`: valida que `get_chat` con `messages_offset >= total_messages` devuelve ventana vacía sin crashear, `truncated=False`.
+
+**Follow-ups diferidos a Fase 4 (cuando arme remote MCP):**
+- `stdio.py` devuelve `f"Error interno: {e}"` al cliente. Hoy es local single-user, riesgo bajo. En remote MCP conviene devolver mensaje genérico al cliente y dejar el detalle solo en el log para no leakear paths/queries.
+- `OllamaEmbedder` detecta errores de conexión con un substring check (`"connect"`, `"refused"`, etc.). Frágil si `ollama` o `httpx` cambian el wording (por ejemplo en otro idioma). Mejor: catch explícito de `httpx.ConnectError` / `httpx.TimeoutException` antes del fallback por substring.
+
+**Estado final de Fase 1:**
+- 3 tools MCP funcionando en Claude Code real (validado por uso, no solo por tests).
+- 153 unit + 7 integration tests verdes.
+- `uv run ruff check`, `uv run mypy`: clean.
+- Auditoría hecha, sin bloqueantes.
+- Docs sincronizadas con el estado real del código.
+
+**Fase 1 CERRADA.** Próximo: Fase 2 (captura en vivo via Chrome ext de SyncChat + búsqueda híbrida FTS5 + vectores para resolver el caso "Amarok").
+
+---
+
 ## 2026-05-18 — Fix: get_chat excedía max-tokens de Claude Code
 
 **Qué pasó:**

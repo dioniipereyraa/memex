@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-18
 
-**Estado actual:** Fase 0 cerrada. **Fase 1 MVP implementado** (2026-05-18): MCP server stdio funcional con las 3 tools (`search_chats`, `get_chat`, `list_recent_chats`), 143 unit tests verdes, smoke test del server OK. Falta uso real en Claude Code y auditoría de cierre.
+**Estado actual:** Fase 0 cerrada. **Fase 1 CERRADA** (2026-05-18): MCP server stdio validado en uso real con Claude Code (las 3 tools invocadas, Claude descubrió pagination autónomamente). Un bug crítico cazado y fixeado (token overflow en `get_chat`). 153 unit tests + 7 integration verdes. Próximo: Fase 2 (captura en vivo + búsqueda híbrida FTS5).
 
 ## Principio rector
 
@@ -43,8 +43,8 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 - [x] Transport stdio (`memex-mcp` como entrypoint). Re-registrado en `pyproject.toml`.
 - [x] Configuración documentada para Claude Code (`.mcp.json`). En README sección "Conectarlo a Claude Code".
 - [x] Manejo de errores claros: `EmbedderError` se envuelve en `{"error": ...}` JSON. Queries vacías, uuids inexistentes, sources inválidos devuelven errores accionables sin crashear.
-- [ ] Usar Memex durante 1 semana en sesiones reales (en curso, criterio: 5 sesiones con al menos una tool invocada, sin crashes).
-- [ ] Auditoría de cierre de fase.
+- [x] Usar Memex en sesiones reales. Validado en 2 sesiones de Claude Code que ejercieron las 3 tools (`search_chats`, `get_chat` con pagination, `list_recent_chats`). En la primera invocación de `get_chat` se detectó un bug (respuesta excedía el límite max-tokens del cliente) que se fixeó con pagination + truncation. En la segunda iteración Claude Code descubrió `messages_offset` solo, lo que valida la calidad de las docstrings.
+- [x] Auditoría de cierre de fase. Sin bloqueantes. Follow-ups menores cerrados: dead code en `stdio.search_chats`, docs sincronizadas (CLAUDE.md, README, ROADMAP). Follow-ups diferidos a Fase 4: mensaje de error genérico al cliente MCP remoto (evitar leak de paths/queries), catch explícito de excepciones de conexión en `OllamaEmbedder` (hoy con substring frágil).
 
 **Criterio de cierre:** Memex levantado en Claude Code, 5 sesiones reales con al menos una tool invocada, sin crashes.
 

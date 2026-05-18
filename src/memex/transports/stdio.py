@@ -39,7 +39,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from memex.core.embeddings.base import Embedder, EmbedderError
+from memex.core.embeddings.base import Embedder
 from memex.core.embeddings.ollama import OllamaEmbedder
 from memex.core.storage.db import connect_and_init
 from memex.transports import tools
@@ -97,10 +97,10 @@ def search_chats(query: str, limit: int = 5, source: str | None = None) -> str:
         (distance, más bajo = más relevante). Cada resultado incluye uuid,
         título, resumen, snippet, y timestamps de la conversación.
     """
+    # `tools.search_chats` ya atrapa `EmbedderError` y devuelve `{"error": ...}`.
+    # Acá solo nos queda lo inesperado.
     try:
         result = tools.search_chats(_get_conn(), _get_embedder(), query, limit, source)
-    except EmbedderError as e:
-        result = {"error": str(e)}
     except Exception as e:
         logger.exception("Error en search_chats")
         result = {"error": f"Error interno: {e}"}

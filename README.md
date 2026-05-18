@@ -2,7 +2,7 @@
 
 > Servidor MCP local que indexa tus chats de Claude.ai y los expone a Claude Code (y, próximamente, a Claude.ai vía remote MCP). Que el contexto que tenga Claude.ai lo tenga también Claude Code.
 
-**Estado:** pre-alpha. Fase 0 cerrada (retrieval validado sobre corpus real). **Fase 1 implementada**: MCP server stdio funcional, conectable a Claude Code.
+**Estado:** pre-alpha. Fase 0 cerrada (retrieval validado sobre corpus real). **Fase 1 cerrada**: MCP server stdio funcional, validado en uso real con Claude Code.
 
 ## El problema
 
@@ -54,13 +54,13 @@ Diseño: core puro (storage, ingest, embeddings, retrieval) separado del transpo
    uv run memex stats
    ```
 
-## Tools del MCP server (v1, en construcción en Fase 1)
+## Tools del MCP server (v1)
 
-- `search_chats(query, limit, date_range?)` busca semánticamente sobre todos tus chats.
-- `get_chat(id)` trae una conversación completa por id.
-- `list_recent_chats(n)` lista los últimos n chats en orden cronológico.
+- `search_chats(query, limit=5, source?)` busca semánticamente. Devuelve top-N por relevancia, dedup por conversación. `source` filtra por origen (`conversations`, `design_chat`, `memory`).
+- `get_chat(uuid, messages_limit=20, messages_offset=0)` trae una conversación con sus mensajes, paginados. `raw_content` se omite; cada mensaje se trunca a 3000 chars para no exceder el límite de tokens del cliente.
+- `list_recent_chats(limit=10, source?)` lista los últimos chats ordenados por última actualización.
 
-Por ahora estas tools NO están expuestas como MCP (Fase 1 lo agrega). Mientras tanto, la misma búsqueda se accede vía CLI con `memex search`.
+La búsqueda también está accesible vía CLI con `memex search`.
 
 ## Conectarlo a Claude Code
 
@@ -80,7 +80,7 @@ Una vez que tu base local está poblada (`memex ingest`), levantás el MCP serve
 
 Ajustá `cwd` al path absoluto donde clonaste Memex (donde está el `pyproject.toml`). Reiniciá Claude Code y las tools `search_chats`, `get_chat`, `list_recent_chats` aparecen en la sesión.
 
-**Mientras tanto, sin MCP**, las mismas búsquedas se acceden desde CLI con `uv run memex search "..."`.
+Las mismas búsquedas también están disponibles desde CLI con `uv run memex search "..."` si preferís usarlas fuera de Claude Code.
 
 ## Roadmap
 

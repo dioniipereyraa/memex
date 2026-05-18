@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from memex.core.embeddings.base import Embedder, EmbedderError
 from memex.core.embeddings.fake import FakeEmbedder
 from memex.core.models import Chunk, Conversation, Message, Project, Sender, Source
 from memex.core.storage import repo
@@ -134,6 +135,31 @@ class TestSearchChats:
                 "updated_at",
             ):
                 assert key in r0
+
+    def test_embedder_error_becomes_json_error(
+        self, populated_db: sqlite3.Connection
+    ) -> None:
+        """`tools.search_chats` atrapa EmbedderError y devuelve un dict con `error`.
+
+        Esto es lo que permite que `stdio.search_chats` no necesite atraparlo:
+        el dict ya viene formateado para serializar a JSON.
+        """
+
+        class _BrokenEmbedder(Embedder):
+            @property
+            def dim(self) -> int:
+                return 768
+
+            @property
+            def model_name(self) -> str:
+                return "broken"
+
+            def embed(self, texts):  # type: ignore[override]
+                raise EmbedderError("Ollama no responde")
+
+        result = tools.search_chats(populated_db, _BrokenEmbedder(), query="x")
+        assert "error" in result
+        assert "Ollama no responde" in result["error"]
 
     def test_long_summary_is_truncated(
         self, db: sqlite3.Connection, project: Project
@@ -284,6 +310,16 @@ class TestGetChatPagination:
     ) -> None:
         result = tools.get_chat(db, long_chat, messages_limit=0)
         assert result["messages_returned"] >= 1
+
+    def test_offset_beyond_total_returns_empty(
+        self, db: sqlite3.Connection, long_chat: str
+    ) -> None:
+        """Si el offset es >= total_messages, la ventana queda vacía pero el chat existe."""
+        result = tools.get_chat(db, long_chat, messages_offset=1000)
+        assert result["total_messages"] == 50
+        assert result["messages_returned"] == 0
+        assert result["truncated"] is False
+        assert result["messages"] == []
 
     def test_message_text_truncated_when_too_long(
         self, db: sqlite3.Connection
