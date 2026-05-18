@@ -68,3 +68,7 @@ logs/
 
 # Memoria local de Claude Code (si llega a aparecer en el working dir)
 .claude/
+
+# MCP config local (path absoluto, específico de tu máquina). El snippet de
+# ejemplo va en el README; cada dev crea el suyo.
+.mcp.json
