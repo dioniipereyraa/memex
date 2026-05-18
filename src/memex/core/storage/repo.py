@@ -357,6 +357,7 @@ def vector_search(
     conn: sqlite3.Connection,
     query_embedding: Sequence[float],
     limit: int = 10,
+    dedupe_by_conversation: bool = True,
 ) -> list[SearchHit]:
     """Búsqueda K-NN por similitud sobre `vec_chunks`. Une chunks y conversations.
 
@@ -364,11 +365,21 @@ def vector_search(
     = más parecido. Para embeddings normalizados (como nomic-embed-text) el orden L2
     coincide con el orden por coseno.
 
+    Si `dedupe_by_conversation` es True (default), devuelve a lo sumo un chunk por
+    conversación: el más cercano. Esto evita que el top-N esté dominado por varios
+    chunks del mismo chat. Para conseguir suficientes conversaciones únicas, se piden
+    `limit * OVERSAMPLE_FACTOR` chunks a vec_chunks y se dedupea en Python.
+
+    Si `dedupe_by_conversation` es False, devuelve los `limit` chunks más cercanos
+    sin importar a qué chat pertenecen. Útil para análisis o debugging.
+
     Nota: cuando hay JOINs, sqlite-vec exige restringir `k` en el WHERE en vez de
     apoyarse en LIMIT (porque el LIMIT se evalúa después del join). Por eso se pasa
     `k = ?` además de `MATCH ?`.
     """
     serialized = sqlite_vec.serialize_float32(list(query_embedding))
+    oversample_factor = 5
+    k = limit * oversample_factor if dedupe_by_conversation else limit
     rows = conn.execute(
         """
         SELECT
@@ -386,31 +397,43 @@ def vector_search(
         WHERE v.embedding MATCH ? AND k = ?
         ORDER BY v.distance
         """,
-        (serialized, limit),
+        (serialized, k),
     ).fetchall()
 
     hits: list[SearchHit] = []
+    seen_convs: set[str] = set()
     for row in rows:
-        chunk = Chunk(
-            id=row["chunk_id"],
-            conversation_uuid=row["conversation_uuid"],
-            message_uuid=row["message_uuid"],
-            sender=row["sender"],
-            text=row["chunk_text"],
-            char_start=row["char_start"],
-            char_end=row["char_end"],
-            created_at=_from_iso(row["chunk_created_at"]),
-        )
-        conv = Conversation(
-            uuid=row["conversation_uuid"],
-            title=row["conv_title"],
-            summary=row["conv_summary"],
-            source=Source(row["conv_source"]),
-            project_uuid=row["conv_project_uuid"],
-            account_uuid=row["conv_account_uuid"],
-            created_at=_from_iso(row["conv_created_at"]),
-            updated_at=_from_iso(row["conv_updated_at"]),
-        )
-        snippet = chunk.text[:280] + ("…" if len(chunk.text) > 280 else "")
-        hits.append(SearchHit(chunk=chunk, conversation=conv, distance=row["distance"], snippet=snippet))
+        if dedupe_by_conversation:
+            conv_uuid = row["conversation_uuid"]
+            if conv_uuid in seen_convs:
+                continue
+            seen_convs.add(conv_uuid)
+        hits.append(_row_to_search_hit(row))
+        if len(hits) >= limit:
+            break
     return hits
+
+
+def _row_to_search_hit(row: sqlite3.Row) -> SearchHit:
+    chunk = Chunk(
+        id=row["chunk_id"],
+        conversation_uuid=row["conversation_uuid"],
+        message_uuid=row["message_uuid"],
+        sender=row["sender"],
+        text=row["chunk_text"],
+        char_start=row["char_start"],
+        char_end=row["char_end"],
+        created_at=_from_iso(row["chunk_created_at"]),
+    )
+    conv = Conversation(
+        uuid=row["conversation_uuid"],
+        title=row["conv_title"],
+        summary=row["conv_summary"],
+        source=Source(row["conv_source"]),
+        project_uuid=row["conv_project_uuid"],
+        account_uuid=row["conv_account_uuid"],
+        created_at=_from_iso(row["conv_created_at"]),
+        updated_at=_from_iso(row["conv_updated_at"]),
+    )
+    snippet = chunk.text[:280] + ("…" if len(chunk.text) > 280 else "")
+    return SearchHit(chunk=chunk, conversation=conv, distance=row["distance"], snippet=snippet)

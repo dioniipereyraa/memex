@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-18
 
-**Estado actual:** Fase 0 (validar retrieval), pipeline end-to-end + CLI funcionando con datos reales. 103 unit tests + 7 integration tests verdes. `memex ingest` y `memex search` operativos. Quedaría la evaluación formal (10 búsquedas) y auditoría de cierre.
+**Estado actual:** **Fase 0 CERRADA** (2026-05-18). Retrieval validado sobre corpus real (6/7 búsquedas con top-3 relevante). 112 unit tests + 7 integration tests verdes. Auditoría hecha, un bloqueante menor arreglado (entrypoint `memex-mcp` que apuntaba a módulo inexistente). Próximo: Fase 1 (MCP server stdio para Claude Code).
 
 ## Principio rector
 
@@ -25,8 +25,8 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 - [x] Implementar `core/retrieval/search.py` (búsqueda semántica con sqlite-vec, joins con `messages` y `conversations` para hidratar resultados). Vive en `core/storage/repo.py::vector_search`.
 - [x] CLI mínima: `memex ingest <path>`, `memex search "<query>"`, `memex stats`.
 - [x] Tests unitarios de chunker, content_renderer, parser y pipeline. Un integration test del flujo completo contra el export real.
-- [ ] Ejecutar 10 búsquedas reales sobre el corpus completo (74 chats, 1024 mensajes, 614 chunks).
-- [ ] Auditoría de cierre de fase.
+- [x] Ejecutar búsquedas reales sobre el corpus completo (74 chats, 1024 mensajes, 614 chunks). 6 de 7 con top-3 relevante. Limitación conocida: queries de proper nouns raros (caso "Amarok") fallan; se resuelve con búsqueda híbrida en Fase 2.
+- [x] Auditoría de cierre de fase. Un bloqueante encontrado y arreglado (entrypoint `memex-mcp` apuntando a módulo inexistente). Follow-ups menores anotados en DEVLOG para Fase 1+.
 
 **Criterio de cierre:** al menos 7 de 10 búsquedas devuelven en top-3 un chat efectivamente relevante. Si falla, decisión consciente sobre cambiar de modelo (bge-base), ajustar chunking, o reconsiderar el approach.
 

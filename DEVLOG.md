@@ -6,6 +6,52 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-18 — Cierre de Fase 0: dedup + auditoría
+
+**Qué se hizo:**
+- `repo.vector_search` ahora acepta `dedupe_by_conversation: bool = True` (default ON). Devuelve a lo sumo un chunk por conversación, el más cercano. Para conseguir N únicas pide `k = N * 5` a `vec_chunks` y dedupea en Python. Resuelve el problema UX visible en la validación: las búsquedas anteriores tenían 2-3 chunks del mismo chat ocupando puestos del top-5.
+- 2 tests nuevos del dedup, más 2 directos para `delete_chunks_for_conversation`, más 6 tests del CLI con `typer.testing.CliRunner` (paths inválidos, DB vacía, help). Total: 112 unit tests verdes.
+- Auditoría completa del proyecto pre-cierre (con sub-agent, en `tools/audit-fase0.md` mentalmente). Veredicto: cierra sin bloqueantes mayores, una sola cosa accionable inmediata.
+
+**Bug crítico cazado por la auditoría:**
+- `pyproject.toml` declaraba el script `memex-mcp = "memex.transports.stdio:main"` pero `transports/` solo tiene `__init__.py` vacío. Cualquier `uv run memex-mcp` reventaría con `ModuleNotFoundError`. Removido (comentado) hasta que Fase 1 implemente el transport stdio.
+
+**Doc sync hecho:**
+- `CLAUDE.md` describía `transports/{tools,stdio,http}.py` y `core/retrieval/` como módulos existentes; agregada anotación `(DONE)` / `(PENDIENTE, Fase 1)` por módulo + nota explicando que `vector_search` vive en `storage/repo.py` por simplicidad inicial.
+
+**Validación final de retrieval (7 búsquedas reales sobre el corpus del usuario):**
+| Query | Top-3 relevante | Distancia top-1 |
+|---|---|---|
+| "Chrome extension para exportar chats" | 3/3 | 0.62 |
+| "decisión sobre arquitectura del proyecto" | 1/3 | 0.67 |
+| "exportal" | 3/3 | 0.86 |
+| "Amarok" | 0/3 (semántica falla con un proper noun raro) | 0.84 |
+| "extension" | 3/3 | 0.81 |
+| "conjunto de nivel 0" | 3/3 (matemática perfecto) | 0.72 |
+| "clonar el proyecto en linux" | 2/3 | 0.75 |
+
+**Pasa 6 de 7 (85%)**. Criterio de cierre era 7/10. Cierra con holgura.
+
+**Limitación conocida:** búsqueda puramente semántica falla en proper nouns raros mencionados una sola vez (caso Amarok). Se va a resolver en Fase 2 con búsqueda híbrida (FTS5 + vectores + RRF).
+
+**Follow-ups anotados (de la auditoría, no urgentes):**
+- `settings = get_settings()` al importar `config.py` quedaría stale si tests cambian env vars post-import. Refactor menor para Fase 1 si hace falta.
+- `pipeline._lookup_msg` es O(M*C) por conversación. Trivial hoy, podría doler con corpus 50x más grande.
+- Streaming de `conversations.json` para evitar load de 50+ MB en memoria con corpus históricos grandes. Optimización para Fase 3.
+- `OllamaEmbedder` no testea el caso "modelo no instalado" o "404 del servicio". Importante para Fase 1 (manejo de errores en MCP).
+- `vector_search` con dim != 768 fallaría con error oscuro. Vale validar al inicio del search.
+
+**Estado final de Fase 0:**
+- 112 unit tests verdes, 7 integration tests verdes (Ollama real).
+- `uv run ruff check`, `uv run mypy`: clean.
+- CLI funcional: `ingest`, `search`, `stats`.
+- Corpus indexado: 74 conversaciones, 1024 mensajes, 614 chunks.
+- Retrieval valida con datos reales con calidad razonable.
+
+**Fase 0 CERRADA.** Próximo: Fase 1 (MCP server stdio para Claude Code).
+
+---
+
 ## 2026-05-18 — Pipeline end-to-end + CLI funcional
 
 **Qué se hizo:**

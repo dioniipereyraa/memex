@@ -191,6 +191,46 @@ class TestChunkRepoAndVectorSearch:
         assert loaded is not None
         assert loaded.message_uuid == assistant_message.uuid
 
+    def test_delete_chunks_for_conversation_removes_chunks_and_vectors(
+        self,
+        db: sqlite3.Connection,
+        project: Project,
+        conversation: Conversation,
+    ) -> None:
+        repo.insert_project(db, project)
+        repo.insert_conversation(db, conversation)
+
+        for i in range(3):
+            chunk = Chunk(
+                conversation_uuid=conversation.uuid,
+                text=f"texto {i}",
+                char_start=i * 10,
+                char_end=i * 10 + 7,
+                created_at=datetime(2026, 3, 5, tzinfo=UTC),
+            )
+            repo.add_chunk(db, chunk, [0.1] * 768)
+
+        assert repo.count_chunks(db) == 3
+        n_vecs = db.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+        assert n_vecs == 3
+
+        deleted = repo.delete_chunks_for_conversation(db, conversation.uuid)
+        assert deleted == 3
+        assert repo.count_chunks(db) == 0
+        n_vecs_after = db.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+        assert n_vecs_after == 0
+
+    def test_delete_chunks_returns_zero_when_no_chunks(
+        self,
+        db: sqlite3.Connection,
+        project: Project,
+        conversation: Conversation,
+    ) -> None:
+        repo.insert_project(db, project)
+        repo.insert_conversation(db, conversation)
+        assert repo.delete_chunks_for_conversation(db, conversation.uuid) == 0
+        assert repo.delete_chunks_for_conversation(db, "no-existe") == 0
+
     def test_chunk_orphan_message_fk_rejected(
         self,
         db: sqlite3.Connection,
@@ -209,6 +249,74 @@ class TestChunkRepoAndVectorSearch:
         )
         with pytest.raises(sqlite3.IntegrityError):
             repo.add_chunk(db, orphan_chunk, [0.0] * 768)
+
+    def test_dedupe_by_conversation_keeps_best_per_chat(
+        self,
+        db: sqlite3.Connection,
+        project: Project,
+        conversation: Conversation,
+    ) -> None:
+        """Búsqueda con dedup devuelve a lo sumo un chunk por conversación."""
+        repo.insert_project(db, project)
+        repo.insert_conversation(db, conversation)
+
+        # Otra conversación para tener variedad.
+        other_conv = Conversation(
+            uuid="conv-otra",
+            title="Otra charla",
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 3, 6, tzinfo=UTC),
+            updated_at=datetime(2026, 3, 6, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, other_conv)
+
+        def mk_chunk(conv_uuid: str, text: str) -> Chunk:
+            return Chunk(
+                conversation_uuid=conv_uuid,
+                text=text,
+                char_start=0,
+                char_end=len(text),
+                created_at=datetime(2026, 3, 5, 9, 0, tzinfo=UTC),
+            )
+
+        # 3 chunks de conv-0001, 1 chunk de conv-otra, todos con embeddings parecidos.
+        repo.add_chunk(db, mk_chunk(conversation.uuid, "chunk1 muy parecido"), [1.0] + [0.01] * 767)
+        repo.add_chunk(db, mk_chunk(conversation.uuid, "chunk2 algo parecido"), [1.0] + [0.02] * 767)
+        repo.add_chunk(db, mk_chunk(conversation.uuid, "chunk3 menos parecido"), [1.0] + [0.05] * 767)
+        repo.add_chunk(db, mk_chunk(other_conv.uuid, "chunk4 distinto chat"), [0.99] + [0.03] * 767)
+
+        # Sin dedup: devuelve los 4 chunks.
+        all_hits = repo.vector_search(db, [1.0] + [0.0] * 767, limit=10, dedupe_by_conversation=False)
+        assert len(all_hits) == 4
+
+        # Con dedup: a lo sumo 1 por conversación, total 2.
+        deduped = repo.vector_search(db, [1.0] + [0.0] * 767, limit=10, dedupe_by_conversation=True)
+        assert len(deduped) == 2
+        uuids = {h.conversation.uuid for h in deduped}
+        assert uuids == {conversation.uuid, other_conv.uuid}
+
+    def test_dedupe_is_default(
+        self,
+        db: sqlite3.Connection,
+        project: Project,
+        conversation: Conversation,
+    ) -> None:
+        """Por default, vector_search dedupea."""
+        repo.insert_project(db, project)
+        repo.insert_conversation(db, conversation)
+
+        for i in range(3):
+            chunk = Chunk(
+                conversation_uuid=conversation.uuid,
+                text=f"chunk {i}",
+                char_start=i * 10,
+                char_end=i * 10 + 5,
+                created_at=datetime(2026, 3, 5, tzinfo=UTC),
+            )
+            repo.add_chunk(db, chunk, [1.0] + [0.0] * 767)
+
+        hits = repo.vector_search(db, [1.0] + [0.0] * 767, limit=5)
+        assert len(hits) == 1
 
     def test_search_ranks_closer_first(
         self,
@@ -231,7 +339,11 @@ class TestChunkRepoAndVectorSearch:
         repo.add_chunk(db, mk_chunk("close"), [1.0] + [0.0] * 767)
         repo.add_chunk(db, mk_chunk("far"), [0.0] + [1.0] + [0.0] * 766)
 
-        hits = repo.vector_search(db, [1.0] + [0.0] * 767, limit=5)
+        # Ambos chunks viven en la misma conversación, así que con dedup activado
+        # solo veríamos uno. Acá testeamos el ranking puro, sin dedup.
+        hits = repo.vector_search(
+            db, [1.0] + [0.0] * 767, limit=5, dedupe_by_conversation=False
+        )
         assert len(hits) == 2
         assert hits[0].chunk.text == "close"
         assert hits[0].distance < hits[1].distance

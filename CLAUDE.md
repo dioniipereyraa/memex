@@ -35,31 +35,34 @@ Detalle completo en [README.md](README.md) y [ROADMAP.md](ROADMAP.md).
 
 ```
 src/memex/
+├── config.py            ← settings con pydantic-settings (DONE)
 ├── core/                ← librería pura, sin transport
-│   ├── models.py        ← Conversation, Message, Chunk
-│   ├── storage/         ← SQLite + sqlite-vec (schema, db, repo)
-│   ├── ingest/          ← parsers (claude_export) + chunker
-│   ├── embeddings/      ← interfaz Embedder + Ollama
-│   └── retrieval/       ← búsqueda semántica
-├── transports/          ← bindings MCP
-│   ├── tools.py         ← definiciones de tools compartidas
-│   ├── stdio.py         ← entrypoint stdio (v1)
-│   └── http.py          ← SSE/HTTP (v2, placeholder)
-└── cli/                 ← CLI standalone (typer)
+│   ├── models.py        ← Project, Conversation, Message, Chunk, SearchHit (DONE)
+│   ├── storage/         ← SQLite + sqlite-vec (DONE: schema, db, repo)
+│   ├── ingest/          ← parsers + chunker + pipeline (DONE: content_renderer, chunker, claude_export, pipeline)
+│   ├── embeddings/      ← interfaz Embedder + Ollama + Fake (DONE)
+│   └── retrieval/       ← (vacío; vector_search vive en storage/repo.py)
+├── transports/          ← bindings MCP (PENDIENTE, Fase 1)
+│   ├── tools.py         ← definiciones de tools compartidas (TBD)
+│   ├── stdio.py         ← entrypoint stdio (TBD)
+│   └── http.py          ← SSE/HTTP (TBD, Fase 4)
+└── cli/                 ← CLI con typer (DONE: ingest, search, stats)
 ```
 
 **Regla de dependencias:** `core/` no importa de `transports/` ni de `cli/`. Las flechas apuntan para adentro.
+
+**Estado al cierre de Fase 0 (2026-05-18):** todo lo marcado `(DONE)` está implementado y testeado. El `vector_search` está en `core/storage/repo.py` (no en `core/retrieval/`) por simplicidad inicial; si `retrieval/` necesita crecer (filtros complejos, híbrido FTS+vector, re-ranking) se va a mover ahí.
 
 ## Comandos habituales
 
 ```bash
 uv sync                       # instala deps + crea .venv
-uv run pytest                 # tests
+uv run pytest                 # tests (-m 'not integration' para saltar integration)
 uv run ruff check src tests   # lint
 uv run ruff format src tests  # format
 uv run mypy src/memex/core    # type check (estricto en core)
-uv run memex --help           # CLI
-uv run memex-mcp              # MCP server (stdio)
+uv run memex --help           # CLI (ingest, search, stats)
+# uv run memex-mcp            # MCP server stdio — se registra en Fase 1
 ```
 
 ## Multi-Claude con git worktrees

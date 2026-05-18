@@ -36,7 +36,7 @@ dev = [
 
 [project.scripts]
 memex = "memex.cli.main:app"
-memex-mcp = "memex.transports.stdio:main"
+# memex-mcp se va a registrar en Fase 1 cuando exista src/memex/transports/stdio.py.
 
 [build-system]
 requires = ["hatchling"]
