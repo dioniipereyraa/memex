@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-15
 
-**Estado actual:** Fase 0 (validar retrieval), pre-implementación. Estructura del repo lista.
+**Estado actual:** Fase 0 (validar retrieval), en progreso. Estructura del repo lista. Inspección del export oficial completa. Schema definido. Próximo: implementar `core/models.py` + `core/storage/schema.sql`.
 
 ## Principio rector
 
@@ -15,16 +15,18 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 **Objetivo:** descartar el riesgo más grande antes de invertir tiempo. Probar que con embeddings locales sobre el corpus real de chats, la búsqueda semántica devuelve resultados razonables.
 
 **Tareas:**
-- [ ] Inspeccionar el JSON export oficial de Claude.ai (esquema, cantidad de chats, edge cases).
-- [ ] Implementar `core/models.py` (Conversation, Message, Chunk como dataclasses/pydantic).
-- [ ] Implementar `core/storage/` (schema SQL, conexión, migración inicial, repo CRUD).
-- [ ] Implementar `core/ingest/claude_export.py` (parser del JSON oficial).
-- [ ] Implementar `core/ingest/chunker.py` (~500 tokens con overlap, configurable).
-- [ ] Implementar `core/embeddings/` (interfaz + Ollama).
-- [ ] Implementar `core/retrieval/search.py` (búsqueda semántica con sqlite-vec).
+- [x] Inspeccionar el JSON export oficial de Claude.ai (esquema, cantidad de chats, edge cases). Ver entrada del DEVLOG del 2026-05-15.
+- [ ] Implementar `core/models.py` con pydantic: `Project`, `Conversation` (con campo `source`: 'conversations' / 'design_chat' / 'memory'), `Message` (con `parent_uuid`, `raw_content`, flags `has_tool_use`/`has_attachments`), `Chunk`, `SearchResult`.
+- [ ] Implementar `core/storage/` (schema con 4 tablas + virtual `vec_chunks`, conexión, migración inicial, repo CRUD).
+- [ ] Implementar `core/ingest/claude_export.py` con tres branches del parser: `conversations.json`, `design_chats/*.json`, `memories.json` (esta última como conversación sintética con `source='memory'`).
+- [ ] Implementar `core/ingest/projects.py` para parsear `projects/*.json` y popular la tabla `projects`.
+- [ ] Implementar `core/ingest/content_renderer.py` que convierte `content[]` de Claude.ai a texto plano. Tool blocks se renderizan con markers: `[tool_use: <name>] <input>`, `[result] <texto>`.
+- [ ] Implementar `core/ingest/chunker.py` (~500 tokens con overlap 50, ambos configurables via env).
+- [ ] Implementar `core/embeddings/` (interfaz `Embedder` + cliente Ollama con `nomic-embed-text`).
+- [ ] Implementar `core/retrieval/search.py` (búsqueda semántica con sqlite-vec, joins con `messages` y `conversations` para hidratar resultados).
 - [ ] CLI mínima: `memex ingest <path>`, `memex search "<query>"`, `memex stats`.
-- [ ] Tests unitarios de chunker y parser. Un integration test del flujo completo.
-- [ ] Ejecutar 10 búsquedas reales sobre el corpus completo.
+- [ ] Tests unitarios de chunker, content_renderer y parser. Un integration test del flujo completo (fixture chico).
+- [ ] Ejecutar 10 búsquedas reales sobre el corpus completo (73 chats, 900 mensajes).
 - [ ] Auditoría de cierre de fase.
 
 **Criterio de cierre:** al menos 7 de 10 búsquedas devuelven en top-3 un chat efectivamente relevante. Si falla, decisión consciente sobre cambiar de modelo (bge-base), ajustar chunking, o reconsiderar el approach.
