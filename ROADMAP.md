@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-18
 
-**Estado actual:** Fase 0 (validar retrieval), en progreso. Storage layer cerrada (models + schema + db + repo) con 28 tests verdes. Listo para abrir tres worktrees paralelos: ingest, embeddings, retrieval+CLI.
+**Estado actual:** Fase 0 (validar retrieval), en progreso. Storage layer + módulo de ingest (renderer, chunker, parsers) cerrados con 82 tests verdes y smoke test sobre el export real OK. Próximo: módulo de embeddings (Ollama).
 
 ## Principio rector
 
@@ -18,10 +18,9 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 - [x] Inspeccionar el JSON export oficial de Claude.ai (esquema, cantidad de chats, edge cases). Ver entrada del DEVLOG del 2026-05-18.
 - [x] Implementar `core/models.py` con pydantic: `Project`, `Conversation` (con campo `source`: 'conversations' / 'design_chat' / 'memory'), `Message` (con `parent_uuid`, `raw_content`, flags `has_tool_use`/`has_attachments`), `Chunk`, `SearchHit`.
 - [x] Implementar `core/storage/` (schema con 4 tablas + virtual `vec_chunks`, conexión, migración inicial, repo CRUD). 28 tests unitarios verdes.
-- [ ] Implementar `core/ingest/claude_export.py` con tres branches del parser: `conversations.json`, `design_chats/*.json`, `memories.json` (esta última como conversación sintética con `source='memory'`).
-- [ ] Implementar `core/ingest/projects.py` para parsear `projects/*.json` y popular la tabla `projects`.
-- [ ] Implementar `core/ingest/content_renderer.py` que convierte `content[]` de Claude.ai a texto plano. Tool blocks se renderizan con markers: `[tool_use: <name>] <input>`, `[result] <texto>`.
-- [ ] Implementar `core/ingest/chunker.py` (~500 tokens con overlap 50, ambos configurables via env).
+- [x] Implementar `core/ingest/claude_export.py` con cuatro parsers: `parse_project`, `parse_conversations_list`, `parse_design_chat`, `parse_memories`. La memoria curada se modela como conversación sintética con uuid estable.
+- [x] Implementar `core/ingest/content_renderer.py` que convierte `content[]` de Claude.ai a texto plano. Tool blocks se renderizan con markers: `[tool_use: <name>] <input>`, `[result] <texto>`.
+- [x] Implementar `core/ingest/chunker.py` (~500 tokens con overlap 50, char-based con factor `chars_per_token` configurable).
 - [ ] Implementar `core/embeddings/` (interfaz `Embedder` + cliente Ollama con `nomic-embed-text`).
 - [ ] Implementar `core/retrieval/search.py` (búsqueda semántica con sqlite-vec, joins con `messages` y `conversations` para hidratar resultados).
 - [ ] CLI mínima: `memex ingest <path>`, `memex search "<query>"`, `memex stats`.

@@ -6,6 +6,41 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-18 — Módulo de ingest: renderer, chunker, parsers
+
+**Qué se hizo:**
+- `core/ingest/content_renderer.py`: convierte `content[]` (con bloques `text`, `tool_use`, `tool_result`) a texto plano. Tool blocks van como markers (`[tool_use: <name>] <input>`, `[result] <texto>`, `[result error] ...`). Truncado a `MAX_TOOL_INPUT_CHARS=500` y `MAX_TOOL_RESULT_CHARS=1000`. Bloques desconocidos se ignoran (deja la puerta abierta a tipos nuevos).
+- `core/ingest/chunker.py`: char-based con factor `chars_per_token` configurable (default 4). Devuelve `list[ChunkSpan]` con `(text, char_start, char_end)`. `text[char_start:char_end] == text` siempre. Validación de parámetros con `ValueError`.
+- `core/ingest/claude_export.py`: 4 parsers (`parse_project`, `parse_conversations_list`, `parse_design_chat`, `parse_memories`). Helpers privados unifican `conversations.json` y `design_chats/*.json`. La memoria curada se sintetiza como conversación con `uuid='memory-<account_uuid>'` (idempotente entre re-ingests).
+- 53 tests unitarios nuevos (21 renderer, 13 chunker, 19 export), 82 totales verdes.
+
+**Bug cazado por smoke test sobre el export real:**
+- Algunos mensajes en `design_chats/*.json` no traen `updated_at`. Era `KeyError`. Fallback a `created_at`. Test agregado para no regresionar.
+
+**Smoke test sobre el corpus real (sin imprimir contenido):**
+- 2 projects parseados (1 starter vacío, 1 con `prompt_template` de 819 chars).
+- 66 conversaciones sueltas con 900 mensajes, 58 con tool_use rendereados con markers.
+- 7 design_chats con 123 mensajes, todos correctamente linkeados a su project (project_uuid presente).
+- Memoria curada parseada (3634 chars) con uuid sintético estable.
+- Total ingestable: 74 conversaciones, 1024 mensajes.
+
+**Decisiones de implementación:**
+- Char-based chunking, no token-based. Más simple, sin dependencia tokenizer, configurable via `chars_per_token`. Si los resultados de retrieval son pobres en Fase 0 se cambia.
+- Renderer ignora bloques con `type` desconocido en vez de fallar. Robustez frente a cambios futuros del export.
+- Sender desconocido cae a HUMAN (defensivo).
+- `parse_memories` recibe `now` opcional para tests deterministas; en prod usa `datetime.now(UTC)`.
+
+**Estado:**
+- `uv run pytest tests/unit`: 82 passed.
+- `uv run ruff check src tests scripts`: clean.
+- `uv run mypy src/memex/core src/memex/config.py`: clean.
+- Smoke test sobre el export real: todo parseado sin errores.
+
+**Próximo paso:**
+- Módulo de embeddings: cliente Ollama + interfaz `Embedder`. Tras eso, el orquestador end-to-end (parse → chunk → embed → store) + CLI.
+
+---
+
 ## 2026-05-18 — Storage layer: models, schema, db, repo
 
 **Qué se hizo:**
