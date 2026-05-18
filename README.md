@@ -2,7 +2,7 @@
 
 > Servidor MCP local que indexa tus chats de Claude.ai y los expone a Claude Code (y, próximamente, a Claude.ai vía remote MCP). Que el contexto que tenga Claude.ai lo tenga también Claude Code.
 
-**Estado:** pre-alpha. Fase 0 cerrada (retrieval validado sobre corpus real). Fase 1 (MCP server stdio) en arranque.
+**Estado:** pre-alpha. Fase 0 cerrada (retrieval validado sobre corpus real). **Fase 1 implementada**: MCP server stdio funcional, conectable a Claude Code.
 
 ## El problema
 
@@ -64,7 +64,23 @@ Por ahora estas tools NO están expuestas como MCP (Fase 1 lo agrega). Mientras 
 
 ## Conectarlo a Claude Code
 
-> Pendiente hasta Fase 1. Va a ser un snippet de `.mcp.json` o `claude_desktop_config.json` con el comando `memex-mcp`.
+Una vez que tu base local está poblada (`memex ingest`), levantás el MCP server con `uv run memex-mcp`. Para que Claude Code lo descubra automáticamente, agregá un archivo `.mcp.json` en la raíz de tu proyecto (o un servidor user-level en `~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "memex": {
+      "command": "uv",
+      "args": ["run", "memex-mcp"],
+      "cwd": "/ruta/absoluta/al/repo/de/memex"
+    }
+  }
+}
+```
+
+Ajustá `cwd` al path absoluto donde clonaste Memex (donde está el `pyproject.toml`). Reiniciá Claude Code y las tools `search_chats`, `get_chat`, `list_recent_chats` aparecen en la sesión.
+
+**Mientras tanto, sin MCP**, las mismas búsquedas se acceden desde CLI con `uv run memex search "..."`.
 
 ## Roadmap
 

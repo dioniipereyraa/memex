@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-18
 
-**Estado actual:** **Fase 0 CERRADA** (2026-05-18). Retrieval validado sobre corpus real (6/7 búsquedas con top-3 relevante). 120 unit tests + 7 integration tests verdes. Auditoría hecha, follow-ups menores cerrados (manejo de errores claros de Ollama via `EmbedderError`, dedup en `vector_search`). Próximo: Fase 1 (MCP server stdio para Claude Code).
+**Estado actual:** Fase 0 cerrada. **Fase 1 MVP implementado** (2026-05-18): MCP server stdio funcional con las 3 tools (`search_chats`, `get_chat`, `list_recent_chats`), 143 unit tests verdes, smoke test del server OK. Falta uso real en Claude Code y auditoría de cierre.
 
 ## Principio rector
 
@@ -39,11 +39,11 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 **Objetivo:** que Claude Code pueda usar Memex vía stdio en sesiones reales.
 
 **Tareas:**
-- [ ] FastMCP server con las 3 tools: `search_chats`, `get_chat`, `list_recent_chats`.
-- [ ] Transport stdio (`memex-mcp` como entrypoint).
-- [ ] Configuración documentada para Claude Code (`.mcp.json`).
-- [ ] Manejo de errores claros (Ollama caído, base vacía, query vacía).
-- [ ] Usar Memex durante 1 semana en sesiones reales.
+- [x] FastMCP server con las 3 tools: `search_chats`, `get_chat`, `list_recent_chats`. Implementadas en `src/memex/transports/tools.py` (lógica pura) + `src/memex/transports/stdio.py` (capa MCP).
+- [x] Transport stdio (`memex-mcp` como entrypoint). Re-registrado en `pyproject.toml`.
+- [x] Configuración documentada para Claude Code (`.mcp.json`). En README sección "Conectarlo a Claude Code".
+- [x] Manejo de errores claros: `EmbedderError` se envuelve en `{"error": ...}` JSON. Queries vacías, uuids inexistentes, sources inválidos devuelven errores accionables sin crashear.
+- [ ] Usar Memex durante 1 semana en sesiones reales (en curso, criterio: 5 sesiones con al menos una tool invocada, sin crashes).
 - [ ] Auditoría de cierre de fase.
 
 **Criterio de cierre:** Memex levantado en Claude Code, 5 sesiones reales con al menos una tool invocada, sin crashes.

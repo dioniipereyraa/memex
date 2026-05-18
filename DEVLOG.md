@@ -6,6 +6,43 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-18 — Fase 1 MVP: MCP server stdio
+
+**Qué se hizo:**
+- `src/memex/transports/tools.py`: implementaciones puras de las 3 tools (`search_chats`, `get_chat`, `list_recent_chats`). Toman `conn` y `embedder` por parámetro, devuelven dicts serializables. Sin dependencia de FastMCP, totalmente testables.
+- `src/memex/transports/stdio.py`: FastMCP server con las 3 tools registradas via `@server.tool`. Conexión SQLite y `OllamaEmbedder` lazy singletons. `EmbedderError` se atrapa y se devuelve como `{"error": ...}` en JSON. Logging configurado a stderr (stdout reservado para JSON-RPC).
+- `pyproject.toml`: re-agregado el script `memex-mcp = "memex.transports.stdio:main"` (estaba comentado desde la auditoría de Fase 0).
+- `tests/unit/test_tools.py`: 17 tests de las funciones puras (queries vacías, source filter, ordering, errores).
+- `tests/unit/test_stdio_server.py`: 6 tests del server MCP (3 tools registradas, call_tool funciona end-to-end, errores envueltos en JSON).
+- `README.md`: agregado el snippet de configuración para Claude Code (`.mcp.json` con cwd absoluto).
+
+**Bug real cazado por el smoke test:**
+- `sqlite3.ProgrammingError`: SQLite objects son thread-bound. FastMCP por default corre las tools sync en un thread pool, así que nuestra conexión singleton fallaba al ser usada desde otro thread. Fix: `@server.tool(run_in_thread=False)` en cada tool. Las tools quedan corriendo en el event loop, lo cual es razonable porque son I/O cortas. Documentado el motivo en el docstring del módulo.
+
+**Smoke test del MCP server (en proceso, no via JSON-RPC):**
+- Las 3 tools quedan registradas con sus descripciones.
+- `server.call_tool("list_recent_chats", {"limit": 3})` devuelve `ToolResult` con `TextContent` que contiene JSON válido y los chats reales de la base.
+- `server.call_tool("get_chat", {"uuid": "no-existe"})` devuelve `{"error": ...}` sin crashear.
+- `server.call_tool("search_chats", {"query": "  "})` devuelve error sin consultar Ollama.
+
+**Decisiones:**
+- Tools devuelven `str` (JSON pretty-printed) en lugar de dicts. Da control explícito del formato y evita serializaciones automáticas de FastMCP que podrían cambiar.
+- Límites duros: `search` max 50 resultados, `list_recent_chats` max 100. Evita payloads enormes que sobrecarguen el contexto de Claude.
+- `get_chat` no pagina; devuelve todos los mensajes. Si en uso real vemos chats de cientos de mensajes saturando, agregamos paginación. Por ahora over-engineering.
+- `source` filter en `search_chats` se aplica en Python tras pedir 3x más candidatos a la DB. Bajo costo, evita complicar el SQL.
+
+**Estado:**
+- `uv run pytest tests/unit`: 143 passed (era 137, +6 nuevos del server).
+- `uv run ruff check`, `uv run mypy`: clean.
+- `uv run memex-mcp`: arranca limpio, registra las 3 tools.
+
+**Próximo paso (criterio de cierre real de Fase 1):**
+- Conectarlo a Claude Code via `.mcp.json` y usarlo en sesiones reales.
+- 5 sesiones reales con al menos una tool invocada, sin crashes.
+- Auditoría de cierre cuando se cumpla.
+
+---
+
 ## 2026-05-18 — Cierre de Fase 0: dedup + auditoría
 
 **Qué se hizo:**
