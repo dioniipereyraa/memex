@@ -6,7 +6,41 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
-## 2026-05-15 — Inspección del export oficial
+## 2026-05-18 — Storage layer: models, schema, db, repo
+
+**Qué se hizo:**
+- `src/memex/config.py` con `pydantic-settings`. Lee `.env` y env vars. Alias por env var (OLLAMA_HOST, MEMEX_EMBED_MODEL, MEMEX_DB_PATH, MEMEX_CHUNK_SIZE, etc.). Validación de rangos en chunk_size y chunk_overlap.
+- `src/memex/core/models.py` con pydantic v2: `Project`, `Conversation` (con `source` enum), `Message` (con `raw_content` y flags), `Chunk`, `SearchHit`. Enums `Source` y `Sender` como `StrEnum`. `extra="forbid"` para que un campo inesperado falle temprano.
+- `src/memex/core/storage/schema.sql`: 4 tablas STRICT (`projects`, `conversations`, `messages`, `chunks`) + virtual table `vec_chunks` (sqlite-vec) + `schema_meta` para versionado. FKs con `ON DELETE CASCADE` en mensajes/chunks por conversation, `ON DELETE SET NULL` en project_uuid y message_uuid. CHECK constraints en `source` y `sender`. Índices en updated_at, project_uuid, conversation_uuid y created_at.
+- `src/memex/core/storage/db.py`: `get_connection()` carga sqlite-vec, setea `foreign_keys=ON`, `journal_mode=WAL` y `synchronous=NORMAL`. `init_schema()` idempotente. `connect_and_init()` como atajo.
+- `src/memex/core/storage/repo.py`: CRUD funcional (sin clases) con upserts (`ON CONFLICT DO UPDATE`). `add_chunk()` inserta el chunk y su embedding atómicamente (mismo rowid en chunks.id y vec_chunks.rowid). `vector_search()` hace KNN join con `MATCH ? AND k = ?`.
+- Tests: `tests/conftest.py` con fixtures (db in-memory, project, conversation, messages, chunks). `tests/unit/test_models.py` (11 tests) y `tests/unit/test_storage.py` (17 tests). 28 tests pasan.
+
+**Bugs encontrados y corregidos en el camino:**
+- vec0 KNN no acepta `LIMIT ?` parametrizado cuando hay JOINs. Hay que usar `k = ?` en el WHERE. La query de `vector_search` ya lo refleja.
+- El fixture `chunk` tenía `message_uuid` apuntando a un mensaje que el test no insertaba. Se separó en dos fixtures (`chunk` sin mensaje, `chunk_with_message` con). Agregado test que prueba el FK rechaza orphans.
+- Ruff señaló `class X(str, Enum)` (legacy) y `timezone.utc` (legacy en 3.11+). Migrado a `StrEnum` y `datetime.UTC`.
+
+**Decisiones de implementación:**
+- Repo como funciones, no clases. Más simple, sin estado que mantener, sin DI complicada.
+- Datetime serializado con sufijo `Z` (no `+00:00`) para mantener compatibilidad con el formato del export oficial de Claude.ai.
+- `raw_content` se guarda como JSON en TEXT. Lo deserializa el repo al leer. Permite analizar tool blocks después sin re-parsear el export.
+- L2 como métrica de distancia. nomic-embed-text devuelve embeddings normalizables, así que L2 ranking coincide con cosine ranking.
+
+**Estado:**
+- `uv run pytest tests/unit`: 28 passed.
+- `uv run ruff check src tests scripts`: clean.
+- `uv run mypy src/memex/core src/memex/config.py`: clean.
+
+**Próximo paso:**
+- Schema y modelos cerrados, el bottleneck de `main` se levanta. Ahora se pueden abrir los tres worktrees paralelos:
+  - `feature/ingest`: parser de `conversations.json`, `design_chats/*.json`, `memories.json`, `projects/*.json` + chunker + content renderer (tool markers).
+  - `feature/embeddings`: cliente Ollama + interfaz `Embedder`.
+  - `feature/retrieval-cli`: tool de búsqueda (envuelve `repo.vector_search`) + CLI con `typer`.
+
+---
+
+## 2026-05-18 — Inspección del export oficial
 
 **Qué se hizo:**
 - Script `scripts/inspect_export.py` que abre el zip sin extraerlo, recorre los JSON y reporta esquema y estadísticas. Read-only, no leakea contenido (texto se redacta como `<str:N chars>`).
@@ -41,7 +75,7 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
-## 2026-05-15 — Arranque del repo
+## 2026-05-18 — Arranque del repo
 
 **Qué se hizo:**
 - Spin-off de SyncChat. Repo nuevo en `d:\Dionisio\Memex`.

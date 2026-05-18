@@ -1,8 +1,8 @@
 # Roadmap
 
-> Última actualización: 2026-05-15
+> Última actualización: 2026-05-18
 
-**Estado actual:** Fase 0 (validar retrieval), en progreso. Estructura del repo lista. Inspección del export oficial completa. Schema definido. Próximo: implementar `core/models.py` + `core/storage/schema.sql`.
+**Estado actual:** Fase 0 (validar retrieval), en progreso. Storage layer cerrada (models + schema + db + repo) con 28 tests verdes. Listo para abrir tres worktrees paralelos: ingest, embeddings, retrieval+CLI.
 
 ## Principio rector
 
@@ -15,9 +15,9 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 **Objetivo:** descartar el riesgo más grande antes de invertir tiempo. Probar que con embeddings locales sobre el corpus real de chats, la búsqueda semántica devuelve resultados razonables.
 
 **Tareas:**
-- [x] Inspeccionar el JSON export oficial de Claude.ai (esquema, cantidad de chats, edge cases). Ver entrada del DEVLOG del 2026-05-15.
-- [ ] Implementar `core/models.py` con pydantic: `Project`, `Conversation` (con campo `source`: 'conversations' / 'design_chat' / 'memory'), `Message` (con `parent_uuid`, `raw_content`, flags `has_tool_use`/`has_attachments`), `Chunk`, `SearchResult`.
-- [ ] Implementar `core/storage/` (schema con 4 tablas + virtual `vec_chunks`, conexión, migración inicial, repo CRUD).
+- [x] Inspeccionar el JSON export oficial de Claude.ai (esquema, cantidad de chats, edge cases). Ver entrada del DEVLOG del 2026-05-18.
+- [x] Implementar `core/models.py` con pydantic: `Project`, `Conversation` (con campo `source`: 'conversations' / 'design_chat' / 'memory'), `Message` (con `parent_uuid`, `raw_content`, flags `has_tool_use`/`has_attachments`), `Chunk`, `SearchHit`.
+- [x] Implementar `core/storage/` (schema con 4 tablas + virtual `vec_chunks`, conexión, migración inicial, repo CRUD). 28 tests unitarios verdes.
 - [ ] Implementar `core/ingest/claude_export.py` con tres branches del parser: `conversations.json`, `design_chats/*.json`, `memories.json` (esta última como conversación sintética con `source='memory'`).
 - [ ] Implementar `core/ingest/projects.py` para parsear `projects/*.json` y popular la tabla `projects`.
 - [ ] Implementar `core/ingest/content_renderer.py` que convierte `content[]` de Claude.ai a texto plano. Tool blocks se renderizan con markers: `[tool_use: <name>] <input>`, `[result] <texto>`.
