@@ -1,4 +1,4 @@
-"""Interfaz Embedder abstracta.
+"""Interfaz Embedder abstracta + excepción común.
 
 Todo lo que entre al pipeline de retrieval pasa por un `Embedder`. Esta
 interfaz permite cambiar de modelo (Ollama local, API remota, fake en tests)
@@ -21,6 +21,16 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+
+
+class EmbedderError(Exception):
+    """Error operativo de un Embedder.
+
+    Las implementaciones la levantan con un mensaje claro al usuario en lugar
+    de propagar excepciones de bajo nivel (errores de conexión, timeouts,
+    modelos no instalados). Pensada para que el CLI y el MCP server la atrapen
+    y devuelvan un mensaje accionable.
+    """
 
 
 class Embedder(ABC):

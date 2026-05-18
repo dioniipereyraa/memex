@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-18
 
-**Estado actual:** **Fase 0 CERRADA** (2026-05-18). Retrieval validado sobre corpus real (6/7 búsquedas con top-3 relevante). 112 unit tests + 7 integration tests verdes. Auditoría hecha, un bloqueante menor arreglado (entrypoint `memex-mcp` que apuntaba a módulo inexistente). Próximo: Fase 1 (MCP server stdio para Claude Code).
+**Estado actual:** **Fase 0 CERRADA** (2026-05-18). Retrieval validado sobre corpus real (6/7 búsquedas con top-3 relevante). 120 unit tests + 7 integration tests verdes. Auditoría hecha, follow-ups menores cerrados (manejo de errores claros de Ollama via `EmbedderError`, dedup en `vector_search`). Próximo: Fase 1 (MCP server stdio para Claude Code).
 
 ## Principio rector
 

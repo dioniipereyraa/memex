@@ -18,6 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from memex.config import settings
+from memex.core.embeddings.base import EmbedderError
 from memex.core.embeddings.ollama import OllamaEmbedder
 from memex.core.ingest.pipeline import ingest_export
 from memex.core.storage import repo
@@ -74,6 +75,9 @@ def ingest(
                 chunk_size=cs,
                 chunk_overlap=co,
             )
+    except EmbedderError as e:
+        console.print(f"[red]Error de embeddings:[/red] {e}")
+        raise typer.Exit(code=2) from e
     finally:
         conn.close()
 
@@ -114,6 +118,9 @@ def search(
         embedder = OllamaEmbedder()
         query_vec = embedder.embed_one(query)
         hits = repo.vector_search(conn, query_vec, limit=limit)
+    except EmbedderError as e:
+        console.print(f"[red]Error de embeddings:[/red] {e}")
+        raise typer.Exit(code=2) from e
     finally:
         conn.close()
 

@@ -2,7 +2,7 @@
 
 > Servidor MCP local que indexa tus chats de Claude.ai y los expone a Claude Code (y, próximamente, a Claude.ai vía remote MCP). Que el contexto que tenga Claude.ai lo tenga también Claude Code.
 
-**Estado:** pre-alpha. Fase 0 (validar retrieval).
+**Estado:** pre-alpha. Fase 0 cerrada (retrieval validado sobre corpus real). Fase 1 (MCP server stdio) en arranque.
 
 ## El problema
 
@@ -36,17 +36,35 @@ Diseño: core puro (storage, ingest, embeddings, retrieval) separado del transpo
 
 ## Quickstart
 
-> Pendiente hasta Fase 0. Cuando esté, va el flujo de `uv sync`, `memex ingest <export.zip>` y `memex search "tu query"`.
+1. Cloná el repo e instalá deps:
+   ```bash
+   git clone https://github.com/dioniipereyraa/memex
+   cd memex
+   uv sync
+   ```
+2. Pedí tu export oficial de Claude.ai (Settings → Privacy → Export data), descomprimilo, y dejá el zip en `data/exports/`.
+3. Indexá:
+   ```bash
+   uv run memex ingest data/exports/<tu-export>.zip
+   ```
+   La primera vez tarda un par de minutos generando embeddings con Ollama.
+4. Buscá:
+   ```bash
+   uv run memex search "tu query" -n 5
+   uv run memex stats
+   ```
 
-## Tools que expone (v1, en construcción)
+## Tools del MCP server (v1, en construcción en Fase 1)
 
 - `search_chats(query, limit, date_range?)` busca semánticamente sobre todos tus chats.
 - `get_chat(id)` trae una conversación completa por id.
 - `list_recent_chats(n)` lista los últimos n chats en orden cronológico.
 
+Por ahora estas tools NO están expuestas como MCP (Fase 1 lo agrega). Mientras tanto, la misma búsqueda se accede vía CLI con `memex search`.
+
 ## Conectarlo a Claude Code
 
-> Pendiente hasta Fase 1. Va a ser un snippet de `.mcp.json` o `claude_desktop_config.json`.
+> Pendiente hasta Fase 1. Va a ser un snippet de `.mcp.json` o `claude_desktop_config.json` con el comando `memex-mcp`.
 
 ## Roadmap
 

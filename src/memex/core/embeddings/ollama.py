@@ -16,7 +16,11 @@ from collections.abc import Sequence
 import ollama
 
 from memex.config import settings
-from memex.core.embeddings.base import Embedder, l2_normalize
+from memex.core.embeddings.base import Embedder, EmbedderError, l2_normalize
+
+# Substrings que aparecen típicamente en errores de conexión / red. Sirven para
+# detectar el caso "Ollama no corre" sin tener que importar httpx directamente.
+_CONNECTION_HINT_KEYWORDS = ("connect", "refused", "timeout", "resolve", "unreachable")
 
 
 class OllamaEmbedder(Embedder):
@@ -48,7 +52,28 @@ class OllamaEmbedder(Embedder):
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = self._client.embed(model=self._model_name, input=list(texts))
+        try:
+            response = self._client.embed(model=self._model_name, input=list(texts))
+        except ollama.ResponseError as e:
+            status = getattr(e, "status_code", None)
+            if status == 404:
+                raise EmbedderError(
+                    f"Modelo '{self._model_name}' no encontrado en Ollama. "
+                    f"Corré `ollama pull {self._model_name}` y reintentá."
+                ) from e
+            raise EmbedderError(f"Ollama devolvió error: {e}") from e
+        except Exception as e:
+            # Errores de conexión / timeout / DNS no son ResponseError; ollama
+            # los propaga como excepciones de httpx. Filtramos por substring para
+            # no acoplarnos a la jerarquía interna del cliente.
+            msg = str(e).lower()
+            if any(k in msg for k in _CONNECTION_HINT_KEYWORDS):
+                raise EmbedderError(
+                    f"No se pudo conectar a Ollama en {self._host}. "
+                    f"¿Está corriendo el servicio?"
+                ) from e
+            raise
+
         embeddings: list[list[float]] = [list(v) for v in response.embeddings]
         if self._normalize:
             embeddings = [l2_normalize(v) for v in embeddings]
