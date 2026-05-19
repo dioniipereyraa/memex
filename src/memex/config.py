@@ -27,9 +27,20 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
-    ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
-    embed_model: str = Field(default="nomic-embed-text", alias="MEMEX_EMBED_MODEL")
+    # Backend de embeddings. Por default `fastembed` (zero-config, modelo se baja
+    # automáticamente la primera vez). Cambiar a `ollama` si preferís coordinar
+    # el modelo con tu instancia local de Ollama.
+    embed_backend: str = Field(default="fastembed", alias="MEMEX_EMBED_BACKEND")
+
+    # Nombre del modelo. Si `None`, cada backend usa su default:
+    # - fastembed: `nomic-ai/nomic-embed-text-v1.5-Q` (~130 MB, cuantizado).
+    # - ollama: `nomic-embed-text`.
+    # Si lo seteás, tiene que ser un modelo válido para el backend elegido.
+    embed_model: str | None = Field(default=None, alias="MEMEX_EMBED_MODEL")
     embed_dim: int = Field(default=768, alias="MEMEX_EMBED_DIM")
+
+    # Config específica de Ollama (solo se usa si embed_backend == "ollama").
+    ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
 
     db_path: Path = Field(default=Path("./data/memex.db"), alias="MEMEX_DB_PATH")
     exports_dir: Path = Field(default=Path("./data/exports"), alias="MEMEX_EXPORTS_DIR")

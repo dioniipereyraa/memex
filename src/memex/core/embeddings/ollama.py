@@ -22,6 +22,8 @@ from memex.core.embeddings.base import Embedder, EmbedderError, l2_normalize
 # detectar el caso "Ollama no corre" sin tener que importar httpx directamente.
 _CONNECTION_HINT_KEYWORDS = ("connect", "refused", "timeout", "resolve", "unreachable")
 
+DEFAULT_MODEL = "nomic-embed-text"
+
 
 class OllamaEmbedder(Embedder):
     """Embedder que habla con un Ollama corriendo local (o remoto via host)."""
@@ -33,7 +35,7 @@ class OllamaEmbedder(Embedder):
         normalize: bool = True,
         timeout: float = 120.0,
     ) -> None:
-        self._model_name = model_name or settings.embed_model
+        self._model_name = model_name or settings.embed_model or DEFAULT_MODEL
         self._host = host or settings.ollama_host
         self._client = ollama.Client(host=self._host, timeout=timeout)
         self._normalize = normalize

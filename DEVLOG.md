@@ -6,6 +6,33 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-19 — Embedder zero-config: fastembed default, Ollama opcional
+
+**Motivación:** la pregunta "feature o bug" sobre BYO-Ollama del post de Discord nos hizo notar que la fricción de Ollama es real para usuarios casuales. Reemplazar el embedder por algo embebido convierte ese trade-off en "feature claramente": local-first sigue, pero sin daemon externo.
+
+**Qué se hizo:**
+- `pyproject.toml`: agregada dep `fastembed>=0.4.0` (~30 MB de deps adicionales: numpy + onnxruntime + tokenizers).
+- `config.py`: nuevo setting `embed_backend: "fastembed" | "ollama"` (default `"fastembed"`). `embed_model: str | None`, cada backend usa su default si no se setea.
+- `core/embeddings/fastembed_embedder.py`: nueva implementación de `Embedder`. Modelo lazy-load la primera vez (import + descarga del ONNX a `~/.cache/fastembed/`). Default `nomic-ai/nomic-embed-text-v1.5-Q` (cuantizado, 130 MB). Mismo dim 768. L2 normaliza por default.
+- `core/embeddings/ollama.py`: ajustado para que `embed_model=None` caiga a `DEFAULT_MODEL = "nomic-embed-text"`. No-op para usuarios que ya tenían setting.
+- `core/embeddings/__init__.py`: factory `get_default_embedder()` que devuelve el embedder configurado. Backend case-insensitive, valida.
+- Refactor de los 3 call sites (`cli/main.py`, `transports/http_ingest.py`, `transports/stdio.py`) para usar la factory en vez de hardcodear `OllamaEmbedder()`.
+- `tests/unit/test_embedder_factory.py`: 10 tests cubriendo la factory (backends válidos, case-insensitive, whitespace, inválido, default, fastembed empty input).
+- `.env.example` y `README.md`: docs nuevas con backend default + alternativa.
+
+**Trade-off conocido:** embeddings de Ollama y fastembed para el mismo "nomic-embed-text" no son bit-exactos (Ollama usa GGUF, fastembed usa ONNX, distinta cuantización/tokenizer). La diferencia es chica pero al cambiar de backend conviene re-ingestar para que toda la base tenga vectores del mismo modelo. Documentado en el docstring del módulo.
+
+**Estado:**
+- 189 unit tests verdes (+10 nuevos del factory).
+- Ruff y mypy clean (21 source files).
+- Default zero-config: `uv sync` + `uv run memex serve` y el modelo se baja solo la primera vez.
+
+**Cómo afecta al post de Discord:**
+- La pregunta #2 ahora puede ser más punzante: "local-first zero-config: feature o el típico 'subí mis embeddings a tu cloud' es más cómodo?"
+- El bullet "Chrome ext + local HTTP server captures new chats automatically" mantiene sentido, pero "BYO Ollama" deja de ser fricción para empujarlo a la sección opcional.
+
+---
+
 ## 2026-05-19 — Captura en vivo: backend HTTP + Chrome extension
 
 **Contexto:** completar Fase 2 con captura en vivo. Hasta ahora Memex solo indexaba el zip del export oficial (todo lo que charlés en claude.ai después del export queda fuera). Captura en vivo cierra ese gap: cada chat que abrís o creás en claude.ai aparece en Memex en segundos, automático.

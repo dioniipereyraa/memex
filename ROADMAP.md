@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-19
 
-**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** búsqueda híbrida FTS5 + RRF cerrada (resuelve caso "Amarok"); captura en vivo con HTTP server local + Chrome extension implementada y validada con smoke test live. 179 unit tests verdes. Pendiente para cerrar Fase 2: uso real de la Chrome ext + auditoría de cierre.
+**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** búsqueda híbrida FTS5 + RRF cerrada; captura en vivo (HTTP server + Chrome ext) implementada y validada; embedder zero-config con fastembed default (Ollama opcional). 189 unit tests verdes. Pendiente para cerrar Fase 2: uso real de la Chrome ext + auditoría de cierre.
 
 ## Principio rector
 

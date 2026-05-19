@@ -36,8 +36,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from memex.core.embeddings.base import Embedder, EmbedderError
-from memex.core.embeddings.ollama import OllamaEmbedder
+from memex.core.embeddings import Embedder, EmbedderError, get_default_embedder
 from memex.core.ingest.pipeline import ingest_single_conversation
 from memex.core.models import Source
 from memex.core.storage.db import connect_and_init
@@ -67,7 +66,7 @@ def _get_conn() -> sqlite3.Connection:
 def _get_embedder() -> Embedder:
     global _embedder
     if _embedder is None:
-        _embedder = OllamaEmbedder()
+        _embedder = get_default_embedder()
         logger.info("Embedder inicializado: %s", _embedder.model_name)
     return _embedder
 

@@ -39,8 +39,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from memex.core.embeddings.base import Embedder
-from memex.core.embeddings.ollama import OllamaEmbedder
+from memex.core.embeddings import Embedder, get_default_embedder
 from memex.core.storage.db import connect_and_init
 from memex.transports import tools
 
@@ -69,7 +68,7 @@ def _get_conn() -> sqlite3.Connection:
 def _get_embedder() -> Embedder:
     global _embedder
     if _embedder is None:
-        _embedder = OllamaEmbedder()
+        _embedder = get_default_embedder()
         logger.info("Embedder inicializado: %s", _embedder.model_name)
     return _embedder
 

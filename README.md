@@ -29,10 +29,15 @@ Diseño: core puro (storage, ingest, embeddings, retrieval) separado del transpo
 
 - Python 3.12 o superior
 - [uv](https://docs.astral.sh/uv/) (gestor de paquetes)
-- [Ollama](https://ollama.com) corriendo local, con el modelo `nomic-embed-text` descargado:
-  ```bash
-  ollama pull nomic-embed-text
-  ```
+
+Embeddings: **zero-config por default** (usa [fastembed](https://github.com/qdrant/fastembed) con un modelo cuantizado de 130 MB que se baja la primera vez automáticamente).
+
+Si preferís coordinar con tu instancia local de Ollama (porque ya la tenés corriendo para otros modelos), configurá:
+```bash
+export MEMEX_EMBED_BACKEND=ollama
+# y opcionalmente:
+ollama pull nomic-embed-text
+```
 
 ## Quickstart
 

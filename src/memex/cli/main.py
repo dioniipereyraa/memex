@@ -18,8 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from memex.config import settings
-from memex.core.embeddings.base import EmbedderError
-from memex.core.embeddings.ollama import OllamaEmbedder
+from memex.core.embeddings import EmbedderError, get_default_embedder
 from memex.core.ingest.pipeline import ingest_export
 from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
@@ -66,7 +65,7 @@ def ingest(
 
     conn = connect_and_init(db_path)
     try:
-        embedder = OllamaEmbedder()
+        embedder = get_default_embedder()
         with console.status("[yellow]Procesando…[/yellow]"):
             summary = ingest_export(
                 conn,
@@ -122,7 +121,7 @@ def search(
     """Búsqueda sobre la base indexada (híbrida por default)."""
     conn = connect_and_init(db_path)
     try:
-        embedder = OllamaEmbedder()
+        embedder = get_default_embedder()
         if mode == "lexical":
             hits = repo.text_search(conn, query, limit=limit)
         elif mode == "semantic":
