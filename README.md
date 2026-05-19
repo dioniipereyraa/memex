@@ -1,5 +1,9 @@
 # Memex
 
+> *Quick read in English — full docs below in Spanish.*
+>
+> **Memex** is a local-first MCP server that indexes your entire Claude.ai history (via official export or live Chrome capture) and exposes `search_chats`, `get_chat`, `list_recent_chats` to Claude Code, Claude Desktop, or any MCP client. Everything stays on your machine: SQLite + sqlite-vec for embeddings, FTS5 for lexical, hybrid retrieval via Reciprocal Rank Fusion. Zero-config embeddings out of the box (fastembed/ONNX), Ollama optional. **Status: pre-alpha**, runs from source. See `ROADMAP.md` for phases, `DEVLOG.md` for the project journal.
+>
 > Servidor MCP local que indexa tus chats de Claude.ai y los expone a Claude Code (y, próximamente, a Claude.ai vía remote MCP). Que el contexto que tenga Claude.ai lo tenga también Claude Code.
 
 **Estado:** pre-alpha. Fases 0 y 1 cerradas. **Fase 2 en progreso:** búsqueda híbrida FTS5 + RRF cerrada (resuelve caso "Amarok"); captura en vivo via Chrome extension + HTTP server local funcionando, falta uso real durante una semana y auditoría de cierre.
