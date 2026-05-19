@@ -72,3 +72,7 @@ logs/
 # MCP config local (path absoluto, específico de tu máquina). El snippet de
 # ejemplo va en el README; cada dev crea el suyo.
 .mcp.json
+
+# Handoff doc entre sesiones de trabajo. Es contexto interno (qué estábamos
+# haciendo, qué falta, decisiones abiertas), no para usuarios del repo.
+handoff.md
