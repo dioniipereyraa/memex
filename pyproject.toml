@@ -19,7 +19,8 @@ dependencies = [
     "fastmcp>=0.2.0",
     "sqlite-vec>=0.1.6",
     "fastembed>=0.4.0",
-    "ollama>=0.3.0",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "typer>=0.12",
@@ -27,12 +28,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ollama = ["ollama>=0.3.0"]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
-    "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
+    "ollama>=0.3.0",
 ]
 
 [project.scripts]

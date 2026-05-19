@@ -6,8 +6,11 @@
   const TAG = "[Memex:inject]";
   const originalFetch = window.fetch;
 
+  // target = window.location.origin (no "*") para no filtrar el JSON del chat
+  // a otros frames/scripts del page world. claude.ai siempre es same-origin.
+  const TARGET_ORIGIN = window.location.origin;
   const post = (payload) => {
-    window.postMessage({ source: "memex-inject", payload }, "*");
+    window.postMessage({ source: "memex-inject", payload }, TARGET_ORIGIN);
   };
 
   const safeUrl = (input) => {

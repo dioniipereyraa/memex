@@ -29,5 +29,8 @@
   "action": {
     "default_popup": "src/popup.html",
     "default_title": "Memex Live Capture"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://127.0.0.1:5777 http://localhost:5777"
   }
 }

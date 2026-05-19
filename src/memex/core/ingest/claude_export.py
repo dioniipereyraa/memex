@@ -53,22 +53,6 @@ def parse_design_chat(data: dict[str, Any]) -> tuple[Conversation, list[Message]
     return parse_conversation_dict(data, Source.DESIGN_CHAT)
 
 
-def parse_conversation_dict(
-    data: dict[str, Any], source: Source
-) -> tuple[Conversation, list[Message]]:
-    """Parsea un dict de conversación (genérico).
-
-    Útil cuando recibís un chat individual de cualquier origen: el item de
-    `conversations.json`, un `design_chats/{uuid}.json`, o un payload en
-    vivo capturado por la Chrome ext desde el endpoint
-    `chat_conversations/{id}?tree=True` de Claude.ai.
-
-    Las tres fuentes tienen el mismo shape de mensajes; lo que cambia es el
-    contenedor (claves `name` vs `title`, `chat_messages` vs `messages`).
-    """
-    return _parse_conversation_dict(data, source)
-
-
 def parse_memories(
     data: list[dict[str, Any]] | dict[str, Any],
     now: datetime | None = None,
@@ -131,10 +115,15 @@ def parse_memories(
 
 # ---------- helpers privados ----------
 
-def _parse_conversation_dict(
+def parse_conversation_dict(
     data: dict[str, Any], source: Source
 ) -> tuple[Conversation, list[Message]]:
-    """Lógica común para conversations.json y design_chats.
+    """Parsea un dict de conversación a `(Conversation, [Message])`.
+
+    Útil para cualquier origen de chats que comparta el shape de Claude.ai:
+    items de `conversations.json`, `design_chats/{uuid}.json`, o payloads
+    capturados en vivo por la Chrome ext desde el endpoint
+    `chat_conversations/{id}?tree=True`.
 
     Diferencias entre fuentes (vistas en el export real):
     - conversations.json: `name` para título, `chat_messages` para mensajes, sin project.

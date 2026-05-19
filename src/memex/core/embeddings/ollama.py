@@ -13,13 +13,23 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import httpx
 import ollama
 
 from memex.config import settings
 from memex.core.embeddings.base import Embedder, EmbedderError, l2_normalize
 
-# Substrings que aparecen típicamente en errores de conexión / red. Sirven para
-# detectar el caso "Ollama no corre" sin tener que importar httpx directamente.
+# Errores de red de httpx que el cliente ollama propaga sin envolver.
+# Catch explícito antes del fallback por substring; menos frágil que adivinar
+# por wording (que cambia entre versiones y locales).
+_HTTPX_CONNECT_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.RemoteProtocolError,
+)
+
+# Fallback por substring si llega un error que no es ningún httpx.* conocido.
 _CONNECTION_HINT_KEYWORDS = ("connect", "refused", "timeout", "resolve", "unreachable")
 
 DEFAULT_MODEL = "nomic-embed-text"
@@ -64,10 +74,14 @@ class OllamaEmbedder(Embedder):
                     f"Corré `ollama pull {self._model_name}` y reintentá."
                 ) from e
             raise EmbedderError(f"Ollama devolvió error: {e}") from e
+        except _HTTPX_CONNECT_EXCEPTIONS as e:
+            raise EmbedderError(
+                f"No se pudo conectar a Ollama en {self._host}. "
+                f"¿Está corriendo el servicio?"
+            ) from e
         except Exception as e:
-            # Errores de conexión / timeout / DNS no son ResponseError; ollama
-            # los propaga como excepciones de httpx. Filtramos por substring para
-            # no acoplarnos a la jerarquía interna del cliente.
+            # Fallback: cualquier otra excepción cuyo mensaje sugiera conexión
+            # / timeout (algún wrapper que no esté en _HTTPX_CONNECT_EXCEPTIONS).
             msg = str(e).lower()
             if any(k in msg for k in _CONNECTION_HINT_KEYWORDS):
                 raise EmbedderError(

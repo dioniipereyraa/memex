@@ -6,6 +6,76 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-19 — Limpieza post-Discord (audit + Bloque A)
+
+Audit completo del proyecto (primer audit exhaustivo desde Fase 1). Sub-agent revisó código, docs, deps y calidad de cara al público. Veredicto: nada bloqueante, pero deuda acumulada visible que merece cerrarse ahora que el repo es público.
+
+**Críticos arreglados (4):**
+- `cli/main.py:63` imprimía "embedder: Ollama" hardcodeado pese a que el default es fastembed. Bug visible al usuario. Ahora muestra el backend real (`settings.embed_backend`) + el `model_name` del embedder ya inicializado.
+- `pyproject.toml` no declaraba `starlette` ni `uvicorn` como deps directas (llegaban transitivamente vía `fastmcp`). Agregadas; si fastmcp las suelta en una versión futura, `memex serve` no revienta.
+- `chrome-extension/src/inject.js` usaba `postMessage("*")` como target; cualquier otro script del page world de claude.ai podía interceptar el JSON del chat. Ahora `window.location.origin` (claude.ai siempre es same-origin).
+- `chrome-extension/manifest.json` sin `content_security_policy`. Agregada CSP explícita para extension pages (`script-src 'self'; connect-src 'self' http://127.0.0.1:5777 http://localhost:5777`).
+
+**Importantes arreglados (5):**
+- `stdio.py` ya no leakea `{e}` al cliente MCP; ahora devuelve `Error interno ({Tipo})` y el detalle queda solo en el log. Test actualizado para verificar que el mensaje crudo no se filtra al cliente.
+- `ollama.py` ahora atrapa explícitamente `httpx.ConnectError`, `ConnectTimeout`, `ReadTimeout`, `RemoteProtocolError` antes del fallback por substring. Menos frágil ante cambios de wording.
+- `_to_iso` (repo.py) usa `strftime` explícito en vez de `replace("+00:00", "Z")`. Robusto frente a zonas no-UTC.
+- `tools.search_chats(mode="lexical")` devuelve error claro si la query se sanitiza a vacío (antes silencioso, devolvía `[]`).
+- `chrome-extension/src/background.js` ahora retrytea 3 veces con backoff (2s, 8s) ante network errors. Cubre el caso "fastembed bajando el modelo la primera vez" en el que el server tarda 30-60s antes de responder.
+
+**Código muerto eliminado:**
+- `src/memex/core/retrieval/` (directorio vacío con `__init__.py` vacío). Si la lógica de retrieval crece, se recrea con contenido real.
+- `parse_conversation_dict` ya no es un wrapper de una línea sobre el privado; se promovió en lugar (el privado `_parse_conversation_dict` se renombró al público y se borró el wrapper).
+
+**Dependencias reorganizadas:**
+- `ollama` movido a `[project.optional-dependencies]` extra `ollama` (ya no es default; el que lo quiere instala `uv pip install -e .[ollama]`).
+- `starlette>=0.40` y `uvicorn>=0.30` agregadas como deps directas.
+- `pytest-cov` eliminado de dev deps (no se usaba en CI ni docs).
+
+**Test gap cerrado:**
+- `tests/unit/test_storage.py::TestHybridSearch::test_hybrid_when_query_sanitizes_to_empty`: cubre el caso donde uno de los dos motores (text_search) devuelve `[]` y el RRF tiene que igual entregar los hits del otro (vector_search).
+
+**Docs sincronizadas:**
+- `CLAUDE.md`: stack ahora dice "fastembed default / Ollama opcional". Árbol del repo refleja `embeddings/fastembed_embedder.py`, `transports/http_ingest.py`, sin `retrieval/`. Estado al 2026-05-19. Comandos habituales incluyen `memex serve`.
+- `ROADMAP.md`: test count actualizado a 190.
+
+**Pendiente (no se hizo hoy, marcado para próxima sesión vía handoff.md):**
+- Traducir README al inglés (cuerpo entero).
+- Polish del repo público: badges, screenshot embebido, íconos para la Chrome ext, CONTRIBUTING.md, CHANGELOG.md.
+- Test de `memex serve` (CliRunner mockeando uvicorn).
+- Sub-task captura en vivo: probarlo en uso real durante una semana → criterio de cierre de Fase 2.
+- `settings` se evalúa al import time (follow-up de Fase 0 sigue abierto).
+
+**Estado final:** 190 unit + 7 integration tests verdes. Ruff y mypy clean. Audit pasado sin bloqueantes.
+
+---
+
+## 2026-05-19 — Primer post público en Discord oficial de Anthropic
+
+Posteado en el server oficial de Anthropic, en el canal de foros (thread `1506428270353060001`). Es la primera vez que Memex sale del repo privado del laburo a una audiencia externa.
+
+Estructura del post (final, después de iterar varias versiones):
+- Hook: "Making Claude remember. Building a fix."
+- Setup del problema (claude.ai planea, Claude Code ejecuta, no comparten contexto).
+- Metáfora de "talking to one person" para la idea de Memex.
+- Sección técnica "Under the hood" con stack (MCP + sqlite-vec + FTS5 + RRF).
+- 1 semana de dogfooding sobre corpus propio (74 chats / 1024 mensajes).
+- What works today / What's missing.
+- Una sola pregunta abierta: "Does this match a real pain you have, or am I solving a problem only I have?"
+- Link al repo al final con caveat "pre-alpha, runs from source, no installer yet".
+
+Tags elegidos: `MCP Server`, `Browser Extension`, `CLI`, `Open Source`, `Utility`.
+
+Imagen única: screenshot de Claude Code haciendo "memory check" end-to-end. El user pregunta "do you remember what we talked about" sin mencionar Memex; Claude Code invoca `list_recent_chats` + `get_chat` solo, encuentra el chat capturado segundos antes via la Chrome ext, resume el contenido y hasta identifica el contexto meta ("you were testing the live capture flow"). Una imagen muestra todo el sistema funcionando.
+
+Cambios al repo asociados al post:
+- GitHub description traducida a inglés via `gh repo edit`.
+- README con párrafo intro en inglés arriba (commit `c6420e9`). El cuerpo queda en español por ahora.
+
+Pendiente: leer feedback y reacciones del thread cuando aparezcan.
+
+---
+
 ## 2026-05-19 — Embedder zero-config: fastembed default, Ollama opcional
 
 **Motivación:** la pregunta "feature o bug" sobre BYO-Ollama del post de Discord nos hizo notar que la fricción de Ollama es real para usuarios casuales. Reemplazar el embedder por algo embebido convierte ese trade-off en "feature claramente": local-first sigue, pero sin daemon externo.

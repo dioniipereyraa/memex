@@ -32,10 +32,16 @@ from memex.core.models import (
 
 
 def _to_iso(dt: datetime) -> str:
-    """Serializa datetime a ISO 8601 con sufijo Z. Asume UTC si no hay tzinfo."""
+    """Serializa datetime a ISO 8601 UTC con sufijo Z.
+
+    Si `dt` no tiene tzinfo, asume UTC. Si tiene otra timezone, convierte a UTC
+    primero. La conversión usa strftime explícito (no `replace("+00:00", "Z")`,
+    que rompe con timezones no-UTC convertidas).
+    """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    utc = dt.astimezone(UTC)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond:06d}Z"
 
 
 def _from_iso(s: str) -> datetime:

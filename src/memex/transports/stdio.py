@@ -134,7 +134,9 @@ def search_chats(
         )
     except Exception as e:
         logger.exception("Error en search_chats")
-        result = {"error": f"Error interno: {e}"}
+        # Mensaje genérico al cliente para no leakear paths/queries en el error
+        # (el detalle queda en el log via logger.exception arriba).
+        result = {"error": f"Error interno ({type(e).__name__})."}
     return _serialize(result)
 
 
@@ -176,7 +178,9 @@ def get_chat(uuid: str, messages_limit: int = 20, messages_offset: int = 0) -> s
         result = tools.get_chat(_get_conn(), uuid, messages_limit, messages_offset)
     except Exception as e:
         logger.exception("Error en get_chat")
-        result = {"error": f"Error interno: {e}"}
+        # Mensaje genérico al cliente para no leakear paths/queries en el error
+        # (el detalle queda en el log via logger.exception arriba).
+        result = {"error": f"Error interno ({type(e).__name__})."}
     return _serialize(result)
 
 
@@ -208,7 +212,9 @@ def list_recent_chats(limit: int = 10, source: str | None = None) -> str:
         result = tools.list_recent_chats(_get_conn(), limit, source)
     except Exception as e:
         logger.exception("Error en list_recent_chats")
-        result = {"error": f"Error interno: {e}"}
+        # Mensaje genérico al cliente para no leakear paths/queries en el error
+        # (el detalle queda en el log via logger.exception arriba).
+        result = {"error": f"Error interno ({type(e).__name__})."}
     return _serialize(result)
 
 

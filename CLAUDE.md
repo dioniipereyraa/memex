@@ -26,7 +26,7 @@ Detalle completo en [README.md](README.md) y [ROADMAP.md](ROADMAP.md).
 - Python 3.12+, gestor de paquetes [uv](https://docs.astral.sh/uv/).
 - [FastMCP](https://github.com/jlowin/fastmcp) para el server MCP (soporta stdio y SSE/HTTP).
 - SQLite + [sqlite-vec](https://github.com/asg017/sqlite-vec) para storage y vector search.
-- [Ollama](https://ollama.com) local con `nomic-embed-text` para embeddings.
+- [fastembed](https://github.com/qdrant/fastembed) por default (zero-config, ONNX embebido) u [Ollama](https://ollama.com) opcional con `nomic-embed-text`. Backend configurable via `MEMEX_EMBED_BACKEND`.
 - `pydantic` + `pydantic-settings` para config y modelos.
 - `typer` + `rich` para CLI.
 - `pytest`, `ruff`, `mypy` para test/lint/typecheck.
@@ -37,21 +37,29 @@ Detalle completo en [README.md](README.md) y [ROADMAP.md](ROADMAP.md).
 src/memex/
 ├── config.py            ← settings con pydantic-settings (DONE)
 ├── core/                ← librería pura, sin transport
-│   ├── models.py        ← Project, Conversation, Message, Chunk, SearchHit (DONE)
-│   ├── storage/         ← SQLite + sqlite-vec (DONE: schema, db, repo)
-│   ├── ingest/          ← parsers + chunker + pipeline (DONE: content_renderer, chunker, claude_export, pipeline)
-│   ├── embeddings/      ← interfaz Embedder + Ollama + Fake (DONE)
-│   └── retrieval/       ← (vacío; vector_search vive en storage/repo.py)
-├── transports/          ← bindings MCP
-│   ├── tools.py         ← lógica pura de las 3 tools (DONE)
-│   ├── stdio.py         ← entrypoint stdio con FastMCP (DONE)
-│   └── http.py          ← SSE/HTTP (TBD, Fase 4)  ← no existe el archivo todavía
-└── cli/                 ← CLI con typer (DONE: ingest, search, stats)
+│   ├── models.py        ← Project, Conversation, Message, Chunk, SearchHit
+│   ├── storage/         ← SQLite + sqlite-vec + FTS5 (schema, db, repo)
+│   └── ingest/          ← parsers + chunker + pipeline (content_renderer, chunker, claude_export, pipeline)
+├── core/embeddings/     ← factory + interfaces
+│   ├── base.py          ← Embedder ABC + EmbedderError + l2_normalize
+│   ├── fastembed_embedder.py  ← default (ONNX, zero-config)
+│   ├── ollama.py        ← opcional (extra `ollama`)
+│   ├── fake.py          ← FakeEmbedder determinístico para tests
+│   └── __init__.py      ← get_default_embedder() — factory según MEMEX_EMBED_BACKEND
+├── transports/          ← bindings MCP + HTTP local
+│   ├── tools.py         ← lógica pura de las 3 tools MCP
+│   ├── stdio.py         ← entrypoint MCP stdio con FastMCP (memex-mcp)
+│   ├── http_ingest.py   ← server HTTP local para captura en vivo (Starlette)
+│   └── http.py          ← SSE/HTTP remote MCP (TBD, Fase 4)  ← no existe todavía
+└── cli/                 ← CLI con typer (ingest, search, stats, serve, reindex-fts)
 ```
 
 **Regla de dependencias:** `core/` no importa de `transports/` ni de `cli/`. Las flechas apuntan para adentro.
 
-**Estado al cierre de Fase 1 (2026-05-18):** todo lo marcado `(DONE)` está implementado y testeado, incluido el MCP server stdio. El `vector_search` está en `core/storage/repo.py` (no en `core/retrieval/`) por simplicidad inicial; si `retrieval/` necesita crecer (filtros complejos, híbrido FTS+vector, re-ranking) se va a mover ahí. `transports/http.py` no existe aún; lo agrega Fase 4 cuando arme el remote MCP.
+**Estado al 2026-05-19 (Fase 2 en progreso):**
+- Fases 0 y 1 cerradas con audit. Fase 2 con sub-tasks cerrados: búsqueda híbrida FTS5 + RRF, captura en vivo (Chrome ext + HTTP server local), embedder zero-config con fastembed default.
+- `vector_search`, `text_search` y `hybrid_search` viven en `core/storage/repo.py`. El directorio `core/retrieval/` se eliminó (estaba vacío); si la lógica de retrieval crece (re-ranking, filtros complejos), se vuelve a crear con contenido real.
+- `transports/http.py` no existe aún; lo agrega Fase 4 cuando se arme el remote MCP. La captura en vivo usa `transports/http_ingest.py` (otro server local, distinto del MCP).
 
 ## Comandos habituales
 
@@ -61,8 +69,9 @@ uv run pytest                 # tests (-m 'not integration' para saltar integrat
 uv run ruff check src tests   # lint
 uv run ruff format src tests  # format
 uv run mypy src/memex/core    # type check (estricto en core)
-uv run memex --help           # CLI (ingest, search, stats)
-uv run memex-mcp              # MCP server stdio (Fase 1)
+uv run memex --help           # CLI (ingest, search, stats, serve, reindex-fts)
+uv run memex-mcp              # MCP server stdio (para Claude Code / Desktop)
+uv run memex serve            # HTTP server local para captura en vivo desde Chrome ext
 ```
 
 ## Multi-Claude con git worktrees

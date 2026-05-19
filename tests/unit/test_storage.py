@@ -536,3 +536,36 @@ class TestHybridSearch:
         # Base vacía: ni vector ni texto encuentran nada.
         hits = repo.hybrid_search(db, "anything", [0.0] * 768, limit=5)
         assert hits == []
+
+    def test_hybrid_when_query_sanitizes_to_empty(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        """Query con solo símbolos: FTS5 no matchea pero vector sí debería.
+
+        Cubre el caso donde uno de los dos motores devuelve [] (text_search
+        porque _sanitize_fts_query lo deja vacío) pero el otro sigue funcional.
+        El RRF tiene que devolver los hits del motor que sí funcionó.
+        """
+        repo.insert_project(db, project)
+        conv = Conversation(
+            uuid="conv-x",
+            title="x",
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, conv)
+        chunk = Chunk(
+            conversation_uuid="conv-x",
+            text="contenido cualquiera",
+            char_start=0,
+            char_end=20,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.add_chunk(db, chunk, [1.0] + [0.0] * 767)
+
+        # Query solo símbolos: _sanitize_fts_query devuelve "" → text_search = [].
+        # Pero vector_search igual va a usar el embedding pasado.
+        hits = repo.hybrid_search(db, "???!!", [1.0] + [0.0] * 767, limit=5)
+        assert len(hits) == 1
+        assert hits[0].conversation.uuid == "conv-x"

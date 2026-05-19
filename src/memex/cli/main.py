@@ -60,12 +60,14 @@ def ingest(
 
     console.print(f"[bold]Ingestando[/bold] [cyan]{zip_path}[/cyan]")
     console.print(f"  chunk_size={cs} tokens, chunk_overlap={co} tokens")
-    console.print(f"  embedder: Ollama @ {settings.ollama_host} ({settings.embed_model})")
-    console.print(f"  DB: {db_path or settings.db_path}\n")
+    console.print(f"  DB: {db_path or settings.db_path}")
 
     conn = connect_and_init(db_path)
     try:
         embedder = get_default_embedder()
+        console.print(
+            f"  embedder: {settings.embed_backend} ({embedder.model_name})\n"
+        )
         with console.status("[yellow]Procesando…[/yellow]"):
             summary = ingest_export(
                 conn,

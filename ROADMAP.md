@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-19
 
-**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** búsqueda híbrida FTS5 + RRF cerrada; captura en vivo (HTTP server + Chrome ext) implementada y validada; embedder zero-config con fastembed default (Ollama opcional). 189 unit tests verdes. Pendiente para cerrar Fase 2: uso real de la Chrome ext + auditoría de cierre.
+**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** búsqueda híbrida FTS5 + RRF cerrada; captura en vivo (HTTP server + Chrome ext) implementada y validada; embedder zero-config con fastembed default (Ollama opcional). Limpieza completa post-Discord aplicada: 4 críticos del audit, 5 importantes, código muerto y deps reorganizadas. **190 unit tests verdes.** Pendiente para cerrar Fase 2: uso real de la Chrome ext en sesiones reales + auditoría de cierre.
 
 ## Principio rector
 

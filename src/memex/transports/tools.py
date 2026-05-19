@@ -83,6 +83,19 @@ def search_chats(
     fetch_limit = limit * 3 if src_filter is not None else limit
 
     if mode == "lexical":
+        # En lexical puro, si la query se sanitiza a vacío (solo símbolos, CJK
+        # sin tokens latinos, etc.) el repo devuelve [] silenciosamente.
+        # Avisamos al cliente para que sepa que no es "no hay matches", es
+        # "tu query no produjo tokens válidos para FTS5".
+        from memex.core.storage.repo import _sanitize_fts_query
+
+        if not _sanitize_fts_query(q):
+            return {
+                "error": (
+                    f"La query {q!r} no produjo tokens utilizables para "
+                    "búsqueda lexical (probá con palabras o cambiá a mode='hybrid')."
+                ),
+            }
         hits = repo.text_search(conn, q, limit=fetch_limit)
     else:
         try:

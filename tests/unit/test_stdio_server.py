@@ -101,10 +101,15 @@ class TestExceptionHandling:
     async def test_unexpected_exception_wrapped_in_error_dict(
         self, mcp_server_with_temp_db
     ) -> None:
-        """Si la tool pura lanza algo no esperado, el wrapper devuelve error JSON."""
+        """Si la tool pura lanza algo no esperado, el wrapper devuelve error JSON
+        genérico (sin leakear el mensaje crudo de la excepción al cliente)."""
         with patch.object(stdio.tools, "list_recent_chats") as mock:
-            mock.side_effect = RuntimeError("boom inesperado")
+            mock.side_effect = RuntimeError("boom inesperado con secreto: /home/user/.env")
             result = await stdio.server.call_tool("list_recent_chats", {"limit": 5})
             payload = json.loads(result.content[0].text)
             assert "error" in payload
-            assert "boom inesperado" in payload["error"]
+            # El mensaje al cliente menciona el tipo de excepción pero no su contenido.
+            assert "RuntimeError" in payload["error"]
+            # Y crucialmente, NO leakea el mensaje crudo (que podría tener paths/secrets).
+            assert "secreto" not in payload["error"]
+            assert ".env" not in payload["error"]

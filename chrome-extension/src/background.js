@@ -8,6 +8,11 @@ const INGEST_PATH = "/ingest/conversation";
 const HEALTH_PATH = "/health";
 const RECENT_ERRORS_MAX = 5;
 
+// Retry para network errors. El primer POST después de un `memex serve` fresh
+// puede tardar si fastembed está bajando el modelo (~30-60s la primera vez).
+const RETRY_ATTEMPTS = 3;
+const RETRY_DELAYS_MS = [2000, 8000]; // entre intento 1-2 y 2-3
+
 // ---------- helpers ----------
 
 const getConfig = async () => {
@@ -78,16 +83,30 @@ const handleCapture = async (payload) => {
   }
 
   const { serverUrl } = await getConfig();
+
+  // Retry: si el server está bajando el modelo de fastembed la primera vez,
+  // o si hubo un network glitch, reintentamos con backoff antes de marcar fail.
   let response;
-  try {
-    response = await fetch(`${serverUrl}${INGEST_PATH}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    // Network error: probablemente el server no está corriendo.
-    await recordIngestFailure("network", err);
+  let lastNetworkErr = null;
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      response = await fetch(`${serverUrl}${INGEST_PATH}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      lastNetworkErr = null;
+      break;
+    } catch (err) {
+      lastNetworkErr = err;
+      if (attempt < RETRY_ATTEMPTS) {
+        const delay = RETRY_DELAYS_MS[attempt - 1] || 8000;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+  if (lastNetworkErr || !response) {
+    await recordIngestFailure("network", lastNetworkErr || "no response");
     return;
   }
 
