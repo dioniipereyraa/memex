@@ -82,6 +82,29 @@ Ajustá `cwd` al path absoluto donde clonaste Memex (donde está el `pyproject.t
 
 Las mismas búsquedas también están disponibles desde CLI con `uv run memex search "..."` si preferís usarlas fuera de Claude Code.
 
+### Hacer que Claude use Memex proactivamente
+
+Por default, los LLMs son conservadores con las tools: prefieren preguntar antes que invocar algo. Si decís *"viste que te hablé de X?"*, Claude tiende a responder *"no recuerdo"* en lugar de buscar.
+
+Las docstrings de las 3 tools ya tienen instrucciones de "USAR PROACTIVAMENTE", pero podés reforzarlo agregando este snippet a tu `CLAUDE.md` (global en `~/.claude/CLAUDE.md` para todas las sesiones, o local en `<proyecto>/CLAUDE.md` para uno específico):
+
+```markdown
+## Memex — memoria persistente de chats de Claude.ai
+
+Hay un MCP server `memex` con 3 tools: `search_chats`, `get_chat`, `list_recent_chats`.
+Indexan TODO el historial de Claude.ai del usuario, accesible vía búsqueda híbrida
+(semántica + lexical FTS5).
+
+**Regla operativa:** antes de responder "no tengo registro", "no recuerdo", "es la
+primera vez que oigo de esto", o algo equivalente, invocá `mcp__memex__search_chats`
+con la query relevante. La memoria nativa de Claude Code arranca limpia cada sesión;
+Memex es el único acceso al historial real del usuario.
+
+Disparadores típicos: "te acordás de...", "viste que...", "ya hablamos de...", "el
+otro día charlamos sobre...", o cualquier referencia a un proyecto/persona/decisión
+que podría estar en historial.
+```
+
 ## Roadmap
 
 Ver [ROADMAP.md](ROADMAP.md) para fases, criterios de cierre y estado actual.

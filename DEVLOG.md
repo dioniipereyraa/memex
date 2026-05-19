@@ -6,6 +6,33 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-19 — Tool descriptions proactivas + recetas de CLAUDE.md
+
+**Contexto:** primera prueba real del MCP con un mensaje ambiguo del usuario ("viste que te hablé de exportal en claude.ai?") mostró que el otro Claude **no usó proactivamente** `search_chats`. Respondió "no tengo registro" tras leer MEMORY.md (que no tiene info de Exportal) en lugar de buscar en Memex. Le ofreció buscar al usuario en vez de hacerlo solo.
+
+Esto pasa porque los LLMs son conservadores con tools por diseño (prefieren preguntar antes que actuar) Y las docstrings de las tools describían *qué hacen* sin decir *cuándo conviene usarlas*.
+
+**Qué se hizo:**
+
+1. **Docstrings de las 3 tools del MCP** reescritas en `stdio.py` con secciones explícitas "USAR PROACTIVAMENTE cuando:" y "ANTES de responder X, invocá esta tool":
+   - `search_chats`: trigger en frases tipo "te acordás de...", "viste que...", "ya hablamos de...", preguntas por proyectos/personas/decisiones específicas, contexto que parece "perdido" entre sesiones. Explicit "antes de decir 'no tengo registro' invocá esto".
+   - `get_chat`: úsar tras `search_chats`, no para descubrir, sí para profundizar.
+   - `list_recent_chats`: browse cronológico cuando no hay keyword. Explícitamente "no usar para buscar por tema".
+
+2. **README actualizado** con sección "Hacer que Claude use Memex proactivamente". Incluye snippet listo para pegar en `~/.claude/CLAUDE.md` (global) o `<proyecto>/CLAUDE.md` (local) con la regla "antes de responder 'no recuerdo', usá `mcp__memex__search_chats`".
+
+3. **Docstrings de `tools.py`** dejadas como están (son dev-facing, no LLM-facing; no afectan comportamiento de la tool a través del MCP).
+
+**Por qué no es suficiente solo el docstring:** ningún wording al 100% obliga a Claude a usar una tool. Es un balance: docstrings más agresivas suben la frecuencia de uso proactivo pero también el riesgo de uso indebido. El usuario puede reforzar con instrucciones en su CLAUDE.md.
+
+**Cambios no funcionales para tests:** ninguno. Las docstrings son metadatos para el LLM, el código sigue idéntico. Tests verdes igual.
+
+**Para que tenga efecto:** reiniciar la sesión de Claude Code que tenga Memex montado (el MCP server arranca como subprocess una sola vez; los docstrings se exponen al arranque).
+
+**Estado:** 165 unit + 7 integration verdes. Ruff y mypy clean.
+
+---
+
 ## 2026-05-19 — Fase 2 sub-task: búsqueda híbrida FTS5 + RRF
 
 **Contexto:** primera tarea de Fase 2 es resolver el caso "Amarok" antes de captura en vivo. El usuario eligió priorizar calidad de retrieval sobre volumen de datos.

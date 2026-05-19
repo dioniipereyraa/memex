@@ -85,7 +85,28 @@ def search_chats(
     source: str | None = None,
     mode: str = "hybrid",
 ) -> str:
-    """Búsqueda sobre todos los chats indexados de Claude.ai.
+    """Acceso a la memoria persistente del usuario: TODOS sus chats pasados de Claude.ai.
+
+    Es la única tool disponible para acceder al historial real del usuario.
+    Tu memoria nativa arranca limpia en cada sesión de Claude Code; lo que
+    el usuario haya hablado en claude.ai vive solo acá.
+
+    USAR PROACTIVAMENTE (sin que el usuario lo pida explícitamente) cuando:
+    - Mencione conversaciones o decisiones previas: "te acordás de...",
+      "viste que...", "ya hablamos de...", "el otro día charlamos sobre...",
+      "en aquel chat...", "antes te comenté...", "como dijimos...".
+    - Pregunte por un proyecto, persona, decisión o término específico que
+      podría estar en su historial pero no en tu contexto actual.
+    - Pida contexto que parece "perdido" entre sesiones o haga referencia
+      implícita a continuidad ("seguí trabajando en X", "el approach que
+      charlamos").
+    - Necesités background sobre el usuario para responder bien (qué hace,
+      qué proyectos tiene, sus preferencias técnicas).
+
+    ANTES de responder cosas como "no tengo registro", "no recuerdo",
+    "es la primera vez que oigo de eso", "no aparece en mi memoria" o
+    similares, invocá esta tool y revisá los resultados. La probabilidad
+    de que el dato esté indexado es alta.
 
     Args:
         query: Texto a buscar (lenguaje natural). El modo `hybrid` (default)
@@ -96,10 +117,10 @@ def search_chats(
         source: Filtro opcional por origen del chat. Valores válidos:
             'conversations' (chats sueltos), 'design_chat' (chats dentro
             de un Project de Claude.ai), 'memory' (memoria curada).
-        mode: Estrategia de búsqueda. 'hybrid' (default, combina vector + FTS5
-            via Reciprocal Rank Fusion), 'semantic' (solo vector, útil para
-            similitud conceptual), 'lexical' (solo FTS5 BM25, útil para
-            términos exactos o nombres propios).
+        mode: Estrategia de búsqueda. 'hybrid' (default, recomendado en la
+            mayoría de los casos), 'semantic' (solo vectores, para similitud
+            conceptual pura), 'lexical' (solo FTS5 BM25, ideal para nombres
+            propios exactos o términos técnicos).
 
     Returns:
         JSON con `query`, `mode`, `count`, y `results`: lista ordenada por
@@ -120,7 +141,20 @@ def search_chats(
 
 @server.tool(run_in_thread=False)
 def get_chat(uuid: str, messages_limit: int = 20, messages_offset: int = 0) -> str:
-    """Trae una conversación de Claude.ai por uuid, paginada por mensajes.
+    """Trae una conversación específica del historial por uuid (con paginación).
+
+    USAR cuando:
+    - Ya identificaste un chat relevante (típicamente con `search_chats`) y
+      necesitás más contexto que el snippet del resultado.
+    - El usuario te dio un uuid puntual y pide revisarlo.
+    - Estás siguiendo el hilo de algo y necesitás el detalle de un chat
+      específico que apareció antes en la conversación.
+
+    NO usar para descubrir chats nuevos sin haber buscado primero. Para
+    encontrar chats por tema o keyword, usar `search_chats`.
+
+    Si el chat es largo, llamar de nuevo con `messages_offset` para paginar
+    (response truncado se indica con `truncated: true` y `total_messages`).
 
     Args:
         uuid: UUID del chat (normalmente obtenido vía `search_chats` o
@@ -149,7 +183,18 @@ def get_chat(uuid: str, messages_limit: int = 20, messages_offset: int = 0) -> s
 
 @server.tool(run_in_thread=False)
 def list_recent_chats(limit: int = 10, source: str | None = None) -> str:
-    """Lista los chats más recientes, ordenados por última actualización.
+    """Browse cronológico de los chats más recientes del usuario en Claude.ai.
+
+    USAR cuando:
+    - El usuario pregunte por actividad reciente sin un keyword puntual
+      ("qué estuve haciendo últimamente", "qué chats tuve esta semana",
+      "ponete al día con lo que vine pensando").
+    - Necesités contexto general sobre los temas que el usuario viene
+      tocando antes de profundizar.
+    - El usuario pida explorar sin saber bien qué buscar.
+
+    Para búsquedas dirigidas por tema o keyword usar `search_chats`. Esta
+    tool es para barrer cronológicamente, no para buscar.
 
     Args:
         limit: Cantidad a devolver (default 10, max 100).
@@ -157,8 +202,8 @@ def list_recent_chats(limit: int = 10, source: str | None = None) -> str:
             `search_chats`.
 
     Returns:
-        JSON con `count` y `chats`. Útil para browse cronológico cuando no
-        hay un keyword claro para buscar.
+        JSON con `count` y `chats`. Cada chat incluye uuid, título, summary
+        (si tiene), source, project_uuid, y timestamps.
     """
     try:
         result = tools.list_recent_chats(_get_conn(), limit, source)
