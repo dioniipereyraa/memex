@@ -212,13 +212,17 @@ class TestChunkRepoAndVectorSearch:
 
         assert repo.count_chunks(db) == 3
         n_vecs = db.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+        n_fts = db.execute("SELECT COUNT(*) FROM fts_chunks").fetchone()[0]
         assert n_vecs == 3
+        assert n_fts == 3
 
         deleted = repo.delete_chunks_for_conversation(db, conversation.uuid)
         assert deleted == 3
         assert repo.count_chunks(db) == 0
         n_vecs_after = db.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+        n_fts_after = db.execute("SELECT COUNT(*) FROM fts_chunks").fetchone()[0]
         assert n_vecs_after == 0
+        assert n_fts_after == 0
 
     def test_delete_chunks_returns_zero_when_no_chunks(
         self,
