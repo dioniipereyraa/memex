@@ -26,6 +26,7 @@ import zipfile
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -33,12 +34,13 @@ from memex.config import settings
 from memex.core.embeddings.base import Embedder
 from memex.core.ingest.chunker import ChunkSpan, chunk_text
 from memex.core.ingest.claude_export import (
+    parse_conversation_dict,
     parse_conversations_list,
     parse_design_chat,
     parse_memories,
     parse_project,
 )
-from memex.core.models import Chunk, Conversation, Message
+from memex.core.models import Chunk, Conversation, Message, Source
 from memex.core.storage import repo
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,49 @@ def ingest_export(
                 summary.errors.append(f"memories.json: {e}")
                 conn.rollback()
 
+    return summary
+
+
+def ingest_single_conversation(
+    conn: sqlite3.Connection,
+    embedder: Embedder,
+    conv_payload: dict[str, Any],
+    source: Source = Source.CONVERSATIONS,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    batch_size: int = 32,
+) -> IngestSummary:
+    """Pipeline para UN solo chat (parsing + chunks + embeddings + storage).
+
+    Útil para la captura en vivo: la Chrome ext captura el payload del API
+    de Claude.ai (mismo shape que un item de `conversations.json`) y lo manda
+    al endpoint HTTP local. Este endpoint llama a esta función con el dict ya
+    parseado.
+
+    Si `source` es `DESIGN_CHAT`, el payload tiene que tener `project` y
+    `messages`. Si es `CONVERSATIONS`, tiene `name` y `chat_messages`. Si el
+    `project_uuid` referenciado no existe en la base, se ingesta orphan
+    (project_uuid=None) sin romper.
+
+    Devuelve un `IngestSummary` con counts. Para una sola conv esperás
+    `conversations=1` y `messages` + `chunks` segun el tamaño.
+
+    Hace `conn.commit()` al final si todo salió bien; `conn.rollback()` si
+    hubo error en el camino (mantiene la base consistente).
+    """
+    cs = chunk_size if chunk_size is not None else settings.chunk_size
+    co = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
+
+    summary = IngestSummary()
+    try:
+        conv, messages = parse_conversation_dict(conv_payload, source)
+        _ingest_conversation(
+            conn, embedder, conv, messages, summary, cs, co, batch_size
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return summary
 
 

@@ -22,12 +22,22 @@ from memex.config import settings
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
-def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
+def get_connection(
+    db_path: Path | str | None = None,
+    *,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
     """Abre una conexión SQLite con extensiones y PRAGMAs listas.
 
     Si `db_path` es None, usa el valor de `settings.db_path`.
     Crea el directorio padre si no existe.
     Pasa `:memory:` para una base in-memory (útil en tests).
+
+    `check_same_thread=False` deshabilita el check thread-safety de Python para
+    casos como el HTTP server (Starlette corre handlers en thread pool, lo que
+    rompería una conn creada en otro thread). El usuario es responsable de no
+    ejecutar queries concurrentes sobre la misma conn. SQLite mismo es
+    thread-safe a nivel C; el check del cliente Python es lo que se relaja.
     """
     if db_path is None:
         target: Path | str = settings.db_path
@@ -41,7 +51,11 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     else:
         connect_target = ":memory:"
 
-    conn = sqlite3.connect(connect_target, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(
+        connect_target,
+        detect_types=sqlite3.PARSE_DECLTYPES,
+        check_same_thread=check_same_thread,
+    )
     conn.row_factory = sqlite3.Row
 
     conn.enable_load_extension(True)
@@ -65,9 +79,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(schema)
 
 
-def connect_and_init(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Atajo: abre conexión y aplica schema. Devuelve la conexión lista para usar."""
-    conn = get_connection(db_path)
+def connect_and_init(
+    db_path: Path | str | None = None,
+    *,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
+    """Atajo: abre conexión y aplica schema. Devuelve la conexión lista para usar.
+
+    Ver `get_connection` para el detalle de `check_same_thread`.
+    """
+    conn = get_connection(db_path, check_same_thread=check_same_thread)
     init_schema(conn)
     return conn
 

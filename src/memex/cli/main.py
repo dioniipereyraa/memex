@@ -195,6 +195,37 @@ def stats(
     console.print(table)
 
 
+@app.command()
+def serve(
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Interfaz donde escuchar (127.0.0.1 recomendado)."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", "-p", help="Puerto del HTTP server."),
+    ] = 5777,
+) -> None:
+    """Arranca el HTTP server local para captura en vivo desde la Chrome ext.
+
+    El server escucha POSTs de `/ingest/conversation` que la Chrome ext envía
+    cada vez que abrís un chat nuevo en claude.ai. Lo mantenés corriendo en
+    una terminal (o como servicio del SO).
+
+    Compartir la SQLite con el MCP server es seguro: ambos usan WAL mode.
+    """
+    import uvicorn
+
+    from memex.transports.http_ingest import app as http_app
+
+    console.print(
+        f"[bold]Memex serve[/bold] escuchando en [cyan]http://{host}:{port}[/cyan]"
+    )
+    console.print("Conectá la Chrome ext de Memex y empezá a usar claude.ai.")
+    console.print("[dim]Ctrl+C para parar.[/dim]\n")
+    uvicorn.run(http_app, host=host, port=port, log_level="info")
+
+
 @app.command("reindex-fts")
 def reindex_fts(
     db_path: Annotated[

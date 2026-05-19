@@ -45,12 +45,28 @@ def parse_conversations_list(
     data: list[dict[str, Any]],
 ) -> list[tuple[Conversation, list[Message]]]:
     """Parsea `conversations.json` (lista al top-level)."""
-    return [_parse_conversation_dict(c, Source.CONVERSATIONS) for c in data]
+    return [parse_conversation_dict(c, Source.CONVERSATIONS) for c in data]
 
 
 def parse_design_chat(data: dict[str, Any]) -> tuple[Conversation, list[Message]]:
     """Parsea un `design_chats/{uuid}.json` (un chat dentro de un project)."""
-    return _parse_conversation_dict(data, Source.DESIGN_CHAT)
+    return parse_conversation_dict(data, Source.DESIGN_CHAT)
+
+
+def parse_conversation_dict(
+    data: dict[str, Any], source: Source
+) -> tuple[Conversation, list[Message]]:
+    """Parsea un dict de conversación (genérico).
+
+    Útil cuando recibís un chat individual de cualquier origen: el item de
+    `conversations.json`, un `design_chats/{uuid}.json`, o un payload en
+    vivo capturado por la Chrome ext desde el endpoint
+    `chat_conversations/{id}?tree=True` de Claude.ai.
+
+    Las tres fuentes tienen el mismo shape de mensajes; lo que cambia es el
+    contenedor (claves `name` vs `title`, `chat_messages` vs `messages`).
+    """
+    return _parse_conversation_dict(data, source)
 
 
 def parse_memories(
