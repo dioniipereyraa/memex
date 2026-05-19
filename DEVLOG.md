@@ -6,6 +6,55 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-19 — Captura en vivo: backend HTTP + Chrome extension
+
+**Contexto:** completar Fase 2 con captura en vivo. Hasta ahora Memex solo indexaba el zip del export oficial (todo lo que charlés en claude.ai después del export queda fuera). Captura en vivo cierra ese gap: cada chat que abrís o creás en claude.ai aparece en Memex en segundos, automático.
+
+**Arquitectura:** dos piezas en este repo (no depende de SyncChat).
+
+```
+[Claude.ai] → inject.js (intercepta fetch) → content.js → background.js → POST http://127.0.0.1:5777/ingest/conversation → Memex SQLite
+```
+
+**Backend (mini-tanda 1):**
+- `transports/http_ingest.py`: Starlette app con dos endpoints. `GET /health` (ping para el popup), `POST /ingest/conversation` (recibe el JSON crudo del API de Claude.ai, mismo shape que `conversations.json`). Origin check restringe a `chrome-extension://` y `moz-extension://`. Validación de shape con códigos HTTP claros (400 mal payload, 403 origin, 503 Ollama caído, 500 inesperado).
+- `core/ingest/pipeline.py::ingest_single_conversation()`: refactor para reusar la lógica de "ingest de un solo chat" desde el endpoint. Commit/rollback al final.
+- `core/ingest/claude_export.py::parse_conversation_dict()`: promovido a público (antes privado). Pieza común a las 3 fuentes de chats.
+- `core/storage/db.py`: `get_connection` y `connect_and_init` aceptan `check_same_thread=False`. Necesario porque Starlette/uvicorn corren handlers en thread pool. SQLite es thread-safe a nivel C; el check del cliente Python se relaja explícitamente.
+- CLI `memex serve --host --port --db`: arranca uvicorn con la app. Pensado para correr persistente en una terminal.
+- 14 tests con TestClient cubriendo health, origin check, ingest happy path, idempotencia, validación de shape.
+
+**Chrome extension (mini-tanda 2):**
+- `chrome-extension/manifest.json` (MV3) con host_permissions limitados a `https://claude.ai/*` y `http://127.0.0.1:5777/*`.
+- `inject.js`: copy del de SyncChat con rename (`syncchat-inject` → `memex-inject`). Monkey-patch de `window.fetch`, clasifica solo `conv-full` y `conv-create`, posta vía `window.postMessage`. Mantiene el scrubbing de campos sensibles (defense in depth).
+- `content.js`: 10 líneas, puente del page world al service worker.
+- `background.js`: filtra solo chats completos, POST a `http://127.0.0.1:5777/ingest/conversation`. Stats en `chrome.storage.local` para el popup (chats ingestados, errores recientes, último ingest). Configurable via popup.
+- `popup.html` + `popup.js`: status del servidor (chip verde/rojo), contadores, lista de errores recientes, configuración de URL.
+- `chrome-extension/README.md`: instrucciones de carga unpacked + flujo de prueba + privacidad.
+
+**Decisión: Chrome ext propia de Memex, no fork de SyncChat.** El interceptor es ~100 líneas, copiarlo es trivial. Reusar SyncChat instalado obligaría al usuario a tener ambos productos y crearía acoplamiento que no necesitamos. El background es radicalmente más simple (sin WS, sin reconexión, sin storage de chats; el backend ya es idempotente).
+
+**Smoke test live (backend con uvicorn real, no TestClient):**
+- `memex serve --port 5778 --db /tmp/memex_smoke.db` en background.
+- `GET /health` → 200 OK.
+- POST con `Origin: chrome-extension://abc...` → 200 con `{"status": "ok", "uuid": "smoke-conv-1", "conversations": 1, "messages": 1, "chunks": 1}`.
+- POST sin Origin → 403 (origin check funciona en producción, no solo en TestClient).
+- `memex stats --db /tmp/memex_smoke.db` → 1 conv, 1 msg, 1 chunk persistidos.
+
+**Pendiente para uso público (Fase 5):**
+- `memex install-service`: registrar autostart en SO (Windows Task Scheduler / launchd / systemd) para que el daemon arranque al login sin que el usuario abra una terminal. Anotado en el plan.
+- Publicación en Chrome Web Store (review ~5-10 días).
+
+**Estado:**
+- `uv run pytest tests/unit`: 179 passed (mismos que después de mini-tanda 1; la Chrome ext no aporta tests Python).
+- `uv run ruff check`, `uv run mypy`: clean.
+- Backend end-to-end validado con server real.
+- Chrome ext lista para cargar como unpacked y probar contra claude.ai.
+
+**Para cerrar Fase 2:** uso real de la Chrome ext durante una semana, smoke test de chats nuevos apareciendo en `memex search`, y auditoría de cierre.
+
+---
+
 ## 2026-05-19 — Tool descriptions proactivas + recetas de CLAUDE.md
 
 **Contexto:** primera prueba real del MCP con un mensaje ambiguo del usuario ("viste que te hablé de exportal en claude.ai?") mostró que el otro Claude **no usó proactivamente** `search_chats`. Respondió "no tengo registro" tras leer MEMORY.md (que no tiene info de Exportal) en lugar de buscar en Memex. Le ofreció buscar al usuario en vez de hacerlo solo.

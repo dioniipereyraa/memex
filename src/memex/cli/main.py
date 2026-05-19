@@ -205,6 +205,10 @@ def serve(
         int,
         typer.Option("--port", "-p", help="Puerto del HTTP server."),
     ] = 5777,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path a la base SQLite (default: settings.db_path)."),
+    ] = None,
 ) -> None:
     """Arranca el HTTP server local para captura en vivo desde la Chrome ext.
 
@@ -216,14 +220,19 @@ def serve(
     """
     import uvicorn
 
-    from memex.transports.http_ingest import app as http_app
+    from memex.core.storage.db import connect_and_init
+    from memex.transports import http_ingest
+
+    # Si el usuario pasó --db, inyectamos la conn antes de arrancar uvicorn.
+    if db_path is not None:
+        http_ingest._conn = connect_and_init(db_path, check_same_thread=False)
 
     console.print(
         f"[bold]Memex serve[/bold] escuchando en [cyan]http://{host}:{port}[/cyan]"
     )
     console.print("Conectá la Chrome ext de Memex y empezá a usar claude.ai.")
     console.print("[dim]Ctrl+C para parar.[/dim]\n")
-    uvicorn.run(http_app, host=host, port=port, log_level="info")
+    uvicorn.run(http_ingest.app, host=host, port=port, log_level="info")
 
 
 @app.command("reindex-fts")

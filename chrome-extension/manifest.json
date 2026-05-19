@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Memex Live Capture",
+  "version": "0.1.0",
+  "description": "Captura tus chats de claude.ai en vivo y los ingesta al servidor Memex local. Requiere `memex serve` corriendo.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://claude.ai/*",
+    "http://127.0.0.1:5777/*",
+    "http://localhost:5777/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["src/inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "Memex Live Capture"
+  }
+}

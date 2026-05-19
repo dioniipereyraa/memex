@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Memex Live Capture</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    body {
+      width: 340px;
+      margin: 0;
+      padding: 14px;
+      font-size: 13px;
+    }
+    h1 {
+      font-size: 14px;
+      margin: 0 0 10px 0;
+    }
+    .chip {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .chip.ok { background: #d1f4d6; color: #186124; }
+    .chip.bad { background: #fad8d8; color: #842121; }
+    .chip.unknown { background: #e8e8e8; color: #555; }
+    @media (prefers-color-scheme: dark) {
+      .chip.ok { background: #1a3d24; color: #b1e7bd; }
+      .chip.bad { background: #4a1f1f; color: #e9b9b9; }
+      .chip.unknown { background: #2e2e2e; color: #c0c0c0; }
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 6px 0;
+    }
+    .label { color: #666; }
+    @media (prefers-color-scheme: dark) {
+      .label { color: #aaa; }
+    }
+    .field {
+      display: flex;
+      gap: 6px;
+      margin: 10px 0;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 4px 6px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: ui-monospace, monospace;
+    }
+    button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #999;
+      background: #f5f5f5;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    button:hover { background: #e9e9e9; }
+    .actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .errors {
+      margin-top: 10px;
+      padding: 6px 8px;
+      background: #fcf3f3;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #842121;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+    @media (prefers-color-scheme: dark) {
+      .errors { background: #2a1717; color: #e9b9b9; }
+    }
+    .last {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #666;
+    }
+    @media (prefers-color-scheme: dark) {
+      .last { color: #aaa; }
+    }
+    code { font-family: ui-monospace, monospace; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>Memex Live Capture</h1>
+
+  <div class="row">
+    <span class="label">Servidor:</span>
+    <span id="server-chip" class="chip unknown">desconocido</span>
+  </div>
+
+  <div class="field">
+    <input id="server-url" type="text" placeholder="http://127.0.0.1:5777" />
+    <button id="save-url">Guardar</button>
+  </div>
+
+  <div class="row">
+    <span class="label">Chats ingestados:</span>
+    <span id="ingested-count"><code>0</code></span>
+  </div>
+
+  <div class="row">
+    <span class="label">Fallidos:</span>
+    <span id="failed-count"><code>0</code></span>
+  </div>
+
+  <div id="last-ingest" class="last" hidden>
+    Último: <strong id="last-title">—</strong> (<span id="last-when">—</span>)
+  </div>
+
+  <div id="errors-block" hidden>
+    <div class="label" style="margin-top:10px;">Errores recientes:</div>
+    <div id="errors" class="errors"></div>
+  </div>
+
+  <div class="actions">
+    <button id="ping">Probar servidor</button>
+    <button id="reset">Reset stats</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

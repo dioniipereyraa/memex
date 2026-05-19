@@ -2,7 +2,7 @@
 
 > Servidor MCP local que indexa tus chats de Claude.ai y los expone a Claude Code (y, próximamente, a Claude.ai vía remote MCP). Que el contexto que tenga Claude.ai lo tenga también Claude Code.
 
-**Estado:** pre-alpha. Fase 0 cerrada (retrieval validado sobre corpus real). **Fase 1 cerrada**: MCP server stdio funcional, validado en uso real con Claude Code.
+**Estado:** pre-alpha. Fases 0 y 1 cerradas. **Fase 2 en progreso:** búsqueda híbrida FTS5 + RRF cerrada (resuelve caso "Amarok"); captura en vivo via Chrome extension + HTTP server local funcionando, falta uso real durante una semana y auditoría de cierre.
 
 ## El problema
 
@@ -81,6 +81,28 @@ Una vez que tu base local está poblada (`memex ingest`), levantás el MCP serve
 Ajustá `cwd` al path absoluto donde clonaste Memex (donde está el `pyproject.toml`). Reiniciá Claude Code y las tools `search_chats`, `get_chat`, `list_recent_chats` aparecen en la sesión.
 
 Las mismas búsquedas también están disponibles desde CLI con `uv run memex search "..."` si preferís usarlas fuera de Claude Code.
+
+## Captura en vivo (Fase 2)
+
+Para que los chats nuevos de Claude.ai aparezcan en Memex sin pedir export manual:
+
+1. **Arrancá el servidor HTTP local** en una terminal:
+   ```powershell
+   uv run memex serve
+   ```
+   Por default escucha en `127.0.0.1:5777`. Lo dejás corriendo mientras navegues claude.ai.
+
+2. **Cargá la Chrome extension** desde la carpeta `chrome-extension/`:
+   - Abrí `chrome://extensions/`
+   - Activá **Modo desarrollador**
+   - **Cargar descomprimida** → seleccioná `chrome-extension/`
+   - Click en el ícono de Memex y verificá que el chip "Servidor" diga **responde** (verde).
+
+3. **Usá claude.ai normalmente.** Cada chat que abras o crees se ingesta automáticamente. Verificalo con `memex stats` o llamando `search_chats` desde Claude Code.
+
+Detalles en [chrome-extension/README.md](chrome-extension/README.md).
+
+**Para uso público sin tocar terminales** (Fase 5): va a haber un comando `memex install-service` que registre autostart en Windows / macOS / Linux. Por ahora, terminal manual.
 
 ### Hacer que Claude use Memex proactivamente
 

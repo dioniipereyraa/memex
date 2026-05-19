@@ -2,7 +2,7 @@
 
 > Última actualización: 2026-05-19
 
-**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** sub-task de búsqueda híbrida FTS5 + RRF cerrado (resuelve el caso "Amarok"). 165 unit tests + 7 integration verdes. Pendiente para cerrar Fase 2: captura en vivo via Chrome ext de SyncChat.
+**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** búsqueda híbrida FTS5 + RRF cerrada (resuelve caso "Amarok"); captura en vivo con HTTP server local + Chrome extension implementada y validada con smoke test live. 179 unit tests verdes. Pendiente para cerrar Fase 2: uso real de la Chrome ext + auditoría de cierre.
 
 ## Principio rector
 
@@ -60,9 +60,10 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 
 **Tareas:**
 - [x] **Búsqueda híbrida FTS5 + RRF.** Schema `fts_chunks` (unicode61 remove_diacritics). `repo.text_search`, `repo.hybrid_search` (RRF k=60), `repo.rebuild_fts_index`. `tools.search_chats` con `mode: hybrid|semantic|lexical` (default hybrid). CLI `memex search --mode` y `memex reindex-fts`. Validado contra el corpus real: caso Amarok resuelto en top-2 del modo hybrid; sin regresión en queries semánticas. (2026-05-19)
-- [ ] Adaptar Chrome ext de SyncChat para escribir al mismo SQLite.
-- [ ] Endpoint local que reciba payloads de la ext y los ingeste.
-- [ ] Detección de chats ya ingestados (idempotencia).
+- [x] **Endpoint HTTP local** (`transports/http_ingest.py` con Starlette). `POST /ingest/conversation` con origin check (`chrome-extension://` / `moz-extension://`) + validación de shape + manejo de errores. `pipeline.ingest_single_conversation()` reusable. CLI `memex serve --host --port --db`. 14 tests con TestClient y smoke test live con uvicorn real. (2026-05-19)
+- [x] **Chrome extension propia de Memex** (`chrome-extension/`). MV3, host_permissions a `claude.ai/*` + `127.0.0.1:5777/*`. inject.js basado en SyncChat (rename), content.js de puente, background.js POSTea al endpoint con stats en `chrome.storage`, popup HTML/JS con indicador de status. README con instrucciones de carga unpacked. (2026-05-19)
+- [x] **Idempotencia**: ya cubierta por la arquitectura existente. `repo.add_chunk` + `delete_chunks_for_conversation` sincronizan chunks + vec_chunks + fts_chunks; re-ingestar el mismo chat reemplaza sin duplicar.
+- [ ] Uso real de la Chrome ext (5+ chats nuevos en claude.ai, apareciendo en `memex search` sin acción manual).
 - [ ] Auditoría de cierre de fase.
 
 **Criterio de cierre:** abrir un chat nuevo en Claude.ai lo deja consultable desde Claude Code en menos de 1 minuto.
