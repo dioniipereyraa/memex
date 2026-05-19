@@ -28,6 +28,8 @@ GET_CHAT_MESSAGES_LIMIT_DEFAULT = 20
 GET_CHAT_MESSAGES_LIMIT_MAX = 100
 GET_CHAT_MESSAGE_TEXT_MAX_CHARS = 3000  # Code dumps largos explotan solos sin esto.
 
+VALID_SEARCH_MODES = ("hybrid", "semantic", "lexical")
+
 
 def search_chats(
     conn: sqlite3.Connection,
@@ -35,20 +37,37 @@ def search_chats(
     query: str,
     limit: int = 5,
     source: str | None = None,
+    mode: str = "hybrid",
 ) -> dict[str, Any]:
-    """Búsqueda semántica sobre todos los chats indexados.
+    """Búsqueda sobre todos los chats indexados.
 
-    Devuelve dict con `query`, `count`, `results`. Cada resultado tiene rank,
-    conversation_uuid, title, summary, source, project_uuid, distance (L2),
-    snippet, y timestamps.
+    Modos:
+    - `hybrid` (default): combina vector search + FTS5 lexical con Reciprocal
+      Rank Fusion. Mejor por default; atrapa tanto significado como palabras
+      exactas (resuelve el caso "Amarok").
+    - `semantic`: solo vector search. Útil cuando importa la similitud
+      conceptual y no las palabras literales.
+    - `lexical`: solo FTS5 BM25. Útil para buscar nombres propios o términos
+      técnicos exactos.
 
-    Si `source` está seteado y no es válido, devuelve `{"error": ...}`.
-    Si la query está vacía, devuelve `{"error": ...}`.
-    Si el embedder falla (Ollama caído / modelo faltante), devuelve `{"error": ...}`.
+    Devuelve dict con `query`, `mode`, `count`, `results`. Cada resultado tiene
+    rank, conversation_uuid, title, summary, source, project_uuid, distance
+    (semántica menor = mejor en los tres modos), snippet y timestamps.
+
+    Errores como dict con clave `error`:
+    - source inválido
+    - mode inválido
+    - query vacía
+    - embedder falla (Ollama caído / modelo faltante) en modos hybrid/semantic
     """
     q = query.strip()
     if not q:
         return {"error": "La query no puede estar vacía."}
+
+    if mode not in VALID_SEARCH_MODES:
+        return {
+            "error": f"Mode inválido: {mode!r}. Válidos: {', '.join(VALID_SEARCH_MODES)}.",
+        }
 
     limit = max(1, min(limit, SEARCH_LIMIT_MAX))
 
@@ -59,15 +78,21 @@ def search_chats(
         except ValueError:
             return _invalid_source_error(source)
 
-    try:
-        query_vec = embedder.embed_one(q)
-    except EmbedderError as e:
-        return {"error": str(e)}
-
-    # Si pediremos filtrar por source, pedimos más candidatos para no quedarnos cortos
-    # después del filtro en Python.
+    # Para filtrar por source en Python (no lo soporta el repo todavía), pedimos
+    # más candidatos para no quedarnos cortos.
     fetch_limit = limit * 3 if src_filter is not None else limit
-    hits = repo.vector_search(conn, query_vec, limit=fetch_limit)
+
+    if mode == "lexical":
+        hits = repo.text_search(conn, q, limit=fetch_limit)
+    else:
+        try:
+            query_vec = embedder.embed_one(q)
+        except EmbedderError as e:
+            return {"error": str(e)}
+        if mode == "semantic":
+            hits = repo.vector_search(conn, query_vec, limit=fetch_limit)
+        else:  # hybrid
+            hits = repo.hybrid_search(conn, q, query_vec, limit=fetch_limit)
 
     if src_filter is not None:
         hits = [h for h in hits if h.conversation.source == src_filter]
@@ -76,6 +101,7 @@ def search_chats(
 
     return {
         "query": q,
+        "mode": mode,
         "count": len(hits),
         "results": [
             {

@@ -6,6 +6,45 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-19 — Fase 2 sub-task: búsqueda híbrida FTS5 + RRF
+
+**Contexto:** primera tarea de Fase 2 es resolver el caso "Amarok" antes de captura en vivo. El usuario eligió priorizar calidad de retrieval sobre volumen de datos.
+
+**Qué se hizo:**
+- `schema.sql`: nueva virtual table `fts_chunks` con FTS5, tokenizer `unicode61 remove_diacritics 2` (matchea "amarok" con "Amarók", "AMAROK", etc.). Comentarios explicando cómo se sincroniza con `chunks` y `vec_chunks`.
+- `repo.add_chunk` y `repo.delete_chunks_for_conversation`: sincronizan ahora las TRES tablas (chunks + vec_chunks + fts_chunks). Igual patrón de DELETE + INSERT que ya tenía vec_chunks.
+- `repo.text_search(conn, query, limit, dedupe_by_conversation)`: BM25 sobre fts_chunks. Sanitiza la query con `_sanitize_fts_query` (extrae palabras `\w+` y las quotea para evitar operadores FTS5 sueltos). Si la query es malformada devuelve lista vacía en lugar de propagar `OperationalError`.
+- `repo.hybrid_search(conn, query, query_embedding, limit, ..., rrf_k=60)`: combina `vector_search` + `text_search` con Reciprocal Rank Fusion. Score = Σ 1/(rrf_k+rank). Default k=60 (Cormack 2009). Resultado: `SearchHit.distance = -rrf_score` para mantener "menor = mejor".
+- `repo.rebuild_fts_index(conn)`: helper de mantenimiento. Borra y repuebla `fts_chunks` desde `chunks`. **Commitea al final** (es operación auto-contenida, no parte de transacción larga).
+- `tools.search_chats`: nuevo parámetro `mode: "hybrid" | "semantic" | "lexical"`, default `"hybrid"`. Modo lexical no llama al embedder (skip Ollama).
+- `stdio.search_chats` (wrapper MCP): expone `mode` con docstring que aclara cuándo conviene cada uno (Claude lo va a usar para decidir).
+- CLI: `memex search --mode {hybrid|semantic|lexical}` + nuevo comando `memex reindex-fts` para poblar el índice sobre bases pre-existentes sin re-embedear.
+- Tests nuevos (12): cobertura de `text_search` (incluyendo dedup, sanitización de queries con caracteres especiales, case-insensitive, rebuild), `hybrid_search` (rescate cuando solo matchea text, dedup), y `tools.search_chats` (mode inválido, default hybrid, lexical skip embedder).
+
+**Bug real cazado durante validación en vivo:**
+- `rebuild_fts_index` no commiteaba. La CLI ejecutaba el INSERT, reportaba "614 chunks indexados", pero `conn.close()` hacía rollback y el índice quedaba vacío. Fix: commit explícito al final de la función. Documenté el por qué (operación auto-contenida, distinta del patrón "caller commits" del resto del repo).
+
+**Validación end-to-end sobre el corpus real (614 chunks):**
+
+| Modo | Top-3 para "Amarok" |
+|---|---|
+| `semantic` (antes el único disponible) | Exportal (0.84), Probadno random (0.88), Matemática (0.88) — **FALLA** |
+| `lexical` (FTS5 puro) | **"Desbloquear radio Amarok 2012 con VCDS" (-8.6)** — ÚNICO match |
+| `hybrid` (RRF combinado) | Exportal (-0.0164), **Amarok (-0.0164)**, Probadno (-0.0159) — **ARREGLADO** |
+
+Sin regresión en búsquedas semánticas previas: "Chrome extension para exportar chats" devuelve el mismo top-3 que antes (en híbrido, el #1 tiene casi el doble de score que los siguientes por sumar señal de FTS).
+
+**Estado:**
+- `uv run pytest tests/unit`: 165 passed (era 153, +12).
+- `uv run ruff check`, `uv run mypy`: clean.
+- `memex reindex-fts` funcional.
+- `memex search "Amarok" --mode hybrid`: devuelve el chat correcto en top-2.
+
+**Pendiente para cerrar Fase 2:**
+- Captura en vivo: adaptar Chrome ext de SyncChat para escribir al mismo SQLite. Endpoint local de ingest. Idempotencia.
+
+---
+
 ## 2026-05-18 — Cierre de Fase 1: auditoría + sync de docs
 
 **Auditoría de cierre (sub-agent):**

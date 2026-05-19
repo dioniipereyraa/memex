@@ -12,6 +12,7 @@ Diseño:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -305,6 +306,13 @@ def add_chunk(
         "INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)",
         (chunk_id, sqlite_vec.serialize_float32(list(embedding))),
     )
+
+    # Sincronizar el índice FTS lexical. fts5 tampoco soporta UPSERT directo.
+    conn.execute("DELETE FROM fts_chunks WHERE rowid = ?", (chunk_id,))
+    conn.execute(
+        "INSERT INTO fts_chunks(rowid, text) VALUES (?, ?)",
+        (chunk_id, chunk.text),
+    )
     return chunk_id
 
 
@@ -319,11 +327,12 @@ def count_chunks(conn: sqlite3.Connection) -> int:
 
 
 def delete_chunks_for_conversation(conn: sqlite3.Connection, conversation_uuid: str) -> int:
-    """Borra todos los chunks (y sus embeddings) de una conversación.
+    """Borra todos los chunks (con embeddings y FTS) de una conversación.
 
-    Necesario antes de re-chunkear una conversación, porque las inserciones nuevas
-    no reemplazan las viejas (los ids son AUTOINCREMENT). Devuelve la cantidad de
-    chunks borrados.
+    Necesario antes de re-chunkear una conversación: las inserciones nuevas no
+    reemplazan las viejas (los ids son AUTOINCREMENT en `chunks`), y ni
+    `vec_chunks` ni `fts_chunks` cascadean automáticamente. Devuelve la cantidad
+    de chunks borrados.
     """
     rows = conn.execute(
         "SELECT id FROM chunks WHERE conversation_uuid = ?",
@@ -334,6 +343,7 @@ def delete_chunks_for_conversation(conn: sqlite3.Connection, conversation_uuid: 
     ids = [r["id"] for r in rows]
     placeholders = ",".join("?" * len(ids))
     conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", ids)
     conn.execute(
         "DELETE FROM chunks WHERE conversation_uuid = ?", (conversation_uuid,)
     )
@@ -412,6 +422,181 @@ def vector_search(
         if len(hits) >= limit:
             break
     return hits
+
+
+def text_search(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 10,
+    dedupe_by_conversation: bool = True,
+) -> list[SearchHit]:
+    """Búsqueda lexical BM25 sobre `fts_chunks`. Une chunks y conversations.
+
+    FTS5 devuelve la columna `rank` con el score BM25 (más negativo = mejor
+    match). `SearchHit.distance` se llena con ese rank tal cual para que la
+    semántica "menor = mejor" sea consistente con `vector_search`.
+
+    El tokenizer del schema (unicode61, remove_diacritics=2) hace que la query
+    se normalice igual que el texto indexado: "amarok" matchea "Amarók",
+    "AMAROK", etc.
+
+    Si la query no es válida para FTS5 (caracteres especiales sin escapar,
+    operadores rotos), devuelve lista vacía en vez de propagar el error.
+    """
+    if not query.strip():
+        return []
+
+    oversample_factor = 5
+    fts_limit = limit * oversample_factor if dedupe_by_conversation else limit
+    fts_query = _sanitize_fts_query(query)
+    if not fts_query:
+        return []
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                c.id AS chunk_id, c.conversation_uuid, c.message_uuid, c.sender,
+                c.text AS chunk_text, c.char_start, c.char_end,
+                c.created_at AS chunk_created_at,
+                f.rank AS distance,
+                conv.title AS conv_title, conv.summary AS conv_summary,
+                conv.source AS conv_source, conv.project_uuid AS conv_project_uuid,
+                conv.account_uuid AS conv_account_uuid,
+                conv.created_at AS conv_created_at, conv.updated_at AS conv_updated_at
+            FROM fts_chunks f
+            JOIN chunks c ON c.id = f.rowid
+            JOIN conversations conv ON conv.uuid = c.conversation_uuid
+            WHERE fts_chunks MATCH ?
+            ORDER BY f.rank
+            LIMIT ?
+            """,
+            (fts_query, fts_limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # FTS5 rechaza queries malformadas (operadores raros, paréntesis sueltos).
+        # Preferimos devolver vacío a que el cliente vea un error oscuro.
+        return []
+
+    hits: list[SearchHit] = []
+    seen_convs: set[str] = set()
+    for row in rows:
+        if dedupe_by_conversation:
+            conv_uuid = row["conversation_uuid"]
+            if conv_uuid in seen_convs:
+                continue
+            seen_convs.add(conv_uuid)
+        hits.append(_row_to_search_hit(row))
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+def hybrid_search(
+    conn: sqlite3.Connection,
+    query: str,
+    query_embedding: Sequence[float],
+    limit: int = 10,
+    dedupe_by_conversation: bool = True,
+    rrf_k: int = 60,
+) -> list[SearchHit]:
+    """Combina `vector_search` y `text_search` con Reciprocal Rank Fusion.
+
+    RRF asigna a cada chunk un score = Σ 1 / (rrf_k + rank_i) sumando sobre
+    los rankings donde aparece. `rrf_k=60` es el default canónico (Cormack
+    2009); valores entre 20 y 100 son razonables. El score combinado es
+    robusto a las distintas escalas de distancia L2 vs rank BM25.
+
+    Pide `limit * 5` candidatos a cada motor para tener buena cobertura antes
+    de fusionar. Después aplica dedup por conversación si corresponde.
+
+    El `distance` del `SearchHit` resultante es `-rrf_score` para mantener la
+    convención "menor = mejor" del resto del repo.
+    """
+    if limit < 1:
+        limit = 1
+
+    oversample_factor = 5
+    fetch_limit = limit * oversample_factor
+
+    vec_hits = vector_search(
+        conn, query_embedding, limit=fetch_limit, dedupe_by_conversation=False
+    )
+    text_hits = text_search(conn, query, limit=fetch_limit, dedupe_by_conversation=False)
+
+    # RRF: cada chunk acumula score por aparecer en cada lista.
+    scores: dict[int, float] = {}
+    hits_by_id: dict[int, SearchHit] = {}
+    for rank, hit in enumerate(vec_hits, start=1):
+        if hit.chunk.id is None:
+            continue
+        scores[hit.chunk.id] = scores.get(hit.chunk.id, 0.0) + 1.0 / (rrf_k + rank)
+        hits_by_id.setdefault(hit.chunk.id, hit)
+    for rank, hit in enumerate(text_hits, start=1):
+        if hit.chunk.id is None:
+            continue
+        scores[hit.chunk.id] = scores.get(hit.chunk.id, 0.0) + 1.0 / (rrf_k + rank)
+        hits_by_id.setdefault(hit.chunk.id, hit)
+
+    if not scores:
+        return []
+
+    # Ordenar por score descendente, dedupear por conversación si aplica.
+    ordered_ids = sorted(scores, key=lambda cid: -scores[cid])
+    result: list[SearchHit] = []
+    seen_convs: set[str] = set()
+    for cid in ordered_ids:
+        base = hits_by_id[cid]
+        if dedupe_by_conversation:
+            if base.conversation.uuid in seen_convs:
+                continue
+            seen_convs.add(base.conversation.uuid)
+        # Reemplazamos el distance original por -score para que "menor = mejor".
+        merged = base.model_copy(update={"distance": -scores[cid]})
+        result.append(merged)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def rebuild_fts_index(conn: sqlite3.Connection) -> int:
+    """Repuebla `fts_chunks` desde `chunks`. Útil para bases pre-existentes
+    que se actualizaron al schema con FTS5 sin re-ingestar.
+
+    Borra el contenido actual del índice FTS y vuelve a insertar todos los
+    chunks. Devuelve la cantidad de filas indexadas. No toca `chunks` ni
+    `vec_chunks`.
+
+    Es una operación de mantenimiento auto-contenida, así que commitea al final
+    (a diferencia de las funciones tipo `insert_*` que dejan el commit al
+    llamador). Si vas a hacer más escrituras en la misma transacción, llamala
+    explícitamente con `conn.in_transaction` apropiado y commit/rollback vos.
+    """
+    conn.execute("DELETE FROM fts_chunks")
+    cursor = conn.execute(
+        "INSERT INTO fts_chunks(rowid, text) SELECT id, text FROM chunks"
+    )
+    count = cursor.rowcount if cursor.rowcount is not None else 0
+    conn.commit()
+    return count
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Convierte una query libre en una válida para FTS5.
+
+    FTS5 acepta una mini-lenguaje (AND, OR, NOT, NEAR, comillas, etc.) que se
+    rompe si el usuario tipea cosas con paréntesis, comillas sueltas, etc.
+    Para una búsqueda casual lo más seguro es quedarse con las palabras
+    alfanuméricas y citarlas como frase implícita: "palabra1 palabra2 ..."
+
+    Si todas las palabras se filtran, devuelve "".
+    """
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    if not tokens:
+        return ""
+    # Cada palabra entre comillas dobles para que FTS5 no las interprete como
+    # operadores. Las quotes hacen match exacto sobre tokens.
+    return " ".join(f'"{t}"' for t in tokens)
 
 
 def _row_to_search_hit(row: sqlite3.Row) -> SearchHit:

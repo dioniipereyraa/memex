@@ -107,17 +107,36 @@ def search(
         int,
         typer.Option("-n", "--limit", help="Cantidad de resultados a devolver."),
     ] = 5,
+    mode: Annotated[
+        str,
+        typer.Option(
+            "--mode",
+            help="Estrategia de búsqueda: hybrid (default), semantic, lexical.",
+        ),
+    ] = "hybrid",
     db_path: Annotated[
         Path | None,
         typer.Option("--db", help="Path a la base SQLite."),
     ] = None,
 ) -> None:
-    """Búsqueda semántica sobre la base indexada."""
+    """Búsqueda sobre la base indexada (híbrida por default)."""
     conn = connect_and_init(db_path)
     try:
         embedder = OllamaEmbedder()
-        query_vec = embedder.embed_one(query)
-        hits = repo.vector_search(conn, query_vec, limit=limit)
+        if mode == "lexical":
+            hits = repo.text_search(conn, query, limit=limit)
+        elif mode == "semantic":
+            query_vec = embedder.embed_one(query)
+            hits = repo.vector_search(conn, query_vec, limit=limit)
+        elif mode == "hybrid":
+            query_vec = embedder.embed_one(query)
+            hits = repo.hybrid_search(conn, query, query_vec, limit=limit)
+        else:
+            console.print(
+                f"[red]Mode inválido:[/red] {mode!r}. "
+                "Válidos: hybrid, semantic, lexical."
+            )
+            raise typer.Exit(code=2)
     except EmbedderError as e:
         console.print(f"[red]Error de embeddings:[/red] {e}")
         raise typer.Exit(code=2) from e
@@ -128,7 +147,7 @@ def search(
         console.print("[yellow]Sin resultados. ¿La base está vacía? Probá `memex stats`.[/yellow]")
         return
 
-    console.print(f"\n[bold]Query:[/bold] [italic]{query}[/italic]")
+    console.print(f"\n[bold]Query:[/bold] [italic]{query}[/italic]  [dim](mode={mode})[/dim]")
     console.print(f"[dim]{len(hits)} resultados (más bajo = más relevante)[/dim]\n")
     for i, hit in enumerate(hits, 1):
         console.print(
@@ -174,6 +193,28 @@ def stats(
     table.add_row("Mensajes", str(n_msgs))
     table.add_row("Chunks", str(n_chunks))
     console.print(table)
+
+
+@app.command("reindex-fts")
+def reindex_fts(
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path a la base SQLite."),
+    ] = None,
+) -> None:
+    """Repuebla el índice FTS5 desde la tabla `chunks`.
+
+    Útil para bases existentes que se crearon antes de tener `fts_chunks`,
+    o si el índice se desincronizó por alguna razón. No re-llama a Ollama
+    (no toca embeddings); solo copia el texto al índice lexical.
+    """
+    conn = connect_and_init(db_path)
+    try:
+        with console.status("[yellow]Re-indexando FTS…[/yellow]"):
+            n = repo.rebuild_fts_index(conn)
+        console.print(f"[green]FTS reconstruido:[/green] {n} chunks indexados.")
+    finally:
+        conn.close()
 
 
 def _scalar(conn, sql: str) -> int:

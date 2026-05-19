@@ -161,6 +161,43 @@ class TestSearchChats:
         assert "error" in result
         assert "Ollama no responde" in result["error"]
 
+    def test_invalid_mode_returns_error(
+        self, populated_db: sqlite3.Connection
+    ) -> None:
+        result = tools.search_chats(
+            populated_db, FakeEmbedder(), query="x", mode="inventado"
+        )
+        assert "error" in result
+        assert "inventado" in result["error"]
+
+    def test_default_mode_is_hybrid(self, populated_db: sqlite3.Connection) -> None:
+        result = tools.search_chats(populated_db, FakeEmbedder(dim=768), query="hola")
+        assert result.get("mode") == "hybrid"
+
+    def test_lexical_mode_skips_embedder(
+        self, populated_db: sqlite3.Connection
+    ) -> None:
+        """Modo lexical no debe pedirle nada al embedder (no necesita Ollama)."""
+
+        class _ExplodingEmbedder(Embedder):
+            @property
+            def dim(self) -> int:
+                return 768
+
+            @property
+            def model_name(self) -> str:
+                return "explosivo"
+
+            def embed(self, texts):  # type: ignore[override]
+                raise AssertionError("No debería llamarse en modo lexical")
+
+        result = tools.search_chats(
+            populated_db, _ExplodingEmbedder(), query="hola", mode="lexical"
+        )
+        # No error: el embedder no se invocó.
+        assert result.get("mode") == "lexical"
+        assert "results" in result
+
     def test_long_summary_is_truncated(
         self, db: sqlite3.Connection, project: Project
     ) -> None:

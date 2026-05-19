@@ -56,11 +56,11 @@ Diseño: core puro (storage, ingest, embeddings, retrieval) separado del transpo
 
 ## Tools del MCP server (v1)
 
-- `search_chats(query, limit=5, source?)` busca semánticamente. Devuelve top-N por relevancia, dedup por conversación. `source` filtra por origen (`conversations`, `design_chat`, `memory`).
+- `search_chats(query, limit=5, source?, mode="hybrid")` busca sobre el corpus. Modos: `hybrid` (default, combina vector search + FTS5 BM25 vía Reciprocal Rank Fusion), `semantic` (solo vectores), `lexical` (solo FTS5, ideal para nombres propios o términos exactos). `source` filtra por origen (`conversations`, `design_chat`, `memory`). Dedup por conversación.
 - `get_chat(uuid, messages_limit=20, messages_offset=0)` trae una conversación con sus mensajes, paginados. `raw_content` se omite; cada mensaje se trunca a 3000 chars para no exceder el límite de tokens del cliente.
 - `list_recent_chats(limit=10, source?)` lista los últimos chats ordenados por última actualización.
 
-La búsqueda también está accesible vía CLI con `memex search`.
+La búsqueda también está accesible vía CLI con `memex search "query" --mode {hybrid|semantic|lexical}`. Para bases creadas antes del FTS5 híbrido, correr `memex reindex-fts` una vez para poblar el índice lexical.
 
 ## Conectarlo a Claude Code
 

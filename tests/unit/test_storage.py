@@ -347,3 +347,188 @@ class TestChunkRepoAndVectorSearch:
         assert len(hits) == 2
         assert hits[0].chunk.text == "close"
         assert hits[0].distance < hits[1].distance
+
+
+class TestTextSearchAndFTS:
+    def _seed(self, db: sqlite3.Connection, project: Project) -> None:
+        repo.insert_project(db, project)
+        convs = [
+            ("conv-amarok", "Mi Volkswagen Amarok 2020"),
+            ("conv-otra", "Una pregunta de calculo"),
+            ("conv-mezcla", "Notas variadas sobre la facu y otros temas"),
+        ]
+        for uuid, title in convs:
+            conv = Conversation(
+                uuid=uuid,
+                title=title,
+                source=Source.CONVERSATIONS,
+                created_at=datetime(2026, 5, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+            repo.insert_conversation(db, conv)
+
+        texts = [
+            ("conv-amarok", "Estoy pensando en comprar una Amarok diesel V6, qué opinás del precio"),
+            ("conv-otra", "Calculá la derivada parcial respecto de x en el punto dado"),
+            ("conv-mezcla", "Mañana tengo parcial de álgebra lineal en la facu"),
+        ]
+        for conv_uuid, text in texts:
+            chunk = Chunk(
+                conversation_uuid=conv_uuid,
+                text=text,
+                char_start=0,
+                char_end=len(text),
+                created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+            # Embeddings random pero consistentes; lo importante para FTS es el texto.
+            repo.add_chunk(db, chunk, [0.1] * 768)
+
+    def test_text_search_finds_exact_word(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        """FTS5 encuentra 'Amarok' aunque la query semántica fallaría."""
+        self._seed(db, project)
+        hits = repo.text_search(db, "Amarok", limit=5)
+        assert len(hits) >= 1
+        assert hits[0].conversation.uuid == "conv-amarok"
+
+    def test_text_search_is_case_insensitive(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        self._seed(db, project)
+        hits = repo.text_search(db, "amarok", limit=5)
+        assert any(h.conversation.uuid == "conv-amarok" for h in hits)
+
+    def test_text_search_empty_query_returns_empty(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        self._seed(db, project)
+        assert repo.text_search(db, "", limit=5) == []
+        assert repo.text_search(db, "   ", limit=5) == []
+
+    def test_text_search_handles_special_characters(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        """Operadores raros se sanitizan; no debe propagar OperationalError."""
+        self._seed(db, project)
+        # Estos serían inválidos en FTS5 sin sanitizar.
+        for bad in ("(", '"', ":", "AND OR"):
+            result = repo.text_search(db, bad, limit=5)
+            assert isinstance(result, list)
+
+    def test_text_search_dedupes_by_conversation(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        self._seed(db, project)
+        # Insertar otro chunk con el mismo texto en la misma conversación.
+        extra = Chunk(
+            conversation_uuid="conv-amarok",
+            text="Amarok otra mención del modelo",
+            char_start=100,
+            char_end=130,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.add_chunk(db, extra, [0.1] * 768)
+        deduped = repo.text_search(db, "Amarok", limit=5)
+        all_chunks = repo.text_search(db, "Amarok", limit=5, dedupe_by_conversation=False)
+        assert len(deduped) <= len(all_chunks)
+        assert len({h.conversation.uuid for h in deduped}) == len(deduped)
+
+    def test_rebuild_fts_index_repopulates(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        """Vaciar el índice FTS y reconstruirlo deja la búsqueda funcional otra vez."""
+        self._seed(db, project)
+        db.execute("DELETE FROM fts_chunks")
+        assert repo.text_search(db, "Amarok", limit=5) == []
+        n = repo.rebuild_fts_index(db)
+        assert n == 3  # 3 chunks sembrados por _seed
+        hits = repo.text_search(db, "Amarok", limit=5)
+        assert hits and hits[0].conversation.uuid == "conv-amarok"
+
+
+class TestHybridSearch:
+    def test_hybrid_finds_when_only_text_matches(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        """Caso Amarok: vector no encuentra (vectores random), pero FTS sí.
+        El híbrido tiene que rescatarlo."""
+        repo.insert_project(db, project)
+        conv = Conversation(
+            uuid="conv-amarok",
+            title="Amarok",
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        other = Conversation(
+            uuid="conv-otra",
+            title="Otra",
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, conv)
+        repo.insert_conversation(db, other)
+
+        chunk_a = Chunk(
+            conversation_uuid="conv-amarok",
+            text="Mi Amarok V6 anda increíble",
+            char_start=0,
+            char_end=30,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        chunk_b = Chunk(
+            conversation_uuid="conv-otra",
+            text="Hablemos de cualquier otra cosa",
+            char_start=0,
+            char_end=30,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        # Embedding del chunk-b es CERCANO al query embedding (gana vector),
+        # pero el chunk-a tiene la palabra exacta en el texto (gana FTS).
+        repo.add_chunk(db, chunk_a, [0.0] * 768)  # lejos del query
+        repo.add_chunk(db, chunk_b, [1.0] + [0.0] * 767)  # cerca del query
+
+        query_vec = [1.0] + [0.0] * 767
+
+        # Vector solo: el otro chat gana.
+        vec_only = repo.vector_search(db, query_vec, limit=5)
+        assert vec_only[0].conversation.uuid == "conv-otra"
+
+        # Híbrido: el Amarok aparece arriba por la mitad lexical.
+        hybrid = repo.hybrid_search(db, "Amarok", query_vec, limit=5)
+        uuids = [h.conversation.uuid for h in hybrid]
+        assert "conv-amarok" in uuids
+
+    def test_hybrid_dedupes_by_conversation(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        repo.insert_project(db, project)
+        conv = Conversation(
+            uuid="conv-a",
+            title="A",
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, conv)
+        for i in range(3):
+            chunk = Chunk(
+                conversation_uuid="conv-a",
+                text=f"Amarok mención {i}",
+                char_start=i * 10,
+                char_end=i * 10 + 20,
+                created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+            repo.add_chunk(db, chunk, [1.0] + [0.0] * 767)
+        hits = repo.hybrid_search(db, "Amarok", [1.0] + [0.0] * 767, limit=5)
+        assert len({h.conversation.uuid for h in hits}) == len(hits)
+
+    def test_hybrid_empty_when_no_match(
+        self, db: sqlite3.Connection, project: Project
+    ) -> None:
+        repo.insert_project(db, project)
+        # Base vacía: ni vector ni texto encuentran nada.
+        hits = repo.hybrid_search(db, "anything", [0.0] * 768, limit=5)
+        assert hits == []

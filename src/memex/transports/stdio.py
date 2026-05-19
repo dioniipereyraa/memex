@@ -79,28 +79,39 @@ def _serialize(result: dict[str, Any]) -> str:
 
 
 @server.tool(run_in_thread=False)
-def search_chats(query: str, limit: int = 5, source: str | None = None) -> str:
-    """Búsqueda semántica sobre todos los chats indexados de Claude.ai.
+def search_chats(
+    query: str,
+    limit: int = 5,
+    source: str | None = None,
+    mode: str = "hybrid",
+) -> str:
+    """Búsqueda sobre todos los chats indexados de Claude.ai.
 
     Args:
-        query: Texto a buscar (lenguaje natural). Funciona mejor con frases
-            descriptivas (ej. "decisión sobre arquitectura del proyecto") que
-            con palabras sueltas o nombres propios raros (limitación de la
-            búsqueda semántica pura; planeado para Fase 2 con FTS5 híbrido).
+        query: Texto a buscar (lenguaje natural). El modo `hybrid` (default)
+            combina búsqueda semántica con búsqueda lexical FTS5, así que
+            funciona bien tanto con frases descriptivas como con nombres
+            propios raros (ej. "Amarok").
         limit: Cantidad de resultados (default 5, max 50).
         source: Filtro opcional por origen del chat. Valores válidos:
             'conversations' (chats sueltos), 'design_chat' (chats dentro
             de un Project de Claude.ai), 'memory' (memoria curada).
+        mode: Estrategia de búsqueda. 'hybrid' (default, combina vector + FTS5
+            via Reciprocal Rank Fusion), 'semantic' (solo vector, útil para
+            similitud conceptual), 'lexical' (solo FTS5 BM25, útil para
+            términos exactos o nombres propios).
 
     Returns:
-        JSON con `query`, `count`, y `results`: lista ordenada por similitud
-        (distance, más bajo = más relevante). Cada resultado incluye uuid,
-        título, resumen, snippet, y timestamps de la conversación.
+        JSON con `query`, `mode`, `count`, y `results`: lista ordenada por
+        relevancia (distance, más bajo = más relevante en los tres modos).
+        Cada resultado incluye uuid, título, resumen, snippet, y timestamps.
     """
     # `tools.search_chats` ya atrapa `EmbedderError` y devuelve `{"error": ...}`.
     # Acá solo nos queda lo inesperado.
     try:
-        result = tools.search_chats(_get_conn(), _get_embedder(), query, limit, source)
+        result = tools.search_chats(
+            _get_conn(), _get_embedder(), query, limit, source, mode
+        )
     except Exception as e:
         logger.exception("Error en search_chats")
         result = {"error": f"Error interno: {e}"}

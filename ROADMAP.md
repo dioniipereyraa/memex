@@ -1,8 +1,8 @@
 # Roadmap
 
-> Última actualización: 2026-05-18
+> Última actualización: 2026-05-19
 
-**Estado actual:** Fase 0 cerrada. **Fase 1 CERRADA** (2026-05-18): MCP server stdio validado en uso real con Claude Code (las 3 tools invocadas, Claude descubrió pagination autónomamente). Un bug crítico cazado y fixeado (token overflow en `get_chat`). 153 unit tests + 7 integration verdes. Próximo: Fase 2 (captura en vivo + búsqueda híbrida FTS5).
+**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** sub-task de búsqueda híbrida FTS5 + RRF cerrado (resuelve el caso "Amarok"). 165 unit tests + 7 integration verdes. Pendiente para cerrar Fase 2: captura en vivo via Chrome ext de SyncChat.
 
 ## Principio rector
 
@@ -52,11 +52,14 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 
 ---
 
-## Fase 2: captura en vivo
+## Fase 2: captura en vivo + retrieval híbrido
 
-**Objetivo:** que los chats nuevos aparezcan en Memex sin pedir export manual.
+**Objetivo doble:**
+1. Mejorar calidad de retrieval con búsqueda híbrida (FTS5 + vectores). Resuelve el caso "proper nouns raros" (ej. "Amarok") donde la búsqueda semántica pura falla.
+2. Que los chats nuevos aparezcan en Memex sin pedir export manual.
 
 **Tareas:**
+- [x] **Búsqueda híbrida FTS5 + RRF.** Schema `fts_chunks` (unicode61 remove_diacritics). `repo.text_search`, `repo.hybrid_search` (RRF k=60), `repo.rebuild_fts_index`. `tools.search_chats` con `mode: hybrid|semantic|lexical` (default hybrid). CLI `memex search --mode` y `memex reindex-fts`. Validado contra el corpus real: caso Amarok resuelto en top-2 del modo hybrid; sin regresión en queries semánticas. (2026-05-19)
 - [ ] Adaptar Chrome ext de SyncChat para escribir al mismo SQLite.
 - [ ] Endpoint local que reciba payloads de la ext y los ingeste.
 - [ ] Detección de chats ya ingestados (idempotencia).

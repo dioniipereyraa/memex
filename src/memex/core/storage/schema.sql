@@ -90,3 +90,19 @@ CREATE INDEX IF NOT EXISTS idx_chunks_created_at ON chunks(created_at);
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
     embedding FLOAT[768]
 );
+
+-- Tabla virtual FTS5 para búsqueda lexical sobre el texto de los chunks.
+-- Sirve a `repo.text_search` (BM25) y como mitad lexical de `repo.hybrid_search`
+-- (RRF de vector + texto). Resuelve el caso "Amarok" (proper nouns raros que
+-- la búsqueda semántica pura no atrapa).
+--
+-- rowid se sincroniza con chunks.id, igual que vec_chunks. El repo mantiene
+-- las tres tablas en sync (add_chunk inserta en las tres,
+-- delete_chunks_for_conversation borra de las tres).
+--
+-- Tokenizer: unicode61 con remove_diacritics=2 para que "amarok" matchee
+-- "Amarók", "AMAROK", etc. Importante para mezcla ES/EN del corpus.
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
+    text,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
