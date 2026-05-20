@@ -1,10 +1,18 @@
 # Memex
 
+[![CI](https://github.com/dioniipereyraa/memex/actions/workflows/ci.yml/badge.svg)](https://github.com/dioniipereyraa/memex/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+
 Local-first MCP server that indexes your Claude.ai chat history and exposes it to Claude Code (and, soon, to Claude.ai via remote MCP). The goal: give Claude Code the same context Claude.ai already has.
 
 **Status:** pre-alpha. Phases 0 and 1 closed. **Phase 2 in progress:** hybrid FTS5 + RRF search closed (fixes the "Amarok" case); live capture via Chrome extension + local HTTP server working, pending a week of real usage and a phase-close audit.
 
 > Internal docs (`ROADMAP.md`, `DEVLOG.md`) are kept in Spanish on purpose. They are the project journal, not user-facing material.
+
+![Session memory check](docs/screenshots/session-memory-check.jpeg)
+
+*End-to-end demo: a chat on claude.ai captured seconds earlier by the Chrome extension, recalled from Claude Code via `list_recent_chats` and `get_chat`. No extra prompting, no manual context handoff.*
 
 ## The problem
 

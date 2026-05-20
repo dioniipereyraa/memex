@@ -6,6 +6,32 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-20 — Polish del repo público (CI, badges, docs, screenshot, íconos)
+
+Bloque D del plan que veníamos pateando desde el handoff. Todo en un solo commit porque pertenece al mismo objetivo: dejar el repo presentable para gente que llegue desde el Discord (hubo primer favorito en el thread hoy a la mañana, signal de que vale el polish ahora).
+
+**Lo nuevo:**
+- `.github/workflows/ci.yml`: trigger en push y PR a `main`, ubuntu-latest + Python 3.12 vía `astral-sh/setup-uv@v3` con cache habilitado. Corre `ruff check`, `mypy` (sobre `core` + `config.py` + `transports`, mismo scope que el handoff dice estar clean) y `pytest tests/unit -q`. Saltea integration (necesitan Ollama).
+- 3 badges al tope del `README.md`: CI status, License MIT, Python 3.12+.
+- Screenshot embebido en el `README.md`: el "Session memory check" del Discord en `docs/screenshots/session-memory-check.jpeg`, con caption explicando qué se ve (Claude Code recuerda un chat de claude.ai capturado segundos antes por la Chrome ext, vía `list_recent_chats` + `get_chat`).
+- `CONTRIBUTING.md`: scope del proyecto, setup local, checks que corre CI, code style condensado (sin em dashes, sin AI footers, imperativo en commits, regla de arquitectura `core/` no importa de `transports/` ni `cli/`), workflow de PR.
+- `CHANGELOG.md`: formato Keep a Changelog. Sección `[Unreleased]` con el polish + traducción README, y secciones por fase (Phase 2 in progress / Phase 1 closed / Phase 0 closed) con bullets reales basados en commits previos.
+- Íconos de la Chrome extension: 4 PNG (16/32/48/128) + SVG fuente en `chrome-extension/icons/`. Diseño: "M" estilizada con dos puntos naranjas en las patas, fondo crema. Iteración: la primera versión no tenía padding y se veía apretada a 16 px; el user mandó una segunda con la M centrada en viewBox 104x104. Esa quedó.
+- `chrome-extension/manifest.json`: declara `icons` top-level (para la página `chrome://extensions` y la Web Store cuando aplique) y `default_icon` dentro de `action` (para la toolbar). Reemplaza el placeholder gris.
+
+**Decisión menor pero anotada:** el CI workflow originalmente incluía `ruff format --check`. Verificación local mostró que 15 archivos del repo no están alineados con el default de `ruff format` (el proyecto históricamente usa `ruff format` pero nunca corrió `--check` en CI). Saqué el step en lugar de meter un format-bomb de 15 archivos en este mismo commit. Si en algún momento se decide alinear con `ruff format` y mantener el check en CI, va a su propia sesión.
+
+**Verificación local pre-push:**
+- `ruff check src tests`: clean.
+- `mypy src/memex/core src/memex/config.py src/memex/transports`: 0 issues en 20 archivos.
+- `pytest tests/unit -q`: 190 passed (1 warning preexistente de fastembed sobre el modelo nomic actualizado en HF, no nuestro).
+- `chrome-extension/manifest.json`: JSON parsea OK.
+- Em dashes: los dos únicos son legítimos (uno en el snippet del README que el user copiaría a su CLAUDE.md, otro en la regla de CONTRIBUTING que se cita a sí misma).
+
+**Estado al cierre:** repo listo para push. CI debería correr verde al primer trigger.
+
+---
+
 ## 2026-05-20 — README al inglés (cuerpo entero)
 
 Traducción del README al inglés. Hasta hoy era blockquote intro en inglés + cuerpo en español. Decisión acordada con el user (handoff de la sesión anterior): README full inglés para audiencia internacional, `ROADMAP.md` y `DEVLOG.md` quedan en español por ser bitácora interna del proyecto. Nota explícita en el README apuntando eso para que un lector externo no se sorprenda al abrir esos archivos.
