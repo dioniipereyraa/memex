@@ -117,7 +117,26 @@ So that new Claude.ai chats land in Memex without asking for a manual export:
 
 Details in [chrome-extension/README.md](chrome-extension/README.md).
 
-**For non-technical use without terminals** (Phase 5): there will be a `memex install-service` command that registers autostart on Windows / macOS / Linux. For now, manual terminal.
+#### Autostart on Windows (optional)
+
+So you don't have to run `memex serve` by hand every time you log in:
+
+```powershell
+.\scripts\install-autostart.ps1 -Install
+```
+
+This registers a Scheduled Task (`MemexServe`) that runs `uv run memex serve` in the background at every log on, and triggers it immediately so the server is up right now. No admin required, no console window, no dependence on the shell that started it (you can close the terminal or VS Code and the server keeps serving). Auto-restarts up to 3 times if the wrapper dies.
+
+Manage it with:
+
+```powershell
+.\scripts\install-autostart.ps1 -Status
+.\scripts\install-autostart.ps1 -Uninstall
+```
+
+Logs go to `%LOCALAPPDATA%\Memex\serve.log`. Tail them with `Get-Content "$env:LOCALAPPDATA\Memex\serve.log" -Wait -Tail 20`.
+
+**For non-technical use without terminals** (Phase 5): the cross-platform equivalent (`memex install-service`, with Linux systemd and macOS launchd backends) is on the ROADMAP. The Windows script above is the preview.
 
 ### Making Claude use Memex proactively
 

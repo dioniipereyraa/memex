@@ -6,6 +6,40 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-20 — Autostart del server en Windows (preview de Fase 5)
+
+Para no tener que correr `uv run memex serve` a mano cada vez que arrancás la sesión. Solución Windows-only de etapa temprana; la versión cross-platform formal queda para `memex install-service` en Fase 5 del ROADMAP.
+
+**Lo nuevo:**
+- `scripts/install-autostart.ps1`: script PowerShell con verbos `-Install` / `-Uninstall` / `-Status`. Registra una Scheduled Task `MemexServe` con trigger "At log on" del usuario actual, sin ventana, sin admin. Re-instalar sobreescribe (idempotente). `-Install` también dispara la task inmediatamente, así el server queda corriendo en la sesión actual sin esperar al próximo logon.
+- `scripts/_run-server.ps1`: wrapper invocado por la Scheduled Task. Setea working directory al repo (padre del script), resuelve `uv` en PATH al momento del run (no embebido al install, así sobrevive cambios de instalación de uv), y redirige todos los streams al log file con append.
+
+**Decisiones tomadas con el user:**
+- Script standalone en `scripts/`, NO subcommand del CLI (`memex autostart`). Justificación: hoy es Windows-only; el subcommand amerita diseño cross-platform (Linux systemd / macOS launchd) y ese trabajo pertenece a Fase 5. El .ps1 actual se reemplaza limpio cuando lleguemos ahí y nos sirve de base.
+- `-Install` arranca el server inmediatamente además de registrar la task.
+- Re-install sobreescribe sin preguntar (idempotente). Útil cuando actualizamos el script y queremos reaplicar.
+- Log: `%LOCALAPPDATA%\Memex\serve.log`, append, sin rotación por ahora.
+
+**Bug detectado y resuelto durante el test inicial:**
+Primera config usaba `LogonType Interactive` con `-WindowStyle Hidden` en el argument de PowerShell. Resultado: cada vez que la task arrancaba aparecía una **ventana CMD vacía** visible, y cuando el user cerraba VS Code la task moría (exit code `STATUS_CONTROL_C_EXIT`, dejando procesos python/uv huérfanos sin escuchar el puerto). Causa raíz: PowerShell crea la ventana antes de procesar `-WindowStyle Hidden`, y `LogonType Interactive` ata la task a la sesión interactiva del shell que la dispara; cerrar ese shell agrupa los procesos en el mismo Job Object de VS Code y los mata en cadena.
+
+Fix aplicado: `LogonType S4U` (Service for User). La task corre como el usuario pero sin sesión interactiva, sin ventana, e independiente del shell que la dispara. No requiere password ni admin; requiere el privilege "Log on as a batch job" (concedido por default a usuarios en Win10/11). Verificado: la task sobrevive al cerrar VS Code y cualquier terminal.
+
+**Settings finales de la task:**
+- `LogonType S4U`, `RunLevel Limited`. Sin elevación.
+- `RestartCount 3`, `RestartInterval 1 minuto`: si el wrapper muere, Task Scheduler lo restartea hasta 3 veces con 1 min de espera.
+- `ExecutionTimeLimit TimeSpan.Zero`: sin límite de tiempo de ejecución (default era 3 días).
+- `AllowStartIfOnBatteries`, `DontStopIfGoingOnBatteries`, `StartWhenAvailable`, `MultipleInstances IgnoreNew`.
+- Action: `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File <wrapper>`. `-File` apunta al wrapper para evitar escape-hell de comillas anidadas inline.
+- Detección del repo: `(Get-Item $PSScriptRoot).Parent.FullName` desde `scripts/`. Si movés el repo, hay que re-instalar (documentado en docstring).
+
+**Otro item agregado en la misma sesión:**
+- Captura en vivo de chats de proyecto (`design_chats`) anotada como sub-task abierto en Fase 2. Diferida al cierre de fase para no bloquear el audit. El parser y el server ya distinguen `Source.DESIGN_CHAT`; falta la Chrome ext (regex de `inject.js` + routing en `background.js`) y requiere identificar la URL real que usa claude.ai. Documentado en ROADMAP.
+
+**Tests:** no agregué tests del .ps1 (sería test de PowerShell, fuera del scope del pytest suite). Pruebo manual con `-Status`, `-Install`, y test definitivo "cerrar VS Code y verificar que el server sigue respondiendo": pasados.
+
+---
+
 ## 2026-05-20 — Deuda técnica residual del audit (test serve + rollback ingest)
 
 Cerramos 2 de los 3 follow-ups que el audit del 2026-05-19 dejó anotados. El tercero (settings lazy) lo evaluamos y decidimos aplazar con justificación.

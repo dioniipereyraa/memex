@@ -15,6 +15,8 @@ Active development on Phase 2 (live capture + hybrid search) and Phase 5 prep (p
 - Badges in the README: CI status, License MIT, Python 3.12+.
 - "Session memory check" screenshot in the README, embedded as end-to-end demo of the live capture + recall flow.
 - Chrome extension icons (16/32/48/128 PNG + SVG source under `chrome-extension/icons/`). Manifest declares them both top-level (`icons`) and in `action.default_icon` so the toolbar and the extension page render the brand instead of the gray placeholder.
+- Tests for `memex serve` CLI (CliRunner mocking `uvicorn.run` and `connect_and_init`) and for ingest rollback when the embedder fails mid-batch (closes two audit follow-ups from 2026-05-19).
+- Windows autostart for the HTTP server (Phase 5 preview): `scripts/install-autostart.ps1` registers a Scheduled Task running `uv run memex serve` at log on, with `LogonType S4U` (no window, independent from the shell that triggered it) and auto-restart on failure. Manage with `-Install` / `-Uninstall` / `-Status`. Logs to `%LOCALAPPDATA%\Memex\serve.log`. The cross-platform formal version (`memex install-service` with systemd / launchd backends) stays on the Phase 5 roadmap.
 
 ### Changed
 - README translated fully to English. `ROADMAP.md` and `DEVLOG.md` remain in Spanish (internal journal).
