@@ -1,79 +1,77 @@
 # Memex
 
-> *Quick read in English — full docs below in Spanish.*
->
-> **Memex** is a local-first MCP server that indexes your entire Claude.ai history (via official export or live Chrome capture) and exposes `search_chats`, `get_chat`, `list_recent_chats` to Claude Code, Claude Desktop, or any MCP client. Everything stays on your machine: SQLite + sqlite-vec for embeddings, FTS5 for lexical, hybrid retrieval via Reciprocal Rank Fusion. Zero-config embeddings out of the box (fastembed/ONNX), Ollama optional. **Status: pre-alpha**, runs from source. See `ROADMAP.md` for phases, `DEVLOG.md` for the project journal.
->
-> Servidor MCP local que indexa tus chats de Claude.ai y los expone a Claude Code (y, próximamente, a Claude.ai vía remote MCP). Que el contexto que tenga Claude.ai lo tenga también Claude Code.
+Local-first MCP server that indexes your Claude.ai chat history and exposes it to Claude Code (and, soon, to Claude.ai via remote MCP). The goal: give Claude Code the same context Claude.ai already has.
 
-**Estado:** pre-alpha. Fases 0 y 1 cerradas. **Fase 2 en progreso:** búsqueda híbrida FTS5 + RRF cerrada (resuelve caso "Amarok"); captura en vivo via Chrome extension + HTTP server local funcionando, falta uso real durante una semana y auditoría de cierre.
+**Status:** pre-alpha. Phases 0 and 1 closed. **Phase 2 in progress:** hybrid FTS5 + RRF search closed (fixes the "Amarok" case); live capture via Chrome extension + local HTTP server working, pending a week of real usage and a phase-close audit.
 
-## El problema
+> Internal docs (`ROADMAP.md`, `DEVLOG.md`) are kept in Spanish on purpose. They are the project journal, not user-facing material.
 
-Brainstorming y planning pasan en Claude.ai. Ejecución pasa en Claude Code. Los dos mundos no se hablan: Claude Code no puede leer un chat tuyo de Claude.ai, ni siquiera el que originó la tarea que está haciendo. La memoria que Anthropic lanzó en Claude.ai (marzo 2026) es curada, no historial completo, y vive aislada dentro de Claude.ai.
+## The problem
 
-Memex llena ese hueco: corre local, indexa el corpus entero de tus chats, y los expone como tools MCP para que Claude pueda buscar y traer contexto pasado cuando lo necesite.
+Brainstorming and planning happen in Claude.ai. Execution happens in Claude Code. The two worlds do not talk to each other: Claude Code cannot read a chat of yours from Claude.ai, not even the one that originated the task it is currently working on. The memory Anthropic shipped on Claude.ai (March 2026) is curated, not full history, and lives isolated inside Claude.ai.
 
-## Cómo funciona
+Memex fills that gap: runs locally, indexes the entire corpus of your chats, and exposes them as MCP tools so Claude can search and pull past context whenever it needs to.
+
+## How it works
 
 ```
 [Claude.ai]
-    ↓  (export oficial JSON / Chrome ext)
-[Ingestor]  →  [SQLite + sqlite-vec]  →  [embeddings locales con Ollama]
+    ↓  (official JSON export / Chrome ext)
+[Ingestor]  →  [SQLite + sqlite-vec]  →  [local embeddings (fastembed / Ollama)]
                                     ↓
                           [core: storage + retrieval]
                                     ↓
                   [MCP stdio]  ───→  Claude Code, Claude Desktop
-                  [MCP SSE/HTTP] ──→ Claude.ai (próximamente)
+                  [MCP SSE/HTTP] ──→ Claude.ai (coming soon)
 ```
 
-Diseño: core puro (storage, ingest, embeddings, retrieval) separado del transport. El mismo motor sirve a stdio y a remote MCP sin rewrite.
+Design: pure core (storage, ingest, embeddings, retrieval) decoupled from transport. The same engine serves both stdio and remote MCP without a rewrite.
 
-## Requisitos
+## Requirements
 
-- Python 3.12 o superior
-- [uv](https://docs.astral.sh/uv/) (gestor de paquetes)
+- Python 3.12 or newer
+- [uv](https://docs.astral.sh/uv/) (package manager)
 
-Embeddings: **zero-config por default** (usa [fastembed](https://github.com/qdrant/fastembed) con un modelo cuantizado de 130 MB que se baja la primera vez automáticamente).
+Embeddings: **zero-config by default** (uses [fastembed](https://github.com/qdrant/fastembed) with a quantized 130 MB model that downloads itself the first time).
 
-Si preferís coordinar con tu instancia local de Ollama (porque ya la tenés corriendo para otros modelos), configurá:
+If you would rather route through your local Ollama (because you already run it for other models), set:
 ```bash
 export MEMEX_EMBED_BACKEND=ollama
-# y opcionalmente:
+# and optionally:
 ollama pull nomic-embed-text
 ```
 
 ## Quickstart
 
-1. Cloná el repo e instalá deps:
+1. Clone the repo and install deps:
    ```bash
    git clone https://github.com/dioniipereyraa/memex
    cd memex
    uv sync
    ```
-2. Pedí tu export oficial de Claude.ai (Settings → Privacy → Export data), descomprimilo, y dejá el zip en `data/exports/`.
-3. Indexá:
+2. Request your official Claude.ai export (Settings → Privacy → Export data), unzip it, and drop the zip into `data/exports/`.
+3. Ingest:
    ```bash
-   uv run memex ingest data/exports/<tu-export>.zip
+   uv run memex ingest data/exports/<your-export>.zip
    ```
-   La primera vez tarda un par de minutos generando embeddings con Ollama.
-4. Buscá:
+   The first run takes a couple of minutes generating embeddings (downloads the fastembed model on first use).
+4. Search:
    ```bash
-   uv run memex search "tu query" -n 5
+   uv run memex search "your query" -n 5
    uv run memex stats
    ```
 
-## Tools del MCP server (v1)
+## MCP server tools (v1)
 
-- `search_chats(query, limit=5, source?, mode="hybrid")` busca sobre el corpus. Modos: `hybrid` (default, combina vector search + FTS5 BM25 vía Reciprocal Rank Fusion), `semantic` (solo vectores), `lexical` (solo FTS5, ideal para nombres propios o términos exactos). `source` filtra por origen (`conversations`, `design_chat`, `memory`). Dedup por conversación.
-- `get_chat(uuid, messages_limit=20, messages_offset=0)` trae una conversación con sus mensajes, paginados. `raw_content` se omite; cada mensaje se trunca a 3000 chars para no exceder el límite de tokens del cliente.
-- `list_recent_chats(limit=10, source?)` lista los últimos chats ordenados por última actualización.
+- `search_chats(query, limit=5, source?, mode="hybrid")` searches the corpus. Modes: `hybrid` (default, combines vector search + FTS5 BM25 via Reciprocal Rank Fusion), `semantic` (vectors only), `lexical` (FTS5 only, ideal for proper nouns or exact terms). `source` filters by origin (`conversations`, `design_chat`, `memory`). Deduplicated per conversation.
+- `get_chat(uuid, messages_limit=20, messages_offset=0)` fetches a conversation with its messages, paginated. `raw_content` is omitted; each message is truncated to 3000 chars to stay inside the client's token budget.
+- `list_recent_chats(limit=10, source?)` lists the latest chats ordered by last update.
 
-La búsqueda también está accesible vía CLI con `memex search "query" --mode {hybrid|semantic|lexical}`. Para bases creadas antes del FTS5 híbrido, correr `memex reindex-fts` una vez para poblar el índice lexical.
+Search is also reachable from the CLI with `memex search "query" --mode {hybrid|semantic|lexical}`. For databases created before the hybrid FTS5 work, run `memex reindex-fts` once to populate the lexical index.
 
-## Conectarlo a Claude Code
+## Wiring it into Claude Code
 
-Una vez que tu base local está poblada (`memex ingest`), levantás el MCP server con `uv run memex-mcp`. Para que Claude Code lo descubra automáticamente, agregá un archivo `.mcp.json` en la raíz de tu proyecto (o un servidor user-level en `~/.claude.json`):
+Once your local database is populated (`memex ingest`), start the MCP server with `uv run memex-mcp`. For Claude Code to discover it automatically, add a `.mcp.json` file at the root of your project (or a user-level server in `~/.claude.json`):
 
 ```json
 {
@@ -81,76 +79,76 @@ Una vez que tu base local está poblada (`memex ingest`), levantás el MCP serve
     "memex": {
       "command": "uv",
       "args": ["run", "memex-mcp"],
-      "cwd": "/ruta/absoluta/al/repo/de/memex"
+      "cwd": "/absolute/path/to/the/memex/repo"
     }
   }
 }
 ```
 
-Ajustá `cwd` al path absoluto donde clonaste Memex (donde está el `pyproject.toml`). Reiniciá Claude Code y las tools `search_chats`, `get_chat`, `list_recent_chats` aparecen en la sesión.
+Set `cwd` to the absolute path where you cloned Memex (where `pyproject.toml` lives). Restart Claude Code and the tools `search_chats`, `get_chat`, `list_recent_chats` will show up in the session.
 
-Las mismas búsquedas también están disponibles desde CLI con `uv run memex search "..."` si preferís usarlas fuera de Claude Code.
+The same searches are also available from the CLI via `uv run memex search "..."` if you prefer them outside Claude Code.
 
-## Captura en vivo (Fase 2)
+## Live capture (Phase 2)
 
-Para que los chats nuevos de Claude.ai aparezcan en Memex sin pedir export manual:
+So that new Claude.ai chats land in Memex without asking for a manual export:
 
-1. **Arrancá el servidor HTTP local** en una terminal:
+1. **Start the local HTTP server** in a terminal:
    ```powershell
    uv run memex serve
    ```
-   Por default escucha en `127.0.0.1:5777`. Lo dejás corriendo mientras navegues claude.ai.
+   Listens on `127.0.0.1:5777` by default. Keep it running while you browse claude.ai.
 
-2. **Cargá la Chrome extension** desde la carpeta `chrome-extension/`:
-   - Abrí `chrome://extensions/`
-   - Activá **Modo desarrollador**
-   - **Cargar descomprimida** → seleccioná `chrome-extension/`
-   - Click en el ícono de Memex y verificá que el chip "Servidor" diga **responde** (verde).
+2. **Load the Chrome extension** from the `chrome-extension/` folder:
+   - Open `chrome://extensions/`
+   - Enable **Developer mode**
+   - **Load unpacked** → pick `chrome-extension/`
+   - Click the Memex icon and confirm the "Server" chip says **responde** (green).
 
-3. **Usá claude.ai normalmente.** Cada chat que abras o crees se ingesta automáticamente. Verificalo con `memex stats` o llamando `search_chats` desde Claude Code.
+3. **Use claude.ai normally.** Every chat you open or create is ingested automatically. Verify with `memex stats` or by calling `search_chats` from Claude Code.
 
-Detalles en [chrome-extension/README.md](chrome-extension/README.md).
+Details in [chrome-extension/README.md](chrome-extension/README.md).
 
-**Para uso público sin tocar terminales** (Fase 5): va a haber un comando `memex install-service` que registre autostart en Windows / macOS / Linux. Por ahora, terminal manual.
+**For non-technical use without terminals** (Phase 5): there will be a `memex install-service` command that registers autostart on Windows / macOS / Linux. For now, manual terminal.
 
-### Hacer que Claude use Memex proactivamente
+### Making Claude use Memex proactively
 
-Por default, los LLMs son conservadores con las tools: prefieren preguntar antes que invocar algo. Si decís *"viste que te hablé de X?"*, Claude tiende a responder *"no recuerdo"* en lugar de buscar.
+By default, LLMs are conservative with tools: they prefer to ask before invoking anything. If you say *"remember we talked about X?"*, Claude tends to answer *"I don't recall"* instead of searching.
 
-Las docstrings de las 3 tools ya tienen instrucciones de "USAR PROACTIVAMENTE", pero podés reforzarlo agregando este snippet a tu `CLAUDE.md` (global en `~/.claude/CLAUDE.md` para todas las sesiones, o local en `<proyecto>/CLAUDE.md` para uno específico):
+The docstrings of the 3 tools already include "USE PROACTIVELY" instructions, but you can reinforce it by adding this snippet to your `CLAUDE.md` (global at `~/.claude/CLAUDE.md` for every session, or local at `<project>/CLAUDE.md` for a specific one):
 
 ```markdown
-## Memex — memoria persistente de chats de Claude.ai
+## Memex — persistent memory of Claude.ai chats
 
-Hay un MCP server `memex` con 3 tools: `search_chats`, `get_chat`, `list_recent_chats`.
-Indexan TODO el historial de Claude.ai del usuario, accesible vía búsqueda híbrida
-(semántica + lexical FTS5).
+There is an MCP server `memex` with 3 tools: `search_chats`, `get_chat`, `list_recent_chats`.
+They index ALL of the user's Claude.ai history, reachable via hybrid search
+(semantic + lexical FTS5).
 
-**Regla operativa:** antes de responder "no tengo registro", "no recuerdo", "es la
-primera vez que oigo de esto", o algo equivalente, invocá `mcp__memex__search_chats`
-con la query relevante. La memoria nativa de Claude Code arranca limpia cada sesión;
-Memex es el único acceso al historial real del usuario.
+**Operational rule:** before answering "I have no record", "I don't remember", "this is
+the first time I hear about this", or anything equivalent, call `mcp__memex__search_chats`
+with the relevant query. Claude Code's native memory starts clean every session; Memex
+is the only path into the user's real history.
 
-Disparadores típicos: "te acordás de...", "viste que...", "ya hablamos de...", "el
-otro día charlamos sobre...", o cualquier referencia a un proyecto/persona/decisión
-que podría estar en historial.
+Typical triggers: "remember when...", "did I tell you about...", "we already talked about...",
+"the other day we discussed...", or any reference to a project / person / decision that might
+live in history.
 ```
 
 ## Roadmap
 
-Ver [ROADMAP.md](ROADMAP.md) para fases, criterios de cierre y estado actual.
+See [ROADMAP.md](ROADMAP.md) for phases, close criteria, and current status (in Spanish, it is the internal journal).
 
 ## Devlog
 
-Ver [DEVLOG.md](DEVLOG.md) para la bitácora de decisiones, bloqueos y progreso.
+See [DEVLOG.md](DEVLOG.md) for the log of decisions, blockers, and progress (in Spanish).
 
-## Inspiración y referencias
+## Inspiration and references
 
-- Feature request oficial: [anthropics/claude-code#12858](https://github.com/anthropics/claude-code/issues/12858)
-- [Claude Historian](https://mcpmarket.com/server/claude-historian), [claude-conversation-extractor](https://github.com/ZeroSumQuant/claude-conversation-extractor): MCP para historial de Claude Code/Desktop. Referencia de estructura de tools.
-- [claude-conversation-export](https://github.com/Emnolope/claude-conversation-export): exporter de Claude.ai con la misma estrategia de captura. Útil como backfill.
-- Spin-off del proyecto [SyncChat](https://github.com/dionipereyrab/SyncChat).
+- Official feature request: [anthropics/claude-code#12858](https://github.com/anthropics/claude-code/issues/12858)
+- [Claude Historian](https://mcpmarket.com/server/claude-historian), [claude-conversation-extractor](https://github.com/ZeroSumQuant/claude-conversation-extractor): MCP servers for Claude Code / Desktop history. Reference for tool structure.
+- [claude-conversation-export](https://github.com/Emnolope/claude-conversation-export): Claude.ai exporter using the same capture strategy. Useful as backfill.
+- Spin-off of the [SyncChat](https://github.com/dionipereyrab/SyncChat) project.
 
-## Licencia
+## License
 
 MIT.

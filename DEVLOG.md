@@ -6,6 +6,22 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-20 — README al inglés (cuerpo entero)
+
+Traducción del README al inglés. Hasta hoy era blockquote intro en inglés + cuerpo en español. Decisión acordada con el user (handoff de la sesión anterior): README full inglés para audiencia internacional, `ROADMAP.md` y `DEVLOG.md` quedan en español por ser bitácora interna del proyecto. Nota explícita en el README apuntando eso para que un lector externo no se sorprenda al abrir esos archivos.
+
+**Cambios incidentales aprovechando la traducción:**
+- Quickstart paso 3: el comentario decía "tarda generando embeddings con Ollama". Ya no es cierto desde `1c90ad6` (fastembed es default). Ahora dice "downloads the fastembed model on first use".
+- Diagrama ASCII: `local embeddings (fastembed / Ollama)` en vez de `local embeddings con Ollama`. Refleja el estado real.
+
+**Pendiente del handoff que sigue abierto:**
+- Polish del repo público (badges, screenshot embebido, íconos Chrome ext, CONTRIBUTING.md, CHANGELOG.md).
+- Leer feedback Discord.
+- Deuda técnica: test de `memex serve`, settings lazy, rollback en ingest a mitad.
+- Sub-task de Fase 2: uso real durante una semana + auditoría de cierre.
+
+---
+
 ## 2026-05-19 — Limpieza post-Discord (audit + Bloque A)
 
 Audit completo del proyecto (primer audit exhaustivo desde Fase 1). Sub-agent revisó código, docs, deps y calidad de cara al público. Veredicto: nada bloqueante, pero deuda acumulada visible que merece cerrarse ahora que el repo es público.
