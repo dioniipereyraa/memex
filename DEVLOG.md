@@ -6,6 +6,22 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-20 — Deuda técnica residual del audit (test serve + rollback ingest)
+
+Cerramos 2 de los 3 follow-ups que el audit del 2026-05-19 dejó anotados. El tercero (settings lazy) lo evaluamos y decidimos aplazar con justificación.
+
+**Lo nuevo:**
+- `tests/unit/test_cli.py::TestServeCommand`: 4 tests del comando `memex serve` mockeando `uvicorn.run` y `connect_and_init` con monkeypatch. Cubren: defaults (host/port/log_level), flags `--host` y `--port` custom, `--db` inyecta la conn en `http_ingest._conn` con `check_same_thread=False`, sin `--db` la conn queda intacta. Aprovechan que el `import uvicorn` y `from memex.core.storage.db import connect_and_init` dentro de `serve()` re-resuelven del módulo en cada invocación.
+- `tests/unit/test_pipeline.py::TestPipelineRollback`: 3 tests del rollback del ingest cuando el embedder falla a mitad de batches. Cubren: (1) `ingest_single_conversation` rolea back y re-raisea, sin dejar conv ni messages en la DB, (2) `ingest_export` reporta el error en `summary.errors` sin persistir la conv, (3) si una conv falla, las otras del mismo export entran OK (aislamiento por conv vía try/except en el loop). Helper local `FailingEmbedder` que wrappea `FakeEmbedder` y falla en calls específicos.
+
+**Bug encontrado al escribir el helper de tests:** primera versión del payload solo pisaba `text` y dejaba `content[]` del template original. El parser usa `content[]` primero (`claude_export.py:163-179`) y solo cae a `text` como fallback. Resultado: el chunker recibía 4-7 chars en vez de 20K, generaba 1 chunk, 1 batch, 1 call al embedder, y el fail_on_call=2 nunca disparaba. No es un bug del código de producción; fue el helper de test mal hecho. Documentado en el docstring de `_long_text_payload`.
+
+**Item aplazado conscientemente:** `settings = get_settings()` evaluado al import time. Hoy no hay test roto que lo necesite (los tests existentes usan `@patch("memex.X.settings")` con MagicMock, lo cual seguirá funcionando independientemente). El follow-up sigue abierto, esperando un caso concreto que lo motive antes de invertir en el refactor. Razonado en `handoff.md`.
+
+**Estado de tests:** 197 unit tests verdes (190 previos + 4 serve + 3 rollback). ruff check sobre los archivos modificados clean. mypy no se ve afectado (no tocamos `src/memex/core`, `transports` ni `config.py`).
+
+---
+
 ## 2026-05-20 — Polish del repo público (CI, badges, docs, screenshot, íconos)
 
 Bloque D del plan que veníamos pateando desde el handoff. Todo en un solo commit porque pertenece al mismo objetivo: dejar el repo presentable para gente que llegue desde el Discord (hubo primer favorito en el thread hoy a la mañana, signal de que vale el polish ahora).

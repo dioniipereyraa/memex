@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
+from memex.core.embeddings.base import Embedder, EmbedderError
 from memex.core.embeddings.fake import FakeEmbedder
-from memex.core.ingest.pipeline import ingest_export
+from memex.core.ingest.pipeline import ingest_export, ingest_single_conversation
 from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
 
@@ -234,5 +238,139 @@ class TestPipelineEndToEnd:
             summary = ingest_export(db, zip_path, FakeEmbedder(dim=768))
             assert summary.conversations == 1
             assert repo.get_conversation(db, "memory-acct-1") is None
+        finally:
+            db.close()
+
+
+class FailingEmbedder(Embedder):
+    """Embedder que falla en ciertas llamadas a `embed()`.
+
+    Wrappea un FakeEmbedder para que las llamadas que no fallan devuelvan
+    vectores válidos (así los chunks que entran antes del fallo lo hacen con
+    embeddings reales, no ceros). Simula que el servicio de embeddings cae
+    a mitad del ingest de una conversación con muchos batches.
+    """
+
+    def __init__(
+        self, fail_on_calls: set[int] | None = None, dim: int = 768
+    ) -> None:
+        self._inner = FakeEmbedder(dim=dim)
+        self._fail_on_calls: set[int] = fail_on_calls or {2}
+        self.calls = 0
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    @property
+    def model_name(self) -> str:
+        return "failing-fake"
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        self.calls += 1
+        if self.calls in self._fail_on_calls:
+            raise EmbedderError(f"simulated failure on call {self.calls}")
+        return self._inner.embed(texts)
+
+
+def _long_text_payload(uuid: str, n_chars: int = 20_000) -> dict:
+    """Payload tipo `conversations.json` item con texto suficiente para forzar
+    múltiples chunks (y por ende múltiples batches con batch_size chico).
+
+    Pisa tanto `text` como `content[]` porque el parser usa `content[]` primero
+    y solo cae a `text` como fallback si el render del content queda vacío.
+    """
+    long_text = "palabra " * (n_chars // 8)
+    content = [{"type": "text", "text": long_text}]
+    return {
+        **CONVERSATION_JSON,
+        "uuid": uuid,
+        "chat_messages": [
+            {
+                **CONVERSATION_JSON["chat_messages"][0],
+                "uuid": f"{uuid}-m1",
+                "text": long_text,
+                "content": content,
+            },
+            {
+                **CONVERSATION_JSON["chat_messages"][1],
+                "uuid": f"{uuid}-m2",
+                "text": long_text,
+                "content": content,
+            },
+        ],
+    }
+
+
+class TestPipelineRollback:
+    """Verifica que un fallo del embedder a mitad del ingest no deja una
+    conversación parcialmente persistida.
+
+    Si esta property se rompe, una refactor futura del flow de commit /
+    rollback puede dejar conversaciones fantasma en la base (con messages
+    pero sin chunks, o con chunks parciales), y nadie se entera hasta que
+    aparece un bug raro de retrieval. Estos tests son la red de seguridad.
+    """
+
+    def test_ingest_single_failure_rolls_back_and_reraises(self) -> None:
+        payload = _long_text_payload("conv-rollback")
+        db = connect_and_init(":memory:")
+        try:
+            embedder = FailingEmbedder(fail_on_calls={2})
+            with pytest.raises(EmbedderError):
+                ingest_single_conversation(db, embedder, payload, batch_size=2)
+
+            # Rollback: la conv no debe estar en la base.
+            assert repo.get_conversation(db, "conv-rollback") is None
+            # Y tampoco sus mensajes.
+            msgs = db.execute(
+                "SELECT 1 FROM messages WHERE conversation_uuid = ?",
+                ("conv-rollback",),
+            ).fetchall()
+            assert msgs == []
+        finally:
+            db.close()
+
+    def test_ingest_export_failure_reports_error_without_persisting(
+        self, tmp_path: Path
+    ) -> None:
+        payload = _long_text_payload("conv-rollback")
+        zip_path = _build_zip(
+            tmp_path, {"conversations.json": json.dumps([payload])}
+        )
+        db = connect_and_init(":memory:")
+        try:
+            embedder = FailingEmbedder(fail_on_calls={2})
+            summary = ingest_export(db, zip_path, embedder, batch_size=2)
+
+            # El error de la conv debe estar reportado.
+            assert any("conv-rollback" in e for e in summary.errors)
+            # Y la conv no debe haber quedado persistida.
+            assert repo.get_conversation(db, "conv-rollback") is None
+        finally:
+            db.close()
+
+    def test_failure_in_one_conv_does_not_affect_others(
+        self, tmp_path: Path
+    ) -> None:
+        """Si una conv falla a mitad, las otras del mismo export entran OK."""
+        bad = _long_text_payload("conv-bad")
+        good = {**CONVERSATION_JSON, "uuid": "conv-good"}
+        zip_path = _build_zip(
+            tmp_path, {"conversations.json": json.dumps([bad, good])}
+        )
+        db = connect_and_init(":memory:")
+        try:
+            # "conv-bad" genera ≥2 batches con batch_size=2: el segundo call falla.
+            # "conv-good" genera 1 batch (texto corto): es el 3er call, que NO está
+            # en fail_on_calls={2}, así que pasa.
+            embedder = FailingEmbedder(fail_on_calls={2})
+            summary = ingest_export(db, zip_path, embedder, batch_size=2)
+
+            assert repo.get_conversation(db, "conv-bad") is None
+            assert repo.get_conversation(db, "conv-good") is not None
+            assert any("conv-bad" in e for e in summary.errors)
+            # "conv-good" no genera errores.
+            assert not any("conv-good" in e for e in summary.errors)
         finally:
             db.close()

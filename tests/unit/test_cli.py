@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from memex.cli.main import app
@@ -66,6 +67,98 @@ class TestStatsCommand:
         assert "Conversaciones" in out
         assert "Mensajes" in out
         assert "Chunks" in out
+
+
+class TestServeCommand:
+    """Tests del comando `memex serve`.
+
+    Mockean `uvicorn.run` y `connect_and_init` para no levantar un server real.
+    Verifican que los flags del CLI llegan correctamente al runtime y que `--db`
+    inyecta la conn en el módulo `http_ingest` antes de arrancar uvicorn.
+    """
+
+    def test_runs_uvicorn_with_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import uvicorn
+
+        from memex.transports import http_ingest
+
+        captured: dict[str, object] = {}
+
+        def fake_run(starlette_app: object, **kwargs: object) -> None:
+            captured["app"] = starlette_app
+            captured.update(kwargs)
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0, result.output
+        assert captured["app"] is http_ingest.app
+        assert captured["host"] == "127.0.0.1"
+        assert captured["port"] == 5777
+        assert captured["log_level"] == "info"
+
+    def test_passes_host_and_port_options(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import uvicorn
+
+        captured: dict[str, object] = {}
+
+        def fake_run(starlette_app: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+
+        result = runner.invoke(
+            app, ["serve", "--host", "0.0.0.0", "--port", "9999"]
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["host"] == "0.0.0.0"
+        assert captured["port"] == 9999
+
+    def test_db_flag_injects_connection(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import uvicorn
+
+        from memex.core.storage import db
+        from memex.transports import http_ingest
+
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: None)
+        monkeypatch.setattr(http_ingest, "_conn", None)
+
+        sentinel = object()
+        captured: dict[str, object] = {}
+
+        def fake_connect(db_path: object, **kwargs: object) -> object:
+            captured["path"] = db_path
+            captured["kwargs"] = kwargs
+            return sentinel
+
+        monkeypatch.setattr(db, "connect_and_init", fake_connect)
+
+        db_path = tmp_path / "test.db"
+        result = runner.invoke(app, ["serve", "--db", str(db_path)])
+        assert result.exit_code == 0, result.output
+        assert http_ingest._conn is sentinel
+        assert captured["path"] == db_path
+        # serve() pasa check_same_thread=False porque el server async usa thread pool.
+        assert captured["kwargs"].get("check_same_thread") is False
+
+    def test_no_db_flag_leaves_conn_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import uvicorn
+
+        from memex.transports import http_ingest
+
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: None)
+        sentinel = object()
+        monkeypatch.setattr(http_ingest, "_conn", sentinel)
+
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0, result.output
+        assert http_ingest._conn is sentinel
 
 
 class TestHelpAndStructure:
