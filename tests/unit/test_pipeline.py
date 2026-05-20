@@ -251,9 +251,7 @@ class FailingEmbedder(Embedder):
     a mitad del ingest de una conversación con muchos batches.
     """
 
-    def __init__(
-        self, fail_on_calls: set[int] | None = None, dim: int = 768
-    ) -> None:
+    def __init__(self, fail_on_calls: set[int] | None = None, dim: int = 768) -> None:
         self._inner = FakeEmbedder(dim=dim)
         self._fail_on_calls: set[int] = fail_on_calls or {2}
         self.calls = 0
@@ -331,13 +329,9 @@ class TestPipelineRollback:
         finally:
             db.close()
 
-    def test_ingest_export_failure_reports_error_without_persisting(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ingest_export_failure_reports_error_without_persisting(self, tmp_path: Path) -> None:
         payload = _long_text_payload("conv-rollback")
-        zip_path = _build_zip(
-            tmp_path, {"conversations.json": json.dumps([payload])}
-        )
+        zip_path = _build_zip(tmp_path, {"conversations.json": json.dumps([payload])})
         db = connect_and_init(":memory:")
         try:
             embedder = FailingEmbedder(fail_on_calls={2})
@@ -350,15 +344,11 @@ class TestPipelineRollback:
         finally:
             db.close()
 
-    def test_failure_in_one_conv_does_not_affect_others(
-        self, tmp_path: Path
-    ) -> None:
+    def test_failure_in_one_conv_does_not_affect_others(self, tmp_path: Path) -> None:
         """Si una conv falla a mitad, las otras del mismo export entran OK."""
         bad = _long_text_payload("conv-bad")
         good = {**CONVERSATION_JSON, "uuid": "conv-good"}
-        zip_path = _build_zip(
-            tmp_path, {"conversations.json": json.dumps([bad, good])}
-        )
+        zip_path = _build_zip(tmp_path, {"conversations.json": json.dumps([bad, good])})
         db = connect_and_init(":memory:")
         try:
             # "conv-bad" genera ≥2 batches con batch_size=2: el segundo call falla.

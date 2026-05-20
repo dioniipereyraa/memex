@@ -76,7 +76,12 @@ def assistant_message(conversation: Conversation, human_message: Message) -> Mes
         parent_uuid=human_message.uuid,
         sender=Sender.ASSISTANT,
         text="Importás la lib, cargás la extensión y creás la virtual table.",
-        raw_content=[{"type": "text", "text": "Importás la lib, cargás la extensión y creás la virtual table."}],
+        raw_content=[
+            {
+                "type": "text",
+                "text": "Importás la lib, cargás la extensión y creás la virtual table.",
+            }
+        ],
         has_tool_use=False,
         has_attachments=False,
         created_at=datetime(2026, 3, 5, 9, 1, tzinfo=UTC),

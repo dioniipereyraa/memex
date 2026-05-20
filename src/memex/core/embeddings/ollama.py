@@ -76,8 +76,7 @@ class OllamaEmbedder(Embedder):
             raise EmbedderError(f"Ollama devolvió error: {e}") from e
         except _HTTPX_CONNECT_EXCEPTIONS as e:
             raise EmbedderError(
-                f"No se pudo conectar a Ollama en {self._host}. "
-                f"¿Está corriendo el servicio?"
+                f"No se pudo conectar a Ollama en {self._host}. ¿Está corriendo el servicio?"
             ) from e
         except Exception as e:
             # Fallback: cualquier otra excepción cuyo mensaje sugiera conexión
@@ -85,8 +84,7 @@ class OllamaEmbedder(Embedder):
             msg = str(e).lower()
             if any(k in msg for k in _CONNECTION_HINT_KEYWORDS):
                 raise EmbedderError(
-                    f"No se pudo conectar a Ollama en {self._host}. "
-                    f"¿Está corriendo el servicio?"
+                    f"No se pudo conectar a Ollama en {self._host}. ¿Está corriendo el servicio?"
                 ) from e
             raise
 

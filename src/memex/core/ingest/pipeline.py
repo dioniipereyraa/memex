@@ -101,7 +101,9 @@ def ingest_export(
                 try:
                     with zf.open(name) as f:
                         conv, messages = parse_design_chat(json.load(f))
-                    _ingest_conversation(conn, embedder, conv, messages, summary, cs, co, batch_size)
+                    _ingest_conversation(
+                        conn, embedder, conv, messages, summary, cs, co, batch_size
+                    )
                     conn.commit()
                 except Exception as e:
                     logger.exception("Error en %s", name)
@@ -115,7 +117,9 @@ def ingest_export(
                     parsed_list = parse_conversations_list(json.load(f))
                 for conv, messages in parsed_list:
                     try:
-                        _ingest_conversation(conn, embedder, conv, messages, summary, cs, co, batch_size)
+                        _ingest_conversation(
+                            conn, embedder, conv, messages, summary, cs, co, batch_size
+                        )
                         conn.commit()
                     except Exception as e:
                         logger.exception("Error en conv %s", conv.uuid)
@@ -176,9 +180,7 @@ def ingest_single_conversation(
     summary = IngestSummary()
     try:
         conv, messages = parse_conversation_dict(conv_payload, source)
-        _ingest_conversation(
-            conn, embedder, conv, messages, summary, cs, co, batch_size
-        )
+        _ingest_conversation(conn, embedder, conv, messages, summary, cs, co, batch_size)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -187,6 +189,7 @@ def ingest_single_conversation(
 
 
 # ---------- helpers privados ----------
+
 
 def _ingest_conversation(
     conn: sqlite3.Connection,

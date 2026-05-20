@@ -176,9 +176,7 @@ class TestIngest:
         )
         assert r.status_code == 400
 
-    def test_missing_required_field_returns_400(
-        self, http_client: TestClient
-    ) -> None:
+    def test_missing_required_field_returns_400(self, http_client: TestClient) -> None:
         bad = {k: v for k, v in VALID_PAYLOAD.items() if k != "uuid"}
         r = http_client.post(
             "/ingest/conversation",

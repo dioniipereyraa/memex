@@ -115,6 +115,7 @@ def parse_memories(
 
 # ---------- helpers privados ----------
 
+
 def parse_conversation_dict(
     data: dict[str, Any], source: Source
 ) -> tuple[Conversation, list[Message]]:
@@ -189,7 +190,9 @@ def _parse_message_dict(data: dict[str, Any], conversation_uuid: str) -> Message
     created_at = _parse_dt(data["created_at"])
     # `updated_at` no siempre viene poblado en design_chats; usamos created_at como fallback.
     updated_raw = data.get("updated_at")
-    updated_at = _parse_dt(updated_raw) if isinstance(updated_raw, str) and updated_raw else created_at
+    updated_at = (
+        _parse_dt(updated_raw) if isinstance(updated_raw, str) and updated_raw else created_at
+    )
 
     return Message(
         uuid=data["uuid"],

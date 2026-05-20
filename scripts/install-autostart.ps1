@@ -72,9 +72,7 @@ function Install-MemexTask {
     Write-Host "  uv:      $($uv.Source)"
     Write-Host "  Log:     $LogFile"
 
-    if (-not (Test-Path $LogDir)) {
-        New-Item -ItemType Directory -Path $LogDir | Out-Null
-    }
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
     if (Get-MemexTask) {
         Write-Host "  Task ya existe; sobreescribiendo..."

@@ -26,7 +26,14 @@ class TestSchema:
             "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name"
         ).fetchall()
         names = {r["name"] for r in rows}
-        for expected in ("projects", "conversations", "messages", "chunks", "vec_chunks", "schema_meta"):
+        for expected in (
+            "projects",
+            "conversations",
+            "messages",
+            "chunks",
+            "vec_chunks",
+            "schema_meta",
+        ):
             assert expected in names, f"falta tabla {expected} en {sorted(names)}"
 
     def test_foreign_keys_enabled(self, db: sqlite3.Connection) -> None:
@@ -285,12 +292,18 @@ class TestChunkRepoAndVectorSearch:
 
         # 3 chunks de conv-0001, 1 chunk de conv-otra, todos con embeddings parecidos.
         repo.add_chunk(db, mk_chunk(conversation.uuid, "chunk1 muy parecido"), [1.0] + [0.01] * 767)
-        repo.add_chunk(db, mk_chunk(conversation.uuid, "chunk2 algo parecido"), [1.0] + [0.02] * 767)
-        repo.add_chunk(db, mk_chunk(conversation.uuid, "chunk3 menos parecido"), [1.0] + [0.05] * 767)
+        repo.add_chunk(
+            db, mk_chunk(conversation.uuid, "chunk2 algo parecido"), [1.0] + [0.02] * 767
+        )
+        repo.add_chunk(
+            db, mk_chunk(conversation.uuid, "chunk3 menos parecido"), [1.0] + [0.05] * 767
+        )
         repo.add_chunk(db, mk_chunk(other_conv.uuid, "chunk4 distinto chat"), [0.99] + [0.03] * 767)
 
         # Sin dedup: devuelve los 4 chunks.
-        all_hits = repo.vector_search(db, [1.0] + [0.0] * 767, limit=10, dedupe_by_conversation=False)
+        all_hits = repo.vector_search(
+            db, [1.0] + [0.0] * 767, limit=10, dedupe_by_conversation=False
+        )
         assert len(all_hits) == 4
 
         # Con dedup: a lo sumo 1 por conversación, total 2.
@@ -345,9 +358,7 @@ class TestChunkRepoAndVectorSearch:
 
         # Ambos chunks viven en la misma conversación, así que con dedup activado
         # solo veríamos uno. Acá testeamos el ranking puro, sin dedup.
-        hits = repo.vector_search(
-            db, [1.0] + [0.0] * 767, limit=5, dedupe_by_conversation=False
-        )
+        hits = repo.vector_search(db, [1.0] + [0.0] * 767, limit=5, dedupe_by_conversation=False)
         assert len(hits) == 2
         assert hits[0].chunk.text == "close"
         assert hits[0].distance < hits[1].distance
@@ -372,7 +383,10 @@ class TestTextSearchAndFTS:
             repo.insert_conversation(db, conv)
 
         texts = [
-            ("conv-amarok", "Estoy pensando en comprar una Amarok diesel V6, qué opinás del precio"),
+            (
+                "conv-amarok",
+                "Estoy pensando en comprar una Amarok diesel V6, qué opinás del precio",
+            ),
             ("conv-otra", "Calculá la derivada parcial respecto de x en el punto dado"),
             ("conv-mezcla", "Mañana tengo parcial de álgebra lineal en la facu"),
         ]
@@ -387,9 +401,7 @@ class TestTextSearchAndFTS:
             # Embeddings random pero consistentes; lo importante para FTS es el texto.
             repo.add_chunk(db, chunk, [0.1] * 768)
 
-    def test_text_search_finds_exact_word(
-        self, db: sqlite3.Connection, project: Project
-    ) -> None:
+    def test_text_search_finds_exact_word(self, db: sqlite3.Connection, project: Project) -> None:
         """FTS5 encuentra 'Amarok' aunque la query semántica fallaría."""
         self._seed(db, project)
         hits = repo.text_search(db, "Amarok", limit=5)
@@ -438,9 +450,7 @@ class TestTextSearchAndFTS:
         assert len(deduped) <= len(all_chunks)
         assert len({h.conversation.uuid for h in deduped}) == len(deduped)
 
-    def test_rebuild_fts_index_repopulates(
-        self, db: sqlite3.Connection, project: Project
-    ) -> None:
+    def test_rebuild_fts_index_repopulates(self, db: sqlite3.Connection, project: Project) -> None:
         """Vaciar el índice FTS y reconstruirlo deja la búsqueda funcional otra vez."""
         self._seed(db, project)
         db.execute("DELETE FROM fts_chunks")
@@ -505,9 +515,7 @@ class TestHybridSearch:
         uuids = [h.conversation.uuid for h in hybrid]
         assert "conv-amarok" in uuids
 
-    def test_hybrid_dedupes_by_conversation(
-        self, db: sqlite3.Connection, project: Project
-    ) -> None:
+    def test_hybrid_dedupes_by_conversation(self, db: sqlite3.Connection, project: Project) -> None:
         repo.insert_project(db, project)
         conv = Conversation(
             uuid="conv-a",
@@ -529,9 +537,7 @@ class TestHybridSearch:
         hits = repo.hybrid_search(db, "Amarok", [1.0] + [0.0] * 767, limit=5)
         assert len({h.conversation.uuid for h in hits}) == len(hits)
 
-    def test_hybrid_empty_when_no_match(
-        self, db: sqlite3.Connection, project: Project
-    ) -> None:
+    def test_hybrid_empty_when_no_match(self, db: sqlite3.Connection, project: Project) -> None:
         repo.insert_project(db, project)
         # Base vacía: ni vector ni texto encuentran nada.
         hits = repo.hybrid_search(db, "anything", [0.0] * 768, limit=5)

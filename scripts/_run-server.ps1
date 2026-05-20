@@ -33,4 +33,8 @@ if (-not $uv) {
 "[$(Get-Date -Format o)] Arrancando memex serve (repo=$RepoRoot, uv=$($uv.Source))" |
     Out-File -FilePath $LogFile -Append -Encoding utf8
 
-& $uv.Source run memex serve *>> $LogFile
+# Usamos `2>&1 | Out-File -Encoding utf8` en lugar de `*>> $LogFile` porque
+# el redirect `*>>` en PowerShell 5.1 escribe UTF-16 LE por default y mezcla
+# encoding con las líneas de banner que ya escribimos en UTF-8.
+& $uv.Source run memex serve 2>&1 |
+    Out-File -FilePath $LogFile -Append -Encoding utf8

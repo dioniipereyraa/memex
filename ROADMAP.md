@@ -1,8 +1,8 @@
 # Roadmap
 
-> Última actualización: 2026-05-19
+> Última actualización: 2026-05-20
 
-**Estado actual:** Fases 0 y 1 cerradas. **Fase 2 en progreso (2026-05-19):** búsqueda híbrida FTS5 + RRF cerrada; captura en vivo (HTTP server + Chrome ext) implementada y validada; embedder zero-config con fastembed default (Ollama opcional). Limpieza completa post-Discord aplicada: 4 críticos del audit, 5 importantes, código muerto y deps reorganizadas. **190 unit tests verdes.** Pendiente para cerrar Fase 2: uso real de la Chrome ext en sesiones reales + auditoría de cierre.
+**Estado actual:** Fases 0, 1 y 2 cerradas (2026-05-20). Live capture + búsqueda híbrida funcionales end-to-end. Autostart en Windows como preview de Fase 5. **197 unit tests verdes**, CI corriendo en GitHub Actions, `ruff check` + `ruff format --check` + `mypy` clean. Versión `0.0.2`. Próximo: Fase 3 (quality pass: resúmenes auto-generados al ingestar, asociación chat ↔ proyecto/repo, hook SessionStart, tool `find_related`).
 
 ## Principio rector
 
@@ -64,9 +64,9 @@ Que el contexto que tenga Claude.ai lo tenga también Claude Code. Cada fase tie
 - [x] **Chrome extension propia de Memex** (`chrome-extension/`). MV3, host_permissions a `claude.ai/*` + `127.0.0.1:5777/*`. inject.js basado en SyncChat (rename), content.js de puente, background.js POSTea al endpoint con stats en `chrome.storage`, popup HTML/JS con indicador de status. README con instrucciones de carga unpacked. (2026-05-19)
 - [x] **Idempotencia**: ya cubierta por la arquitectura existente. `repo.add_chunk` + `delete_chunks_for_conversation` sincronizan chunks + vec_chunks + fts_chunks; re-ingestar el mismo chat reemplaza sin duplicar.
 - [x] **Autostart en Windows (preview de Fase 5)**: `scripts/install-autostart.ps1` con verbos `-Install` / `-Uninstall` / `-Status`. Registra una Scheduled Task que arranca `uv run memex serve` oculto al log on del usuario, sin admin. Reemplazable por `memex install-service` cross-platform cuando lleguemos a Fase 5. (2026-05-20)
-- [ ] Sub-task: **captura en vivo de chats de proyecto (design_chats)**. El parser y el server ya distinguen `Source.DESIGN_CHAT` y aceptan `?source=design_chat`, pero la Chrome ext solo intercepta `/chat_conversations/{id}` (regex en `chrome-extension/src/inject.js`) y postea sin el query param. Falta: identificar la URL real que usa claude.ai para chats dentro de un proyecto, extender la regex de inject.js, agregar routing de `source` en background.js. Diferido al cierre de fase: no bloquea criterio ni audit del corpus principal.
-- [ ] Uso real de la Chrome ext (5+ chats nuevos en claude.ai, apareciendo en `memex search` sin acción manual).
-- [ ] Auditoría de cierre de fase.
+- [x] Uso real de la Chrome ext: chats nuevos en claude.ai ingestándose vía `memex serve` corriendo como Scheduled Task. Flow end-to-end validado en navegación real, sobrevive cierre de VS Code, reinicios y cambios de SO en dual boot. (2026-05-20)
+- [x] Auditoría de cierre de fase: sin bloqueantes. 3 importantes arreglados en el mismo cierre (encoding mixto del log del wrapper PowerShell, XSS hardening del popup de la Chrome ext con `innerHTML` + `textContent` + DOM API, doc de CI desincronizada). 4 menores arreglados (test count en ROADMAP, `New-Item` inconsistente entre scripts, comentario impreciso en `http_ingest.py`, em dash residual en `popup.js`). Detalle en DEVLOG. (2026-05-20)
+- [ ] **Diferido a Fase 3+**: captura en vivo de chats de proyecto (`design_chats`). El parser y el server ya distinguen `Source.DESIGN_CHAT` y aceptan `?source=design_chat`, pero la Chrome ext solo intercepta `/chat_conversations/{id}` (regex en `chrome-extension/src/inject.js`) y postea sin el query param. Falta: identificar la URL real que usa claude.ai para chats dentro de un proyecto, extender la regex de inject.js, agregar routing de `source` en background.js. No bloquea Fase 2 porque el corpus principal funciona; se retoma cuando se priorice completitud de fuentes.
 
 **Criterio de cierre:** abrir un chat nuevo en Claude.ai lo deja consultable desde Claude Code en menos de 1 minuto.
 

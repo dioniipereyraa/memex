@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 
 const fmtAgo = (ts) => {
-  if (!ts) return "—";
+  if (!ts) return "-";
   const seconds = Math.floor((Date.now() - ts) / 1000);
   if (seconds < 60) return `${seconds}s atrás`;
   const minutes = Math.floor(seconds / 60);
@@ -52,9 +52,17 @@ const render = ({ stats, config }) => {
     $("errors-block").hidden = true;
   } else {
     $("errors-block").hidden = false;
-    $("errors").innerHTML = errs
-      .map((e) => `<div>[${e.kind}] ${e.detail || ""} <span style="opacity:.6">— ${fmtAgo(e.at)}</span></div>`)
-      .join("");
+    const errorsEl = $("errors");
+    errorsEl.replaceChildren();
+    for (const e of errs) {
+      const div = document.createElement("div");
+      div.textContent = `[${e.kind}] ${e.detail || ""} `;
+      const span = document.createElement("span");
+      span.style.opacity = ".6";
+      span.textContent = `· ${fmtAgo(e.at)}`;
+      div.appendChild(span);
+      errorsEl.appendChild(div);
+    }
   }
 };
 

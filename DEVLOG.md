@@ -6,6 +6,46 @@ Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
 
 ---
 
+## 2026-05-20 — Cierre formal de Fase 2 (audit + format + release 0.0.2)
+
+Fase 2 cerrada. Live capture + búsqueda híbrida funcionales end-to-end, autostart Windows operativo, 197 unit tests verdes, CI verde. Versión bumpeada a `0.0.2`.
+
+**Auditoría de cierre (sub-agent + revisión manual):**
+- Scope: todo lo agregado desde el audit del 2026-05-19 (commit `b0c1cf6`). 5 commits, 18 archivos.
+- Sin bloqueantes para cerrar la fase. Funcionalidad core sin issues críticos.
+
+**Importantes arreglados en el mismo cierre (3):**
+- `scripts/_run-server.ps1`: log con encoding mixto. `Out-File -Encoding utf8` para el banner + `*>> $LogFile` para el output del exe. PowerShell 5.1 default de `*>>` es UTF-16 LE, así el archivo quedaba mezclado y `Get-Content -Tail` mostraba basura intermitente. Fix: `2>&1 | Out-File -Encoding utf8` para mantener UTF-8 consistente.
+- `chrome-extension/src/popup.js`: `innerHTML` interpolando `e.kind`, `e.detail` y `fmtAgo()` al renderizar errores recientes. La data viene del server local (trusted), pero la regla del proyecto es defense-in-depth. Fix: reemplazado por DOM API (`createElement` + `textContent` + append). Bonus: dos em dashes que usaba como conectores quitados (regla del proyecto).
+- `CONTRIBUTING.md` decía que CI corre `ruff format --check` pero ese step había sido removido (DEVLOG del polish lo documentaba). Resuelto al reactivar el step en CI tras aplicar el format.
+
+**Menores arreglados (4):**
+- `ROADMAP.md` decía "190 unit tests verdes" cuando ya eran 197. Actualizado.
+- `New-Item -ItemType Directory` inconsistente entre los dos `.ps1`: uno con `-Force`, otro con `Test-Path` previo. Unificado en `-Force` (idempotente).
+- Comentario impreciso en `http_ingest.py::_get_conn` sobre cuándo corren los handlers y por qué `check_same_thread=False`. Reescrito para reflejar el threading model real de Starlette + uvicorn y dejar invariante para futuros background tasks.
+- `popup.js:6`: em dash `"—"` como placeholder cuando no había timestamp. Cambiado a `"-"`. Em dash como separador en la línea de error también removido (cambiado a `·`).
+
+**Aplicado además: `ruff format` + reactivar `--check` en CI.**
+
+16 archivos reformateados. Cero cambios semánticos (verificado: 197 tests siguen verdes después del format). El step `ruff format --check` volvió al workflow CI; la deuda visible de "el repo no cumple su propio formatter" queda cerrada.
+
+**Mejoras de CI incidentales (revisión manual):**
+- `permissions: contents: read` agregado al workflow para principle of least privilege.
+- `timeout-minutes: 10` en el job test (default era 6 horas, riesgo bajo pero fricción si algo se cuelga).
+
+**Decisiones tomadas con el user:**
+- Bump version `0.0.1 → 0.0.2` (conservador; pre-1.0 admite ambos, el user prefirió incremento patch a minor).
+- `ruff format` aplicado en este cierre, no aplazado más. Cerramos la deuda visible aprovechando que la fase está en pausa entre features.
+- Sub-task `design_chats` (captura en vivo de chats de proyecto) sigue diferido. NO bloquea Fase 2: el corpus principal (chats sueltos + memoria curada del export oficial) funciona. Re-anotado en ROADMAP como diferido a Fase 3+.
+
+**Criterios de cierre de Fase 2 cumplidos:**
+- "Abrir un chat nuevo en Claude.ai lo deja consultable desde Claude Code en menos de 1 minuto": validado en navegación real con `memex serve` corriendo como Scheduled Task. Latencia observada: capture inmediata, ingest + embedding ~2-5s, ya consultable.
+- Robustez del flow: sobrevive cierre de VS Code, reinicios de Windows, y dual boot (validado por el user).
+
+**Próximo:** Fase 3 (quality pass). Resúmenes auto-generados al ingestar con Haiku barato, asociación chat ↔ proyecto/repo para que Claude Code matchee con el repo actual, hook `SessionStart` opcional para inyección proactiva de contexto, tool `find_related(current_context)`. Detalle en `ROADMAP.md`.
+
+---
+
 ## 2026-05-20 — Autostart del server en Windows (preview de Fase 5)
 
 Para no tener que correr `uv run memex serve` a mano cada vez que arrancás la sesión. Solución Windows-only de etapa temprana; la versión cross-platform formal queda para `memex install-service` en Fase 5 del ROADMAP.

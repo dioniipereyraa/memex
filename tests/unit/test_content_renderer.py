@@ -32,9 +32,7 @@ class TestRenderText:
 
 class TestRenderToolUse:
     def test_basic_tool_use(self) -> None:
-        blocks = [
-            {"type": "tool_use", "name": "search", "input": {"query": "memex"}}
-        ]
+        blocks = [{"type": "tool_use", "name": "search", "input": {"query": "memex"}}]
         out = render_content(blocks)
         assert out.startswith("[tool_use: search]")
         assert '"query": "memex"' in out

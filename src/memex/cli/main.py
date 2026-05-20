@@ -65,9 +65,7 @@ def ingest(
     conn = connect_and_init(db_path)
     try:
         embedder = get_default_embedder()
-        console.print(
-            f"  embedder: {settings.embed_backend} ({embedder.model_name})\n"
-        )
+        console.print(f"  embedder: {settings.embed_backend} ({embedder.model_name})\n")
         with console.status("[yellow]Procesando…[/yellow]"):
             summary = ingest_export(
                 conn,
@@ -134,8 +132,7 @@ def search(
             hits = repo.hybrid_search(conn, query, query_vec, limit=limit)
         else:
             console.print(
-                f"[red]Mode inválido:[/red] {mode!r}. "
-                "Válidos: hybrid, semantic, lexical."
+                f"[red]Mode inválido:[/red] {mode!r}. Válidos: hybrid, semantic, lexical."
             )
             raise typer.Exit(code=2)
     except EmbedderError as e:
@@ -228,9 +225,7 @@ def serve(
     if db_path is not None:
         http_ingest._conn = connect_and_init(db_path, check_same_thread=False)
 
-    console.print(
-        f"[bold]Memex serve[/bold] escuchando en [cyan]http://{host}:{port}[/cyan]"
-    )
+    console.print(f"[bold]Memex serve[/bold] escuchando en [cyan]http://{host}:{port}[/cyan]")
     console.print("Conectá la Chrome ext de Memex y empezá a usar claude.ai.")
     console.print("[dim]Ctrl+C para parar.[/dim]\n")
     uvicorn.run(http_ingest.app, host=host, port=port, log_level="info")

@@ -6,10 +6,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pr
 
 ## [Unreleased]
 
-Active development on Phase 2 (live capture + hybrid search) and Phase 5 prep (public-facing polish).
+Phase 3 starting: quality pass on retrieval (auto-summaries, chat↔repo association, SessionStart hook, find_related tool).
+
+## [0.0.2] - 2026-05-20
+
+Phase 2 closed. Live capture + hybrid search work end-to-end. First public-facing polish (badges, screenshot, CONTRIBUTING, CHANGELOG, CI). Windows autostart as preview of Phase 5. Closing audit applied, 3 important fixes + 4 minor fixes landed in this release.
 
 ### Added
-- CI workflow on GitHub Actions (lint, format check, mypy, unit tests).
+- CI workflow on GitHub Actions (`ruff check`, `ruff format --check`, `mypy`, unit tests). Read-only permissions, 10 min job timeout.
 - `CONTRIBUTING.md` with local setup, code style, and PR workflow.
 - This `CHANGELOG.md`.
 - Badges in the README: CI status, License MIT, Python 3.12+.
@@ -20,6 +24,14 @@ Active development on Phase 2 (live capture + hybrid search) and Phase 5 prep (p
 
 ### Changed
 - README translated fully to English. `ROADMAP.md` and `DEVLOG.md` remain in Spanish (internal journal).
+- `ruff format` applied across `src/` and `tests/` (16 files reformatted, semantics unchanged). The check is now back in CI.
+- Comment in `transports/http_ingest.py::_get_conn` rewritten to accurately describe the threading model and the future invariant for background tasks.
+
+### Fixed
+- `scripts/_run-server.ps1`: log file no longer has mixed encoding. The previous version used `Out-File -Encoding utf8` for the banner line plus `*>> $LogFile` for the server output, but PowerShell 5.1's `*>>` defaults to UTF-16 LE, garbling the file. Now uses `2>&1 | Out-File -Encoding utf8` for consistent UTF-8.
+- `chrome-extension/src/popup.js`: replaced `innerHTML` with DOM API (`createElement` + `textContent`) when rendering recent error entries. Defense-in-depth even though the only data source is the local server.
+- `scripts/install-autostart.ps1`: `New-Item -Force -ItemType Directory` instead of `Test-Path` + `New-Item`. Consistent with the wrapper script and removes a theoretical race between check and create.
+- Removed em dashes used as connectors (project rule) in `popup.js` (`"—"` placeholder and `— ${fmtAgo()}` separator).
 
 ## Phase 2 (in progress)
 

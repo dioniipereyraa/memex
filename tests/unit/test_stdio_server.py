@@ -68,9 +68,7 @@ class TestServerStructure:
 
 class TestCallToolFlow:
     @pytest.mark.asyncio
-    async def test_list_recent_chats_returns_json(
-        self, mcp_server_with_temp_db
-    ) -> None:
+    async def test_list_recent_chats_returns_json(self, mcp_server_with_temp_db) -> None:
         result = await stdio.server.call_tool("list_recent_chats", {"limit": 5})
         # FastMCP devuelve ToolResult con content[0].text
         assert result.content
@@ -87,9 +85,7 @@ class TestCallToolFlow:
         assert "error" in payload
 
     @pytest.mark.asyncio
-    async def test_search_chats_empty_query_returns_error(
-        self, mcp_server_with_temp_db
-    ) -> None:
+    async def test_search_chats_empty_query_returns_error(self, mcp_server_with_temp_db) -> None:
         # No llega a tocar el embedder, no necesita Ollama.
         result = await stdio.server.call_tool("search_chats", {"query": "  "})
         payload = json.loads(result.content[0].text)

@@ -41,10 +41,7 @@ def render_content(blocks: Iterable[Any]) -> str:
 
 def has_tool_use(blocks: Iterable[Any]) -> bool:
     """True si la lista contiene algún bloque tool_use o tool_result."""
-    return any(
-        isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")
-        for b in blocks
-    )
+    return any(isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result") for b in blocks)
 
 
 def _render_block(block: Any) -> str:

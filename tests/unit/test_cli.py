@@ -41,9 +41,7 @@ class TestSearchCommand:
         import urllib.request
 
         try:
-            with urllib.request.urlopen(
-                "http://localhost:11434/api/tags", timeout=1.0
-            ) as r:
+            with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1.0) as r:
                 if r.status != 200:
                     return  # skip implícito
         except (urllib.error.URLError, TimeoutError, OSError):
@@ -97,9 +95,7 @@ class TestServeCommand:
         assert captured["port"] == 5777
         assert captured["log_level"] == "info"
 
-    def test_passes_host_and_port_options(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_passes_host_and_port_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import uvicorn
 
         captured: dict[str, object] = {}
@@ -109,9 +105,7 @@ class TestServeCommand:
 
         monkeypatch.setattr(uvicorn, "run", fake_run)
 
-        result = runner.invoke(
-            app, ["serve", "--host", "0.0.0.0", "--port", "9999"]
-        )
+        result = runner.invoke(app, ["serve", "--host", "0.0.0.0", "--port", "9999"])
         assert result.exit_code == 0, result.output
         assert captured["host"] == "0.0.0.0"
         assert captured["port"] == 9999
@@ -145,9 +139,7 @@ class TestServeCommand:
         # serve() pasa check_same_thread=False porque el server async usa thread pool.
         assert captured["kwargs"].get("check_same_thread") is False
 
-    def test_no_db_flag_leaves_conn_untouched(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_db_flag_leaves_conn_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import uvicorn
 
         from memex.transports import http_ingest

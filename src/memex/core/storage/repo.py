@@ -51,6 +51,7 @@ def _from_iso(s: str) -> datetime:
 
 # ---------- Projects ----------
 
+
 def insert_project(conn: sqlite3.Connection, project: Project) -> None:
     conn.execute(
         """
@@ -91,9 +92,7 @@ def get_project(conn: sqlite3.Connection, uuid: str) -> Project | None:
 
 
 def list_projects(conn: sqlite3.Connection) -> list[Project]:
-    rows = conn.execute(
-        "SELECT * FROM projects ORDER BY updated_at DESC"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
     return [_row_to_project(r) for r in rows]
 
 
@@ -113,6 +112,7 @@ def _row_to_project(row: sqlite3.Row) -> Project:
 
 
 # ---------- Conversations ----------
+
 
 def insert_conversation(conn: sqlite3.Connection, conv: Conversation) -> None:
     conn.execute(
@@ -185,6 +185,7 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
 
 # ---------- Messages ----------
 
+
 def insert_message(conn: sqlite3.Connection, msg: Message) -> None:
     raw_json = json.dumps(msg.raw_content, ensure_ascii=False) if msg.raw_content else None
     conn.execute(
@@ -249,6 +250,7 @@ def _row_to_message(row: sqlite3.Row) -> Message:
 
 
 # ---------- Chunks + embeddings ----------
+
 
 def add_chunk(
     conn: sqlite3.Connection,
@@ -350,9 +352,7 @@ def delete_chunks_for_conversation(conn: sqlite3.Connection, conversation_uuid: 
     placeholders = ",".join("?" * len(ids))
     conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", ids)
     conn.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", ids)
-    conn.execute(
-        "DELETE FROM chunks WHERE conversation_uuid = ?", (conversation_uuid,)
-    )
+    conn.execute("DELETE FROM chunks WHERE conversation_uuid = ?", (conversation_uuid,))
     return len(ids)
 
 
@@ -525,9 +525,7 @@ def hybrid_search(
     oversample_factor = 5
     fetch_limit = limit * oversample_factor
 
-    vec_hits = vector_search(
-        conn, query_embedding, limit=fetch_limit, dedupe_by_conversation=False
-    )
+    vec_hits = vector_search(conn, query_embedding, limit=fetch_limit, dedupe_by_conversation=False)
     text_hits = text_search(conn, query, limit=fetch_limit, dedupe_by_conversation=False)
 
     # RRF: cada chunk acumula score por aparecer en cada lista.
@@ -579,9 +577,7 @@ def rebuild_fts_index(conn: sqlite3.Connection) -> int:
     explícitamente con `conn.in_transaction` apropiado y commit/rollback vos.
     """
     conn.execute("DELETE FROM fts_chunks")
-    cursor = conn.execute(
-        "INSERT INTO fts_chunks(rowid, text) SELECT id, text FROM chunks"
-    )
+    cursor = conn.execute("INSERT INTO fts_chunks(rowid, text) SELECT id, text FROM chunks")
     count = cursor.rowcount if cursor.rowcount is not None else 0
     conn.commit()
     return count

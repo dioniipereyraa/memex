@@ -129,9 +129,7 @@ def search_chats(
     # `tools.search_chats` ya atrapa `EmbedderError` y devuelve `{"error": ...}`.
     # Acá solo nos queda lo inesperado.
     try:
-        result = tools.search_chats(
-            _get_conn(), _get_embedder(), query, limit, source, mode
-        )
+        result = tools.search_chats(_get_conn(), _get_embedder(), query, limit, source, mode)
     except Exception as e:
         logger.exception("Error en search_chats")
         # Mensaje genérico al cliente para no leakear paths/queries en el error

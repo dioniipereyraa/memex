@@ -237,6 +237,7 @@ def list_recent_chats(
 
 # ---------- helpers privados ----------
 
+
 def _invalid_source_error(value: str | None) -> dict[str, Any]:
     valid = ", ".join(s.value for s in Source)
     return {

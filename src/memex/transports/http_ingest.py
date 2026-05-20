@@ -55,9 +55,11 @@ _ALLOWED_ORIGIN_PREFIXES = ("chrome-extension://", "moz-extension://")
 def _get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        # check_same_thread=False: Starlette + uvicorn corren handlers en thread
-        # pool. Asegurate de no ejecutar queries concurrentes sobre la misma
-        # conn (el async-event-loop ya las serializa en producción).
+        # check_same_thread=False porque uvicorn maneja sync code en threadpool.
+        # Los handlers async actuales corren en el event loop y las queries
+        # SQLite inline también, así una sola conn ve un solo thread. Si en algún
+        # momento se agregan background tasks que toquen `conn`, hay que
+        # serializarlas explícitamente (mutex o cola).
         _conn = connect_and_init(check_same_thread=False)
         logger.info("DB abierta para http_ingest")
     return _conn

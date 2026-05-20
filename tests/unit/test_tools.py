@@ -60,33 +60,23 @@ class TestSearchChats:
         assert result["count"] >= 0
         assert isinstance(result["results"], list)
 
-    def test_empty_query_returns_error(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
+    def test_empty_query_returns_error(self, populated_db: sqlite3.Connection) -> None:
         result = tools.search_chats(populated_db, FakeEmbedder(), query="   ", limit=5)
         assert "error" in result
         assert "vac" in result["error"].lower()
 
-    def test_invalid_source_returns_error(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
-        result = tools.search_chats(
-            populated_db, FakeEmbedder(), query="x", source="inventado"
-        )
+    def test_invalid_source_returns_error(self, populated_db: sqlite3.Connection) -> None:
+        result = tools.search_chats(populated_db, FakeEmbedder(), query="x", source="inventado")
         assert "error" in result
         assert "inventado" in result["error"]
 
     def test_limit_clamped_to_max(self, populated_db: sqlite3.Connection) -> None:
-        result = tools.search_chats(
-            populated_db, FakeEmbedder(), query="x", limit=999
-        )
+        result = tools.search_chats(populated_db, FakeEmbedder(), query="x", limit=999)
         assert "results" in result
         assert len(result["results"]) <= 50
 
     def test_limit_clamped_to_min(self, populated_db: sqlite3.Connection) -> None:
-        result = tools.search_chats(
-            populated_db, FakeEmbedder(), query="x", limit=0
-        )
+        result = tools.search_chats(populated_db, FakeEmbedder(), query="x", limit=0)
         assert "results" in result
 
     def test_source_filter_applied(
@@ -117,9 +107,7 @@ class TestSearchChats:
         result = tools.search_chats(db, embedder, query="hola", source="memory")
         assert result["count"] == 0
 
-    def test_result_shape_includes_required_fields(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
+    def test_result_shape_includes_required_fields(self, populated_db: sqlite3.Connection) -> None:
         embedder = FakeEmbedder(dim=768)
         result = tools.search_chats(populated_db, embedder, query="anything")
         if result["results"]:
@@ -136,9 +124,7 @@ class TestSearchChats:
             ):
                 assert key in r0
 
-    def test_embedder_error_becomes_json_error(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
+    def test_embedder_error_becomes_json_error(self, populated_db: sqlite3.Connection) -> None:
         """`tools.search_chats` atrapa EmbedderError y devuelve un dict con `error`.
 
         Esto es lo que permite que `stdio.search_chats` no necesite atraparlo:
@@ -161,12 +147,8 @@ class TestSearchChats:
         assert "error" in result
         assert "Ollama no responde" in result["error"]
 
-    def test_invalid_mode_returns_error(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
-        result = tools.search_chats(
-            populated_db, FakeEmbedder(), query="x", mode="inventado"
-        )
+    def test_invalid_mode_returns_error(self, populated_db: sqlite3.Connection) -> None:
+        result = tools.search_chats(populated_db, FakeEmbedder(), query="x", mode="inventado")
         assert "error" in result
         assert "inventado" in result["error"]
 
@@ -174,9 +156,7 @@ class TestSearchChats:
         result = tools.search_chats(populated_db, FakeEmbedder(dim=768), query="hola")
         assert result.get("mode") == "hybrid"
 
-    def test_lexical_mode_skips_embedder(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
+    def test_lexical_mode_skips_embedder(self, populated_db: sqlite3.Connection) -> None:
         """Modo lexical no debe pedirle nada al embedder (no necesita Ollama)."""
 
         class _ExplodingEmbedder(Embedder):
@@ -198,9 +178,7 @@ class TestSearchChats:
         assert result.get("mode") == "lexical"
         assert "results" in result
 
-    def test_long_summary_is_truncated(
-        self, db: sqlite3.Connection, project: Project
-    ) -> None:
+    def test_long_summary_is_truncated(self, db: sqlite3.Connection, project: Project) -> None:
         """Summaries de varios miles de chars hinchan el response. Se truncan."""
         repo.insert_project(db, project)
         huge_summary = "S" * 3000
@@ -230,9 +208,7 @@ class TestSearchChats:
 
 
 class TestGetChat:
-    def test_basic_get(
-        self, populated_db: sqlite3.Connection, conversation: Conversation
-    ) -> None:
+    def test_basic_get(self, populated_db: sqlite3.Connection, conversation: Conversation) -> None:
         result = tools.get_chat(populated_db, conversation.uuid)
         assert result["uuid"] == conversation.uuid
         assert result["title"] == conversation.title
@@ -263,16 +239,12 @@ class TestGetChat:
         assert result["project"]["name"] == project.name
         assert result["project"]["prompt_template"] == project.prompt_template
 
-    def test_get_unknown_uuid_returns_error(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
+    def test_get_unknown_uuid_returns_error(self, populated_db: sqlite3.Connection) -> None:
         result = tools.get_chat(populated_db, "no-existe-este-uuid")
         assert "error" in result
         assert "no-existe-este-uuid" in result["error"]
 
-    def test_get_empty_uuid_returns_error(
-        self, populated_db: sqlite3.Connection
-    ) -> None:
+    def test_get_empty_uuid_returns_error(self, populated_db: sqlite3.Connection) -> None:
         result = tools.get_chat(populated_db, "  ")
         assert "error" in result
 
@@ -308,9 +280,7 @@ class TestGetChatPagination:
             repo.insert_message(db, msg)
         return conv.uuid
 
-    def test_default_returns_first_20(
-        self, db: sqlite3.Connection, long_chat: str
-    ) -> None:
+    def test_default_returns_first_20(self, db: sqlite3.Connection, long_chat: str) -> None:
         result = tools.get_chat(db, long_chat)
         assert result["total_messages"] == 50
         assert result["messages_returned"] == 20
@@ -319,9 +289,7 @@ class TestGetChatPagination:
         assert result["messages"][0]["uuid"] == "msg-000"
         assert result["messages"][-1]["uuid"] == "msg-019"
 
-    def test_offset_paginates(
-        self, db: sqlite3.Connection, long_chat: str
-    ) -> None:
+    def test_offset_paginates(self, db: sqlite3.Connection, long_chat: str) -> None:
         result = tools.get_chat(db, long_chat, messages_limit=20, messages_offset=20)
         assert result["messages_offset"] == 20
         assert result["messages_returned"] == 20
@@ -329,22 +297,16 @@ class TestGetChatPagination:
         assert result["messages"][0]["uuid"] == "msg-020"
         assert result["messages"][-1]["uuid"] == "msg-039"
 
-    def test_last_page_truncated_false(
-        self, db: sqlite3.Connection, long_chat: str
-    ) -> None:
+    def test_last_page_truncated_false(self, db: sqlite3.Connection, long_chat: str) -> None:
         result = tools.get_chat(db, long_chat, messages_limit=20, messages_offset=40)
         assert result["messages_returned"] == 10
         assert result["truncated"] is False
 
-    def test_limit_clamped_to_max(
-        self, db: sqlite3.Connection, long_chat: str
-    ) -> None:
+    def test_limit_clamped_to_max(self, db: sqlite3.Connection, long_chat: str) -> None:
         result = tools.get_chat(db, long_chat, messages_limit=9999)
         assert result["messages_returned"] <= 100
 
-    def test_limit_clamped_to_min(
-        self, db: sqlite3.Connection, long_chat: str
-    ) -> None:
+    def test_limit_clamped_to_min(self, db: sqlite3.Connection, long_chat: str) -> None:
         result = tools.get_chat(db, long_chat, messages_limit=0)
         assert result["messages_returned"] >= 1
 
@@ -358,9 +320,7 @@ class TestGetChatPagination:
         assert result["truncated"] is False
         assert result["messages"] == []
 
-    def test_message_text_truncated_when_too_long(
-        self, db: sqlite3.Connection
-    ) -> None:
+    def test_message_text_truncated_when_too_long(self, db: sqlite3.Connection) -> None:
         conv = Conversation(
             uuid="truncate-test",
             title="Test",
@@ -391,9 +351,7 @@ class TestListRecentChats:
         assert result["count"] == 0
         assert result["chats"] == []
 
-    def test_ordering_by_updated_at_desc(
-        self, db: sqlite3.Connection, project: Project
-    ) -> None:
+    def test_ordering_by_updated_at_desc(self, db: sqlite3.Connection, project: Project) -> None:
         repo.insert_project(db, project)
         old = Conversation(
             uuid="old",
