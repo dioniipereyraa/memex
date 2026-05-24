@@ -41,6 +41,7 @@ from fastmcp import FastMCP
 
 from memex.core.embeddings import Embedder, get_default_embedder
 from memex.core.storage.db import connect_and_init
+from memex.core.summaries import Summarizer, get_default_summarizer
 from memex.transports import tools
 
 # Logging a stderr (stdout está reservado para JSON-RPC).
@@ -55,6 +56,8 @@ server: FastMCP = FastMCP("memex")
 
 _conn: sqlite3.Connection | None = None
 _embedder: Embedder | None = None
+_summarizer: Summarizer | None = None
+_summarizer_resolved: bool = False
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -71,6 +74,22 @@ def _get_embedder() -> Embedder:
         _embedder = get_default_embedder()
         logger.info("Embedder inicializado: %s", _embedder.model_name)
     return _embedder
+
+
+def _get_summarizer() -> Summarizer | None:
+    """Resuelve el summarizer una vez por proceso (cacheado).
+
+    Devuelve `None` si `MEMEX_SUMMARY_ENABLED` está en false o si no hay key.
+    El sentinel `_summarizer_resolved` distingue "no resuelto" de "resuelto a
+    None porque la feature está OFF".
+    """
+    global _summarizer, _summarizer_resolved
+    if not _summarizer_resolved:
+        _summarizer = get_default_summarizer()
+        _summarizer_resolved = True
+        if _summarizer is not None:
+            logger.info("Summarizer activo: %s", _summarizer.model_name)
+    return _summarizer
 
 
 def _serialize(result: dict[str, Any]) -> str:
@@ -129,7 +148,15 @@ def search_chats(
     # `tools.search_chats` ya atrapa `EmbedderError` y devuelve `{"error": ...}`.
     # Acá solo nos queda lo inesperado.
     try:
-        result = tools.search_chats(_get_conn(), _get_embedder(), query, limit, source, mode)
+        result = tools.search_chats(
+            _get_conn(),
+            _get_embedder(),
+            query,
+            limit,
+            source,
+            mode,
+            summarizer=_get_summarizer(),
+        )
     except Exception as e:
         logger.exception("Error en search_chats")
         # Mensaje genérico al cliente para no leakear paths/queries en el error
@@ -159,12 +186,15 @@ def get_chat(uuid: str, messages_limit: int = 20, messages_offset: int = 0) -> s
         uuid: UUID del chat (normalmente obtenido vía `search_chats` o
             `list_recent_chats`).
         messages_limit: Cuántos mensajes traer empezando desde el offset
-            (default 20, max 100). Los mensajes individuales se truncan a
-            3000 chars para que la respuesta total quepa en el tope de
-            tokens del cliente MCP.
+            (default 10, max 100). Los mensajes individuales se truncan a
+            1500 chars para que la respuesta total quepa en el tope de
+            tokens del cliente MCP (~17k chars worst case con el default).
+            Si necesitás más detalle por mensaje, pedí menos mensajes
+            (ej. messages_limit=5) y vas a poder pedir messages_limit
+            más alto en chats con mensajes cortos.
         messages_offset: Cuántos mensajes saltear desde el inicio del chat
             (default 0). Usá esto para paginar en chats largos: primer
-            llamada con offset=0, segunda con offset=20, etc.
+            llamada con offset=0, segunda con offset=10, etc.
 
     Returns:
         JSON con metadata del chat (título, summary, source, project si

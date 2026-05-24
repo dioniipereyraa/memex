@@ -44,7 +44,12 @@ CREATE TABLE IF NOT EXISTS conversations (
     account_uuid TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- SHA-256 (hex) del texto canónico al momento del último ingest. Permite
+    -- detectar si el contenido cambió y decidir regen de derivados (summary).
+    -- Nullable porque (1) bases pre-existentes no lo tenían, (2) ingests sin
+    -- summary feature lo dejan vacío.
+    content_hash TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);

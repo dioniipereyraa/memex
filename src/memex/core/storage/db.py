@@ -74,9 +74,32 @@ def get_connection(
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Aplica `schema.sql`. Idempotente: todos los DDL usan IF NOT EXISTS."""
+    """Aplica `schema.sql` y migraciones aditivas idempotentes.
+
+    El `schema.sql` cubre fresh installs (todos los DDL usan IF NOT EXISTS).
+    Para bases pre-existentes que se actualizan a un schema nuevo, las
+    migraciones aditivas viven en `_apply_additive_migrations` (corre después
+    del script y suma columnas que el CREATE TABLE no aplicó porque la tabla
+    ya existía).
+    """
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(schema)
+    _apply_additive_migrations(conn)
+
+
+def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
+    """ALTER TABLE ADD COLUMN para columnas opcionales agregadas post-v1.
+
+    SQLite no soporta `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, así que
+    inspeccionamos `pragma_table_info` antes de cada ADD. Idempotente: re-correr
+    no rompe ni duplica trabajo.
+    """
+    existing = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM pragma_table_info('conversations')").fetchall()
+    }
+    if "content_hash" not in existing:
+        conn.execute("ALTER TABLE conversations ADD COLUMN content_hash TEXT")
 
 
 def connect_and_init(

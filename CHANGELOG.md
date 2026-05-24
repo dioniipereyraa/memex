@@ -6,7 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pr
 
 ## [Unreleased]
 
-Phase 3 starting: quality pass on retrieval (auto-summaries, chat↔repo association, SessionStart hook, find_related tool).
+Phase 3 starting: quality pass on retrieval. First sub-task done: auto-summaries with Claude Haiku, generated **on-demand at search time** (not at ingest).
+
+### Added
+- Optional auto-summary generation per chat, powered by Claude Haiku via the Anthropic API. Opt-in by setting `MEMEX_SUMMARY_ENABLED=true` and `ANTHROPIC_API_KEY`. Summaries are generated lazily when `search_chats` returns a chat that does not have one cached: up to 3 in parallel per call (`ThreadPoolExecutor`), silent fail per chat if the API errors. The summary is stored in `conversations.summary` and persists, so subsequent searches hit cache and do not pay the API again.
+- `core/summaries/` module: `Summarizer` ABC, `AnthropicSummarizer` (real backend, lazy import of the SDK), `FakeSummarizer` (deterministic, used in tests), `get_default_summarizer()` factory that returns `None` when the feature flag is off.
+- `conversations.content_hash` column (SHA-256 hex of canonical text). The pipeline computes and persists it on every ingest. Lets the lazy summarizer (and future consumers) detect content changes so a stale summary can be invalidated.
+- `repo.get_conversation_text(uuid)` reconstructs the canonical message stream of a chat (same format the chunker uses); `repo.update_conversation_summary(uuid, text)` patches only the summary field without touching the rest of the row.
+- `anthropic>=0.40` as a new optional dependency: install with `uv sync --extra summaries`.
+- Additive schema migration (`_apply_additive_migrations` in `db.py`) so existing local databases gain `content_hash` without a reset.
+- `stdio.search_chats` resolves the summarizer once per process via `get_default_summarizer()` and passes it through.
+- 24 new unit tests covering `FakeSummarizer`, the factory, `AnthropicSummarizer` error paths, the lazy wire in `tools.search_chats` (no-summarizer path, generation for missing summaries, cache reuse, cap at 3, persistence to DB, per-chat silent fail), pipeline `content_hash` persistence, cached-summary preservation across same-content reingests, and the additive schema migration on a legacy database.
+
+### Changed
+- `_ingest_conversation` computes the canonical text and `content_hash` before inserting; if the chat already exists with the same hash and a cached summary, the summary is preserved across the upsert (the parser's `summary` field would otherwise overwrite a lazy-generated one).
+- `tools.get_chat` defaults lowered to fit comfortably inside the Claude Code MCP token budget: `messages_limit` 20 → 10, per-message text cap 3000 → 1500 chars. Worst-case response ~17k chars (was ~62k, which occasionally exceeded the client limit and triggered the "result saved to file" fallback). Hard max `messages_limit=100` unchanged; callers needing more detail can opt in explicitly. Docstrings updated so Claude paginates with `messages_offset=10` on long chats.
+- `ROADMAP.md` and `DEVLOG.md` translated to English (previously Spanish, kept as internal journal). README note about Spanish internal docs removed.
 
 ## [0.0.2] - 2026-05-20
 

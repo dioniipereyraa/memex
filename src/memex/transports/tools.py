@@ -11,22 +11,37 @@ del MCP.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from memex.core.embeddings.base import Embedder, EmbedderError
-from memex.core.models import Project, Source
+from memex.core.models import Project, SearchHit, Source
 from memex.core.storage import repo
+from memex.core.summaries.base import Summarizer, SummarizerError
+
+logger = logging.getLogger(__name__)
 
 # Límites duros para evitar payloads desproporcionados. Los clientes MCP
 # (incluido Claude Code) suelen tener un tope de ~25-30k tokens por respuesta;
 # pasarse devuelve el resultado a un archivo aparte y rompe la experiencia.
 SEARCH_LIMIT_MAX = 50
 SEARCH_SUMMARY_MAX_CHARS = 500  # Algunos summaries pesan 2-3k chars, los recortamos.
+# Tope de summaries generados lazy por call a `search_chats`. Acota latencia
+# (más de 3 calls paralelas a la API agrega percepción de "lento") y costo
+# por query. Los demás results vienen sin summary (Claude puede decidir
+# llamar `get_chat` para profundizar en alguno específico).
+SEARCH_SUMMARY_LAZY_CAP = 3
 LIST_LIMIT_MAX = 100
-GET_CHAT_MESSAGES_LIMIT_DEFAULT = 20
+# Default conservador: 10 mensajes x 1500 chars + overhead = ~17k chars de
+# response, lejos del límite del cliente MCP (~25-30k tokens). Antes era
+# 20 x 3000 -> ~62k chars, lo que ocasionalmente excedía el tope de Claude
+# Code y derivaba el resultado a un archivo aparte (UX rota). Si Claude
+# necesita más, pagina con messages_offset o pide messages_limit explícito.
+GET_CHAT_MESSAGES_LIMIT_DEFAULT = 10
 GET_CHAT_MESSAGES_LIMIT_MAX = 100
-GET_CHAT_MESSAGE_TEXT_MAX_CHARS = 3000  # Code dumps largos explotan solos sin esto.
+GET_CHAT_MESSAGE_TEXT_MAX_CHARS = 1500  # Code dumps largos explotan solos sin esto.
 
 VALID_SEARCH_MODES = ("hybrid", "semantic", "lexical")
 
@@ -38,6 +53,7 @@ def search_chats(
     limit: int = 5,
     source: str | None = None,
     mode: str = "hybrid",
+    summarizer: Summarizer | None = None,
 ) -> dict[str, Any]:
     """Búsqueda sobre todos los chats indexados.
 
@@ -53,6 +69,12 @@ def search_chats(
     Devuelve dict con `query`, `mode`, `count`, `results`. Cada resultado tiene
     rank, conversation_uuid, title, summary, source, project_uuid, distance
     (semántica menor = mejor en los tres modos), snippet y timestamps.
+
+    Si `summarizer` es no-None, las conversaciones del top-N que no tengan
+    `summary` cacheado en DB se enriquecen lazy: hasta `SEARCH_SUMMARY_LAZY_CAP`
+    en paralelo, con silent fail si la API falla (el result queda sin summary,
+    no aborta). Los summaries generados se persisten para que la próxima query
+    pegue cache.
 
     Errores como dict con clave `error`:
     - source inválido
@@ -112,6 +134,12 @@ def search_chats(
 
     hits = hits[:limit]
 
+    # Enriquecer lazy con summaries si hay summarizer activo. Esto persiste
+    # los summaries en DB para próximas queries y muta `hits` in-place con
+    # las conversaciones actualizadas.
+    if summarizer is not None and hits:
+        hits = _generate_lazy_summaries(conn, hits, summarizer)
+
     return {
         "query": q,
         "mode": mode,
@@ -134,6 +162,96 @@ def search_chats(
     }
 
 
+def _generate_lazy_summaries(
+    conn: sqlite3.Connection,
+    hits: list[SearchHit],
+    summarizer: Summarizer,
+) -> list[SearchHit]:
+    """Genera summaries on-demand para las conversaciones de `hits` sin uno.
+
+    Cap a `SEARCH_SUMMARY_LAZY_CAP` por call: si hay más conversaciones
+    candidatas (sin summary), las que no entran al cap quedan sin summary en
+    esta respuesta. La idea es acotar latencia y costo por query; con cap=3
+    y Haiku ~2s/call en paralelo, la latencia agregada es ~2-3s para 3
+    summaries (no 6-9s secuenciales).
+
+    Persiste cada summary nuevo en DB (`UPDATE conversations SET summary=...`)
+    así la siguiente query pega cache. Silent fail por chat: si la API tira
+    error para uno, ese result queda sin summary y los demás siguen.
+
+    Devuelve una lista nueva de `SearchHit` con las conversations enriquecidas
+    (los pydantic models son inmutables, así que reemplazamos via `model_copy`).
+    """
+    # Identificar candidatos: conversaciones únicas sin summary, manteniendo
+    # el orden de ranking (más relevante primero).
+    candidates: list[str] = []
+    seen: set[str] = set()
+    title_by_uuid: dict[str, str] = {}
+    for hit in hits:
+        uuid = hit.conversation.uuid
+        if uuid in seen:
+            continue
+        seen.add(uuid)
+        title_by_uuid[uuid] = hit.conversation.title
+        if not hit.conversation.summary:
+            candidates.append(uuid)
+    candidates = candidates[:SEARCH_SUMMARY_LAZY_CAP]
+    if not candidates:
+        return hits
+
+    # Pre-cargar el texto de cada candidato en el thread main. SQLite ata
+    # la conexión a su thread de creación, así que no podemos hacer queries
+    # desde el ThreadPool. El pool solo se usa para el call slow al LLM.
+    payloads: list[tuple[str, str, str]] = []
+    for uuid in candidates:
+        text = repo.get_conversation_text(conn, uuid)
+        if not text:
+            continue
+        payloads.append((uuid, text, title_by_uuid.get(uuid, "")))
+
+    if not payloads:
+        return hits
+
+    def _gen_one(item: tuple[str, str, str]) -> tuple[str, str | None]:
+        uuid, text, title = item
+        try:
+            return uuid, summarizer.summarize(text, title=title or None)
+        except SummarizerError as e:
+            logger.warning("Lazy summary skipped for %s: %s", uuid, e)
+            return uuid, None
+
+    new_summaries: dict[str, str] = {}
+    # ThreadPool: cada call al SDK de Anthropic libera el GIL durante la
+    # request HTTP, así varios threads progresan en paralelo aunque Python
+    # tenga GIL. max_workers = cantidad de candidatos para no crear threads
+    # de más.
+    with ThreadPoolExecutor(max_workers=len(payloads)) as ex:
+        for uuid, gen_result in ex.map(_gen_one, payloads):
+            if gen_result is not None:
+                new_summaries[uuid] = gen_result
+
+    if not new_summaries:
+        return hits
+
+    # Persistir. Importante: no usamos `repo.insert_conversation` (que
+    # haría upsert y podría pisar otros campos), solo el UPDATE del summary.
+    for uuid, summary_text in new_summaries.items():
+        repo.update_conversation_summary(conn, uuid, summary_text)
+    conn.commit()
+
+    # Construir lista nueva de hits con conversations actualizadas. No mutamos
+    # la lista original por convención pydantic (modelos inmutables).
+    enriched: list[SearchHit] = []
+    for hit in hits:
+        new_summary = new_summaries.get(hit.conversation.uuid)
+        if new_summary is not None:
+            new_conv = hit.conversation.model_copy(update={"summary": new_summary})
+            enriched.append(hit.model_copy(update={"conversation": new_conv}))
+        else:
+            enriched.append(hit)
+    return enriched
+
+
 def get_chat(
     conn: sqlite3.Connection,
     uuid: str,
@@ -142,10 +260,12 @@ def get_chat(
 ) -> dict[str, Any]:
     """Trae una conversación con sus mensajes en orden cronológico.
 
-    Por defecto devuelve los primeros 20 mensajes desde el inicio del chat.
-    Para chats largos, paginar con `messages_offset`. Cada mensaje se trunca
-    a `GET_CHAT_MESSAGE_TEXT_MAX_CHARS` para que el response total quepa en
-    el tope de tokens típico de un cliente MCP.
+    Por defecto devuelve los primeros 10 mensajes desde el inicio del chat
+    (`GET_CHAT_MESSAGES_LIMIT_DEFAULT`). Cada mensaje se trunca a
+    `GET_CHAT_MESSAGE_TEXT_MAX_CHARS` (1500 chars) para que el response total
+    quepa en el tope de tokens del cliente MCP. Worst case: ~17k chars.
+    Para chats largos, paginar con `messages_offset` o pedir
+    `messages_limit` explícito (max 100).
 
     Si el chat referencia un project, se incluyen sus metadatos
     (uuid, name, description, prompt_template).

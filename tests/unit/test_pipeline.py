@@ -364,3 +364,95 @@ class TestPipelineRollback:
             assert not any("conv-good" in e for e in summary.errors)
         finally:
             db.close()
+
+
+class TestPipelineContentHash:
+    """Tests del campo `content_hash` que se persiste en cada ingest.
+
+    El pipeline NO genera summaries (eso vive ahora en `tools.search_chats`,
+    on-demand). Pero sí computa y persiste `content_hash` para que el lazy
+    summarizer pueda detectar si el contenido cambió desde la última
+    generación.
+    """
+
+    def _zip_with_conv(self, tmp_path: Path, payload: dict) -> Path:
+        return _build_zip(tmp_path, {"conversations.json": json.dumps([payload])})
+
+    def test_content_hash_is_persisted(self, tmp_path: Path) -> None:
+        zip_path = self._zip_with_conv(tmp_path, CONVERSATION_JSON)
+        db = connect_and_init(":memory:")
+        try:
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+            conv = repo.get_conversation(db, "conv-1")
+            assert conv is not None
+            assert conv.content_hash is not None
+            assert len(conv.content_hash) == 64  # SHA-256 hex
+            # El summary del export oficial se conserva tal cual (ningún
+            # paso del pipeline lo pisa).
+            assert conv.summary == "Una charla corta."
+        finally:
+            db.close()
+
+    def test_reingest_same_content_preserves_cached_summary(self, tmp_path: Path) -> None:
+        """Si una conv tiene summary cacheado (generado lazy por search_chats)
+        y se re-ingesta sin cambios de contenido, el summary NO se pisa con
+        el del parser. Si el hash cambia, el upsert se comporta como antes
+        (toma el del parser, que típicamente es None o el del export).
+        """
+        zip_path = self._zip_with_conv(tmp_path, CONVERSATION_JSON)
+        db = connect_and_init(":memory:")
+        try:
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+            # Simular un summary cacheado generado lazy.
+            repo.update_conversation_summary(db, "conv-1", "Resumen lazy preexistente.")
+            db.commit()
+
+            # Re-ingest sin cambios de contenido.
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+            conv = repo.get_conversation(db, "conv-1")
+            assert conv is not None
+            # El summary lazy se conserva, no se pisa con "Una charla corta."
+            # del export.
+            assert conv.summary == "Resumen lazy preexistente."
+        finally:
+            db.close()
+
+    def test_reingest_modified_content_invalidates_cached_summary(self, tmp_path: Path) -> None:
+        """Si el contenido cambia (hash distinto), el summary cacheado deja
+        de coincidir y el upsert lo reemplaza por el del parser. La idea es
+        que el próximo `search_chats` regenere lazy con el contenido nuevo.
+        """
+        db = connect_and_init(":memory:")
+        try:
+            zip1 = self._zip_with_conv(tmp_path, CONVERSATION_JSON)
+            ingest_export(db, zip1, FakeEmbedder(dim=768))
+            repo.update_conversation_summary(db, "conv-1", "Resumen viejo.")
+            db.commit()
+
+            # Agregar un mensaje cambia el hash.
+            modified = {
+                **CONVERSATION_JSON,
+                "chat_messages": [
+                    *CONVERSATION_JSON["chat_messages"],
+                    {
+                        "uuid": "msg-3",
+                        "text": "mensaje nuevo",
+                        "content": [{"type": "text", "text": "mensaje nuevo"}],
+                        "sender": "human",
+                        "created_at": "2026-05-10T10:01:00.000Z",
+                        "updated_at": "2026-05-10T10:01:00.000Z",
+                        "attachments": [],
+                        "files": [],
+                        "parent_message_uuid": "msg-2",
+                    },
+                ],
+            }
+            zip2 = self._zip_with_conv(tmp_path, modified)
+            ingest_export(db, zip2, FakeEmbedder(dim=768))
+            conv = repo.get_conversation(db, "conv-1")
+            assert conv is not None
+            # El summary lazy quedó stale; el upsert lo reemplaza con el
+            # del export (en este caso "Una charla corta.").
+            assert conv.summary == "Una charla corta."
+        finally:
+            db.close()

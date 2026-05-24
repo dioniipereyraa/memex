@@ -1,678 +1,777 @@
 # Devlog
 
-Bitácora corta, cronología inversa. Una entrada por sesión sustantiva.
+Short log, reverse chronological. One entry per substantive session.
 
-Formato: fecha, qué se hizo, decisiones, bloqueos, próximo paso.
-
----
-
-## 2026-05-20 — Cierre formal de Fase 2 (audit + format + release 0.0.2)
-
-Fase 2 cerrada. Live capture + búsqueda híbrida funcionales end-to-end, autostart Windows operativo, 197 unit tests verdes, CI verde. Versión bumpeada a `0.0.2`.
-
-**Auditoría de cierre (sub-agent + revisión manual):**
-- Scope: todo lo agregado desde el audit del 2026-05-19 (commit `b0c1cf6`). 5 commits, 18 archivos.
-- Sin bloqueantes para cerrar la fase. Funcionalidad core sin issues críticos.
-
-**Importantes arreglados en el mismo cierre (3):**
-- `scripts/_run-server.ps1`: log con encoding mixto. `Out-File -Encoding utf8` para el banner + `*>> $LogFile` para el output del exe. PowerShell 5.1 default de `*>>` es UTF-16 LE, así el archivo quedaba mezclado y `Get-Content -Tail` mostraba basura intermitente. Fix: `2>&1 | Out-File -Encoding utf8` para mantener UTF-8 consistente.
-- `chrome-extension/src/popup.js`: `innerHTML` interpolando `e.kind`, `e.detail` y `fmtAgo()` al renderizar errores recientes. La data viene del server local (trusted), pero la regla del proyecto es defense-in-depth. Fix: reemplazado por DOM API (`createElement` + `textContent` + append). Bonus: dos em dashes que usaba como conectores quitados (regla del proyecto).
-- `CONTRIBUTING.md` decía que CI corre `ruff format --check` pero ese step había sido removido (DEVLOG del polish lo documentaba). Resuelto al reactivar el step en CI tras aplicar el format.
-
-**Menores arreglados (4):**
-- `ROADMAP.md` decía "190 unit tests verdes" cuando ya eran 197. Actualizado.
-- `New-Item -ItemType Directory` inconsistente entre los dos `.ps1`: uno con `-Force`, otro con `Test-Path` previo. Unificado en `-Force` (idempotente).
-- Comentario impreciso en `http_ingest.py::_get_conn` sobre cuándo corren los handlers y por qué `check_same_thread=False`. Reescrito para reflejar el threading model real de Starlette + uvicorn y dejar invariante para futuros background tasks.
-- `popup.js:6`: em dash `"—"` como placeholder cuando no había timestamp. Cambiado a `"-"`. Em dash como separador en la línea de error también removido (cambiado a `·`).
-
-**Aplicado además: `ruff format` + reactivar `--check` en CI.**
-
-16 archivos reformateados. Cero cambios semánticos (verificado: 197 tests siguen verdes después del format). El step `ruff format --check` volvió al workflow CI; la deuda visible de "el repo no cumple su propio formatter" queda cerrada.
-
-**Mejoras de CI incidentales (revisión manual):**
-- `permissions: contents: read` agregado al workflow para principle of least privilege.
-- `timeout-minutes: 10` en el job test (default era 6 horas, riesgo bajo pero fricción si algo se cuelga).
-
-**Decisiones tomadas con el user:**
-- Bump version `0.0.1 → 0.0.2` (conservador; pre-1.0 admite ambos, el user prefirió incremento patch a minor).
-- `ruff format` aplicado en este cierre, no aplazado más. Cerramos la deuda visible aprovechando que la fase está en pausa entre features.
-- Sub-task `design_chats` (captura en vivo de chats de proyecto) sigue diferido. NO bloquea Fase 2: el corpus principal (chats sueltos + memoria curada del export oficial) funciona. Re-anotado en ROADMAP como diferido a Fase 3+.
-
-**Criterios de cierre de Fase 2 cumplidos:**
-- "Abrir un chat nuevo en Claude.ai lo deja consultable desde Claude Code en menos de 1 minuto": validado en navegación real con `memex serve` corriendo como Scheduled Task. Latencia observada: capture inmediata, ingest + embedding ~2-5s, ya consultable.
-- Robustez del flow: sobrevive cierre de VS Code, reinicios de Windows, y dual boot (validado por el user).
-
-**Próximo:** Fase 3 (quality pass). Resúmenes auto-generados al ingestar con Haiku barato, asociación chat ↔ proyecto/repo para que Claude Code matchee con el repo actual, hook `SessionStart` opcional para inyección proactiva de contexto, tool `find_related(current_context)`. Detalle en `ROADMAP.md`.
+Format: date, what was done, decisions, blockers, next step.
 
 ---
 
-## 2026-05-20 — Autostart del server en Windows (preview de Fase 5)
+## 2026-05-23 (evening): get_chat defaults lowered + DEVLOG/ROADMAP translated to English
 
-Para no tener que correr `uv run memex serve` a mano cada vez que arrancás la sesión. Solución Windows-only de etapa temprana; la versión cross-platform formal queda para `memex install-service` en Fase 5 del ROADMAP.
+Two unrelated cleanup tasks bundled at the close of the on-demand summaries sub-task, before starting the next Phase 3 item.
 
-**Lo nuevo:**
-- `scripts/install-autostart.ps1`: script PowerShell con verbos `-Install` / `-Uninstall` / `-Status`. Registra una Scheduled Task `MemexServe` con trigger "At log on" del usuario actual, sin ventana, sin admin. Re-instalar sobreescribe (idempotente). `-Install` también dispara la task inmediatamente, así el server queda corriendo en la sesión actual sin esperar al próximo logon.
-- `scripts/_run-server.ps1`: wrapper invocado por la Scheduled Task. Setea working directory al repo (padre del script), resuelve `uv` en PATH al momento del run (no embebido al install, así sobrevive cambios de instalación de uv), y redirige todos los streams al log file con append.
+**Fix: `get_chat` response size out of Claude Code's token budget.**
 
-**Decisiones tomadas con el user:**
-- Script standalone en `scripts/`, NO subcommand del CLI (`memex autostart`). Justificación: hoy es Windows-only; el subcommand amerita diseño cross-platform (Linux systemd / macOS launchd) y ese trabajo pertenece a Fase 5. El .ps1 actual se reemplaza limpio cuando lleguemos ahí y nos sirve de base.
-- `-Install` arranca el server inmediatamente además de registrar la task.
-- Re-install sobreescribe sin preguntar (idempotente). Útil cuando actualizamos el script y queremos reaplicar.
-- Log: `%LOCALAPPDATA%\Memex\serve.log`, append, sin rotación por ahora.
+During the real smoke test of the lazy summaries flow, calling `get_chat` on a 38-message chat ("Plan de estudio") triggered Claude Code's "result saved to file" fallback (the response was ~66k chars, above the client's ~25-30k token cap). The MCP layer is doing what it should (saving to file when too big), but the UX is brutal: Claude sees a noisy error message and has to read the file in chunks.
 
-**Bug detectado y resuelto durante el test inicial:**
-Primera config usaba `LogonType Interactive` con `-WindowStyle Hidden` en el argument de PowerShell. Resultado: cada vez que la task arrancaba aparecía una **ventana CMD vacía** visible, y cuando el user cerraba VS Code la task moría (exit code `STATUS_CONTROL_C_EXIT`, dejando procesos python/uv huérfanos sin escuchar el puerto). Causa raíz: PowerShell crea la ventana antes de procesar `-WindowStyle Hidden`, y `LogonType Interactive` ata la task a la sesión interactiva del shell que la dispara; cerrar ese shell agrupa los procesos en el mismo Job Object de VS Code y los mata en cadena.
+Root cause: defaults in `tools.get_chat` were too generous. `messages_limit=20` × `GET_CHAT_MESSAGE_TEXT_MAX_CHARS=3000` + overhead → ~62k chars worst case. Right at the borderline; long chats with verbose messages exceed it.
 
-Fix aplicado: `LogonType S4U` (Service for User). La task corre como el usuario pero sin sesión interactiva, sin ventana, e independiente del shell que la dispara. No requiere password ni admin; requiere el privilege "Log on as a batch job" (concedido por default a usuarios en Win10/11). Verificado: la task sobrevive al cerrar VS Code y cualquier terminal.
+Fix: lower the defaults. `messages_limit` 20 → 10, per-message cap 3000 → 1500. Worst case now ~17k chars, well below the limit. `GET_CHAT_MESSAGES_LIMIT_MAX=100` unchanged: if Claude needs more, it asks explicitly. Docstring on the MCP wrapper updated so Claude paginates with `messages_offset=10` on long chats (the previous hint was `messages_offset=20`).
 
-**Settings finales de la task:**
-- `LogonType S4U`, `RunLevel Limited`. Sin elevación.
-- `RestartCount 3`, `RestartInterval 1 minuto`: si el wrapper muere, Task Scheduler lo restartea hasta 3 veces con 1 min de espera.
-- `ExecutionTimeLimit TimeSpan.Zero`: sin límite de tiempo de ejecución (default era 3 días).
+Trade-off: each `get_chat` call brings less content. Long chats need more paginations (e.g. the 38-message chat takes 4 calls instead of 2). Mitigated by the lazy summaries: Claude can use the summary to decide whether deep pagination is worth it.
+
+Files touched: `src/memex/transports/tools.py` (constants + docstring), `src/memex/transports/stdio.py` (wrapper docstring), `tests/unit/test_tools.py` (one test renamed `test_default_returns_first_20` → `test_default_returns_first_10` with the new expected values, plus a stale comment updated). README description of `get_chat` synced.
+
+**Docs cleanup: DEVLOG and ROADMAP translated to English.**
+
+Previously they were kept in Spanish on purpose (internal journal). The user decided to align with the rest of the project (README, CHANGELOG, CONTRIBUTING all in English) so external contributors do not hit the language wall when opening the journal. Full translation done, em dashes used as connectors removed throughout (project rule), entry headers reformatted from `## date — title` to `## date: title`. The README note about "internal docs in Spanish" was removed.
+
+CLAUDE.md left in Spanish: not in the scope the user asked to translate. It will get translated whenever it is touched next.
+
+**State at close:**
+- 220 unit tests green.
+- `ruff check` + `ruff format --check` + `mypy` clean.
+- No code logic changed beyond the two constants in `tools.py`; the wire-up of summaries, retrieval, ingest, etc. is identical.
+
+**Next:** Phase 3 sub-task 2, chat ↔ project/repo association.
+
+---
+
+## 2026-05-23 (afternoon): Pivot of the summaries sub-task, ingest-time to on-demand
+
+After the first smoke test on the 74 chats of the official export (which also threw 401 due to an invalid API key and let us validate the silent fail end-to-end), we pivoted the design: summaries are no longer generated at ingest time, but lazily when `search_chats` returns results without a cached summary.
+
+**Why:**
+- Latency: 74 chats × ~2s/sequential call = ~2-3 minutes of spinner without visible progress. Unacceptable.
+- Cost: 80% of the corpus are chats that probably will never be searched. Generating summaries for all of them spends thousands of dead tokens.
+- Live capture: every new Claude.ai chat paid for a summary instantly. Same problem, ghost spending.
+
+**What is new:**
+- `tools.search_chats` accepts an optional `Summarizer | None`. If not None, the `_generate_lazy_summaries` helper identifies the top-N conversations without a cached summary, pre-loads the canonical text (`repo.get_conversation_text`) in the main thread, and dispatches up to `SEARCH_SUMMARY_LAZY_CAP=3` parallel calls with `ThreadPoolExecutor`. Each successful summary is persisted with `repo.update_conversation_summary`. Silent fail per chat.
+- `stdio.search_chats` resolves the summarizer once per process (cached with a sentinel) via `get_default_summarizer()` and passes it through. That way the `MEMEX_SUMMARY_ENABLED` flag works out-of-the-box in Claude Code sessions.
+- Pipeline reverted to NOT generating summaries at ingest. But `conversations.content_hash` is still computed and persisted: the lazy summarizer will use it in future versions to invalidate stale summaries (today the column is used only to preserve cached summaries across re-ingests of the same content).
+- New helpers in `repo`: `get_conversation_text(uuid)` reconstructs the canonical message stream (same format the chunker uses); `update_conversation_summary(uuid, text)` patches only the summary without touching the rest of the row.
+
+**Bug found during the test refactor:**
+SQLite binds each `Connection` to the thread that created it (`check_same_thread=True` default). The first implementation of the helper called `repo.get_conversation_text(conn, uuid)` inside the `ThreadPoolExecutor` callback and blew up with `ProgrammingError`. Fix: pre-load all texts in the main thread before the pool. The pool only executes the slow part (HTTP call to the LLM). As a bonus, what is being parallelized becomes clearer.
+
+**Minor technical decision:**
+Renamed the loop variable `result` to `gen_result` inside the helper because it collided with the `result: list[SearchHit]` built at the end and confused mypy (which ended up seeing `result.append` as an attribute of `str | None`).
+
+**State at pivot close:**
+- 220 unit tests green (197 original + 23 new from the summaries module / lazy wire / migration / content_hash).
+- `ruff check` + `ruff format --check` + `mypy` clean.
+- `MEMEX_SUMMARY_ENABLED=true` with a valid API key activates the lazy flow automatically in any Claude Code session connected to `memex-mcp`.
+
+**What stays in the handoff for the next session:**
+- Real smoke with a valid API key from Claude Code: run a `search_chats` from a session and verify that the first 3 chats without a summary get enriched, that subsequent searches return cache hits, that the cost in `console.anthropic.com` matches the expectation (~$0.01/new chat).
+- Next Phase 3 sub-task: chat ↔ project/repo association.
+
+---
+
+## 2026-05-23: Phase 3, sub-task 1, auto-generated summaries at ingest (discarded approach)
+
+> **Note:** this approach was discarded the same day. See entry "Pivot of the summaries sub-task: ingest-time to on-demand" above. The infrastructure (module `core/summaries/`, settings, schema migration, `content_hash`) is reused; what changed is WHERE the summarizer is invoked.
+
+Formal kickoff of Phase 3 with the highest-visible-value sub-task: each ingested chat can carry a short summary generated by Claude Haiku. Opt-in (default OFF). Goes into `conversations.summary` and shows up in `list_recent_chats`, `get_chat`, and `memex search`. The idea: Claude Code can dismiss chats without paying tokens to read them.
+
+**Scope decisions (aligned with the user before coding):**
+- **Opt-in**. Activate with `MEMEX_SUMMARY_ENABLED=true` + `ANTHROPIC_API_KEY`. Default OFF to avoid burning API on bulk ingest by accident (74+ chats of the official export = real cost).
+- **Sync**. Block ingest until the summary is in DB. Simple, no background workers or state machines. Haiku takes 1-3s, acceptable for individual ingest.
+- **Silent fail**. If the API fails (no key, rate limit, network), the chat ingest continues: a warning is logged, the chat keeps the summary from the export (or None) and a `summaries_failed` counter increments. Never aborts.
+- **Hash-based regen**. Each conversation has a new `content_hash` column (SHA-256 hex of the canonical text). Re-ingesting the same chat does NOT re-call the API if the hash matches and a summary already exists; it does regenerate if the chat changed (new messages via live capture). That saves money on bulk re-ingests of the same export.
+
+**What is new:**
+- New `src/memex/core/summaries/`: `base.py` with `Summarizer` ABC and `SummarizerError`, `fake.py` with deterministic `FakeSummarizer` for tests, `anthropic_summarizer.py` with the real client (lazy SDK import, truncates input to 12k chars to bound cost, Spanish prompt focused on "what problem and what decisions"), `__init__.py` with `get_default_summarizer()` returning `None` if the flag is OFF.
+- `anthropic>=0.40` added as optional extra `summaries` in pyproject. Install with `uv sync --extra summaries`.
+- `conversations.content_hash TEXT` column in schema. New additive migration in `db.py::_apply_additive_migrations` that checks `pragma_table_info` and runs `ALTER TABLE ADD COLUMN` if absent (SQLite has no `IF NOT EXISTS` on ALTER). Old DBs migrate on the first `init_schema`.
+- `_ingest_conversation` refactored: now it computes `full_text` and `content_hash` BEFORE inserting the conv (before it computed them after). That allows querying `repo.get_conversation(uuid)` to inspect the old hash and summary and decide whether to regenerate.
+- `IngestSummary` gains 3 counters: `summaries_generated`, `summaries_skipped_cached`, `summaries_failed`. CLI `memex ingest` shows them in the table when a summarizer is active. The HTTP ingest response also includes them.
+- New settings: `MEMEX_SUMMARY_ENABLED` (bool, default false), `MEMEX_SUMMARY_MODEL` (default `claude-haiku-4-5-20251001`), `MEMEX_SUMMARY_MAX_TOKENS` (default 200), `ANTHROPIC_API_KEY` (reuses the SDK's standard name).
+- 20 new unit tests: `tests/unit/test_summaries.py` (14) for FakeSummarizer + factory + AnthropicSummarizer (mocked), and 6 tests in `TestPipelineSummaries` inside `test_pipeline.py` for the wire (opt-out, opt-in happy path, cached re-ingest, regen on content change, silent fail, live capture).
+
+**Minor technical decisions:**
+- File `anthropic_summarizer.py` (not `anthropic.py`) to avoid shadowing the SDK package when doing `from anthropic import Anthropic` inside.
+- The factory sentinel is `None` (not `NoOpSummarizer`). The pipeline checks `if summarizer is not None` before calling. Simpler and explicit.
+- The truncation test uses a unique character (`Ω`) to count the body in the payload, avoiding collisions with the "a"s in the ES template (chat, mensajes, concatenados contribute 4 a's to the template).
+
+**State at close:** 216 unit tests green (197 + 19 new, exact count 216), `ruff check` + `ruff format --check` + `mypy` clean. Full suite run after the pipeline refactor to ensure no regression.
+
+**What was intentionally NOT done:**
+- Smoke test with real API, left for the user to try with their key.
+- Close audit (project rule applies at PHASE close, not sub-task).
+
+**Next step:** user smoke test with `MEMEX_SUMMARY_ENABLED=true` on a small ingest. If it works, consider the Discord announcement. Then start sub-task 2 of Phase 3: chat ↔ project/repo association (higher real value per chat with the user).
+
+---
+
+## 2026-05-20: Formal close of Phase 2 (audit + format + release 0.0.2)
+
+Phase 2 closed. Live capture + hybrid search functional end-to-end, Windows autostart operational, 197 unit tests green, CI green. Version bumped to `0.0.2`.
+
+**Close audit (sub-agent + manual review):**
+- Scope: everything added since the audit on 2026-05-19 (commit `b0c1cf6`). 5 commits, 18 files.
+- No blockers to close the phase. Core functionality without critical issues.
+
+**Important fixes applied at close (3):**
+- `scripts/_run-server.ps1`: log with mixed encoding. `Out-File -Encoding utf8` for the banner + `*>> $LogFile` for the exe output. PowerShell 5.1 default for `*>>` is UTF-16 LE, so the file got mixed and `Get-Content -Tail` showed intermittent garbage. Fix: `2>&1 | Out-File -Encoding utf8` to keep UTF-8 consistent.
+- `chrome-extension/src/popup.js`: `innerHTML` interpolating `e.kind`, `e.detail`, and `fmtAgo()` when rendering recent errors. Data comes from the local server (trusted), but the project rule is defense-in-depth. Fix: replaced with DOM API (`createElement` + `textContent` + append). Bonus: two em dashes used as connectors removed (project rule).
+- `CONTRIBUTING.md` said CI runs `ruff format --check` but that step had been removed (the polish DEVLOG entry documented it). Resolved by reactivating the step in CI after applying the format.
+
+**Minor fixes (4):**
+- `ROADMAP.md` said "190 unit tests green" when it was already 197. Updated.
+- `New-Item -ItemType Directory` inconsistent between the two `.ps1` files: one with `-Force`, the other with a prior `Test-Path`. Unified to `-Force` (idempotent).
+- Imprecise comment in `http_ingest.py::_get_conn` about when handlers run and why `check_same_thread=False`. Rewritten to reflect the real Starlette + uvicorn threading model and leave the invariant clear for future background tasks.
+- `popup.js:6`: em dash `"—"` as placeholder when there was no timestamp. Changed to `"-"`. Em dash as separator on the error line also removed (changed to `·`).
+
+**Also applied: `ruff format` + reactivate `--check` in CI.**
+
+16 files reformatted. Zero semantic changes (verified: 197 tests still green after the format). The `ruff format --check` step returned to the CI workflow; the visible debt of "the repo does not follow its own formatter" is closed.
+
+**Incidental CI improvements (manual review):**
+- `permissions: contents: read` added to the workflow for principle of least privilege.
+- `timeout-minutes: 10` on the test job (default was 6 hours, low risk but friction if something hangs).
+
+**Decisions taken with the user:**
+- Version bump `0.0.1 → 0.0.2` (conservative; pre-1.0 supports both, the user preferred patch over minor).
+- `ruff format` applied at this close, not delayed further. Closes the visible debt while the phase is paused between features.
+- Sub-task `design_chats` (live capture of project chats) remains deferred. Does NOT block Phase 2: the main corpus (loose chats + curated memory from the official export) works. Re-noted in ROADMAP as deferred to Phase 3+.
+
+**Phase 2 close criteria met:**
+- "Opening a new chat on Claude.ai makes it queryable from Claude Code in less than 1 minute": validated in real browsing with `memex serve` running as Scheduled Task. Observed latency: instant capture, ingest + embedding ~2-5s, immediately queryable.
+- Flow robustness: survives VS Code close, Windows reboots, and dual boot (validated by the user).
+
+**Next:** Phase 3 (quality pass). Auto-generated summaries at ingest with cheap Haiku, chat ↔ project/repo association so Claude Code matches the current repo, optional `SessionStart` hook for proactive context injection, `find_related(current_context)` tool. Detail in `ROADMAP.md`.
+
+---
+
+## 2026-05-20: Server autostart on Windows (Phase 5 preview)
+
+Goal: not having to run `uv run memex serve` by hand every time you start a session. Early Windows-only solution; the formal cross-platform version is left for `memex install-service` in Phase 5 of the ROADMAP.
+
+**What is new:**
+- `scripts/install-autostart.ps1`: PowerShell script with verbs `-Install` / `-Uninstall` / `-Status`. Registers a Scheduled Task `MemexServe` with "At log on" trigger for the current user, no window, no admin. Re-installing overwrites (idempotent). `-Install` also triggers the task immediately so the server is up in the current session without waiting for the next logon.
+- `scripts/_run-server.ps1`: wrapper invoked by the Scheduled Task. Sets the working directory to the repo (parent of the script), resolves `uv` in PATH at run time (not embedded at install, so it survives uv installation changes), and redirects all streams to the log file with append.
+
+**Decisions taken with the user:**
+- Standalone script in `scripts/`, NOT a CLI subcommand (`memex autostart`). Justification: it is Windows-only today; the subcommand deserves cross-platform design (Linux systemd / macOS launchd) and that work belongs to Phase 5. The current .ps1 gets cleanly replaced when we get there and serves as a base.
+- `-Install` starts the server immediately in addition to registering the task.
+- Re-install overwrites without asking (idempotent). Useful when we update the script and want to reapply.
+- Log: `%LOCALAPPDATA%\Memex\serve.log`, append, no rotation for now.
+
+**Bug detected and resolved during the initial test:**
+First config used `LogonType Interactive` with `-WindowStyle Hidden` in the PowerShell argument. Result: every time the task started a **visible empty CMD window** appeared, and when the user closed VS Code the task died (exit code `STATUS_CONTROL_C_EXIT`, leaving orphan python/uv processes not listening on the port). Root cause: PowerShell creates the window before processing `-WindowStyle Hidden`, and `LogonType Interactive` ties the task to the interactive shell session that triggered it; closing that shell groups the processes into the same VS Code Job Object and kills them in a chain.
+
+Applied fix: `LogonType S4U` (Service for User). The task runs as the user but without an interactive session, no window, independent from the shell that triggers it. No password or admin required; requires the "Log on as a batch job" privilege (granted by default to users on Win10/11). Verified: the task survives VS Code close and any terminal.
+
+**Final task settings:**
+- `LogonType S4U`, `RunLevel Limited`. No elevation.
+- `RestartCount 3`, `RestartInterval 1 minute`: if the wrapper dies, Task Scheduler restarts it up to 3 times with 1 min wait.
+- `ExecutionTimeLimit TimeSpan.Zero`: no execution time limit (default was 3 days).
 - `AllowStartIfOnBatteries`, `DontStopIfGoingOnBatteries`, `StartWhenAvailable`, `MultipleInstances IgnoreNew`.
-- Action: `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File <wrapper>`. `-File` apunta al wrapper para evitar escape-hell de comillas anidadas inline.
-- Detección del repo: `(Get-Item $PSScriptRoot).Parent.FullName` desde `scripts/`. Si movés el repo, hay que re-instalar (documentado en docstring).
+- Action: `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File <wrapper>`. `-File` points to the wrapper to avoid inline nested quote escape-hell.
+- Repo detection: `(Get-Item $PSScriptRoot).Parent.FullName` from `scripts/`. If you move the repo, you must re-install (documented in the docstring).
 
-**Otro item agregado en la misma sesión:**
-- Captura en vivo de chats de proyecto (`design_chats`) anotada como sub-task abierto en Fase 2. Diferida al cierre de fase para no bloquear el audit. El parser y el server ya distinguen `Source.DESIGN_CHAT`; falta la Chrome ext (regex de `inject.js` + routing en `background.js`) y requiere identificar la URL real que usa claude.ai. Documentado en ROADMAP.
+**Another item added in the same session:**
+- Live capture of project chats (`design_chats`) noted as an open sub-task in Phase 2. Deferred at phase close to avoid blocking the audit. The parser and the server already distinguish `Source.DESIGN_CHAT`; what is missing is the Chrome ext (regex in `inject.js` + routing in `background.js`) and identifying the real URL claude.ai uses. Documented in ROADMAP.
 
-**Tests:** no agregué tests del .ps1 (sería test de PowerShell, fuera del scope del pytest suite). Pruebo manual con `-Status`, `-Install`, y test definitivo "cerrar VS Code y verificar que el server sigue respondiendo": pasados.
-
----
-
-## 2026-05-20 — Deuda técnica residual del audit (test serve + rollback ingest)
-
-Cerramos 2 de los 3 follow-ups que el audit del 2026-05-19 dejó anotados. El tercero (settings lazy) lo evaluamos y decidimos aplazar con justificación.
-
-**Lo nuevo:**
-- `tests/unit/test_cli.py::TestServeCommand`: 4 tests del comando `memex serve` mockeando `uvicorn.run` y `connect_and_init` con monkeypatch. Cubren: defaults (host/port/log_level), flags `--host` y `--port` custom, `--db` inyecta la conn en `http_ingest._conn` con `check_same_thread=False`, sin `--db` la conn queda intacta. Aprovechan que el `import uvicorn` y `from memex.core.storage.db import connect_and_init` dentro de `serve()` re-resuelven del módulo en cada invocación.
-- `tests/unit/test_pipeline.py::TestPipelineRollback`: 3 tests del rollback del ingest cuando el embedder falla a mitad de batches. Cubren: (1) `ingest_single_conversation` rolea back y re-raisea, sin dejar conv ni messages en la DB, (2) `ingest_export` reporta el error en `summary.errors` sin persistir la conv, (3) si una conv falla, las otras del mismo export entran OK (aislamiento por conv vía try/except en el loop). Helper local `FailingEmbedder` que wrappea `FakeEmbedder` y falla en calls específicos.
-
-**Bug encontrado al escribir el helper de tests:** primera versión del payload solo pisaba `text` y dejaba `content[]` del template original. El parser usa `content[]` primero (`claude_export.py:163-179`) y solo cae a `text` como fallback. Resultado: el chunker recibía 4-7 chars en vez de 20K, generaba 1 chunk, 1 batch, 1 call al embedder, y el fail_on_call=2 nunca disparaba. No es un bug del código de producción; fue el helper de test mal hecho. Documentado en el docstring de `_long_text_payload`.
-
-**Item aplazado conscientemente:** `settings = get_settings()` evaluado al import time. Hoy no hay test roto que lo necesite (los tests existentes usan `@patch("memex.X.settings")` con MagicMock, lo cual seguirá funcionando independientemente). El follow-up sigue abierto, esperando un caso concreto que lo motive antes de invertir en el refactor. Razonado en `handoff.md`.
-
-**Estado de tests:** 197 unit tests verdes (190 previos + 4 serve + 3 rollback). ruff check sobre los archivos modificados clean. mypy no se ve afectado (no tocamos `src/memex/core`, `transports` ni `config.py`).
+**Tests:** I did not add tests for the .ps1 (it would be a PowerShell test, out of scope for the pytest suite). Manual testing with `-Status`, `-Install`, and the definitive test "close VS Code and verify the server keeps responding": all passed.
 
 ---
 
-## 2026-05-20 — Polish del repo público (CI, badges, docs, screenshot, íconos)
+## 2026-05-20: Residual tech debt from the audit (serve test + ingest rollback)
 
-Bloque D del plan que veníamos pateando desde el handoff. Todo en un solo commit porque pertenece al mismo objetivo: dejar el repo presentable para gente que llegue desde el Discord (hubo primer favorito en el thread hoy a la mañana, signal de que vale el polish ahora).
+Closed 2 of the 3 follow-ups noted in the 2026-05-19 audit. The third (lazy settings) was evaluated and we decided to defer with justification.
 
-**Lo nuevo:**
-- `.github/workflows/ci.yml`: trigger en push y PR a `main`, ubuntu-latest + Python 3.12 vía `astral-sh/setup-uv@v3` con cache habilitado. Corre `ruff check`, `mypy` (sobre `core` + `config.py` + `transports`, mismo scope que el handoff dice estar clean) y `pytest tests/unit -q`. Saltea integration (necesitan Ollama).
-- 3 badges al tope del `README.md`: CI status, License MIT, Python 3.12+.
-- Screenshot embebido en el `README.md`: el "Session memory check" del Discord en `docs/screenshots/session-memory-check.jpeg`, con caption explicando qué se ve (Claude Code recuerda un chat de claude.ai capturado segundos antes por la Chrome ext, vía `list_recent_chats` + `get_chat`).
-- `CONTRIBUTING.md`: scope del proyecto, setup local, checks que corre CI, code style condensado (sin em dashes, sin AI footers, imperativo en commits, regla de arquitectura `core/` no importa de `transports/` ni `cli/`), workflow de PR.
-- `CHANGELOG.md`: formato Keep a Changelog. Sección `[Unreleased]` con el polish + traducción README, y secciones por fase (Phase 2 in progress / Phase 1 closed / Phase 0 closed) con bullets reales basados en commits previos.
-- Íconos de la Chrome extension: 4 PNG (16/32/48/128) + SVG fuente en `chrome-extension/icons/`. Diseño: "M" estilizada con dos puntos naranjas en las patas, fondo crema. Iteración: la primera versión no tenía padding y se veía apretada a 16 px; el user mandó una segunda con la M centrada en viewBox 104x104. Esa quedó.
-- `chrome-extension/manifest.json`: declara `icons` top-level (para la página `chrome://extensions` y la Web Store cuando aplique) y `default_icon` dentro de `action` (para la toolbar). Reemplaza el placeholder gris.
+**What is new:**
+- `tests/unit/test_cli.py::TestServeCommand`: 4 tests for the `memex serve` command mocking `uvicorn.run` and `connect_and_init` with monkeypatch. Cover: defaults (host/port/log_level), custom `--host` and `--port` flags, `--db` injects the conn into `http_ingest._conn` with `check_same_thread=False`, without `--db` the conn stays intact. They take advantage of the fact that `import uvicorn` and `from memex.core.storage.db import connect_and_init` inside `serve()` re-resolve from the module on each invocation.
+- `tests/unit/test_pipeline.py::TestPipelineRollback`: 3 tests for the ingest rollback when the embedder fails mid-batch. Cover: (1) `ingest_single_conversation` rolls back and re-raises, leaving no conv or messages in the DB, (2) `ingest_export` reports the error in `summary.errors` without persisting the conv, (3) if one conv fails, the others in the same export are ingested OK (per-conv isolation via try/except in the loop). Local helper `FailingEmbedder` wraps `FakeEmbedder` and fails on specific calls.
 
-**Decisión menor pero anotada:** el CI workflow originalmente incluía `ruff format --check`. Verificación local mostró que 15 archivos del repo no están alineados con el default de `ruff format` (el proyecto históricamente usa `ruff format` pero nunca corrió `--check` en CI). Saqué el step en lugar de meter un format-bomb de 15 archivos en este mismo commit. Si en algún momento se decide alinear con `ruff format` y mantener el check en CI, va a su propia sesión.
+**Bug found while writing the test helper:** the first version of the payload only overwrote `text` and kept `content[]` from the original template. The parser uses `content[]` first (`claude_export.py:163-179`) and only falls back to `text`. Result: the chunker received 4-7 chars instead of 20K, produced 1 chunk, 1 batch, 1 embedder call, and `fail_on_call=2` never triggered. Not a production bug; the test helper was wrong. Documented in the docstring of `_long_text_payload`.
 
-**Verificación local pre-push:**
+**Consciously deferred item:** `settings = get_settings()` evaluated at import time. There is no broken test today that needs it (existing tests use `@patch("memex.X.settings")` with MagicMock, which will keep working independently). The follow-up stays open, waiting for a concrete case that motivates the refactor before investing in it. Reasoned in `handoff.md`.
+
+**Test state:** 197 unit tests green (190 previous + 4 serve + 3 rollback). ruff check on modified files clean. mypy not affected (we did not touch `src/memex/core`, `transports`, or `config.py`).
+
+---
+
+## 2026-05-20: Public repo polish (CI, badges, docs, screenshot, icons)
+
+Block D of the plan we had been pushing since the handoff. Everything in a single commit because it belongs to the same goal: leaving the repo presentable for people arriving from Discord (first favorite on the thread today in the morning, signal that the polish is worth doing now).
+
+**What is new:**
+- `.github/workflows/ci.yml`: triggered on push and PR to `main`, ubuntu-latest + Python 3.12 via `astral-sh/setup-uv@v3` with cache enabled. Runs `ruff check`, `mypy` (over `core` + `config.py` + `transports`, same scope the handoff states is clean) and `pytest tests/unit -q`. Skips integration (needs Ollama).
+- 3 badges at the top of `README.md`: CI status, License MIT, Python 3.12+.
+- Screenshot embedded in `README.md`: the "Session memory check" from Discord at `docs/screenshots/session-memory-check.jpeg`, with caption explaining what is shown (Claude Code recalls a claude.ai chat captured seconds earlier by the Chrome ext, via `list_recent_chats` + `get_chat`).
+- `CONTRIBUTING.md`: project scope, local setup, checks that CI runs, condensed code style (no em dashes, no AI footers, imperative in commits, architecture rule `core/` does not import from `transports/` or `cli/`), PR workflow.
+- `CHANGELOG.md`: Keep a Changelog format. `[Unreleased]` section with the polish + README translation, and sections per phase (Phase 2 in progress / Phase 1 closed / Phase 0 closed) with real bullets based on previous commits.
+- Chrome extension icons: 4 PNG (16/32/48/128) + source SVG in `chrome-extension/icons/`. Design: stylized "M" with two orange dots on the legs, cream background. Iteration: the first version had no padding and looked tight at 16 px; the user sent a second one with the M centered on viewBox 104x104. That one stayed.
+- `chrome-extension/manifest.json`: declares `icons` top-level (for the `chrome://extensions` page and the Web Store when applicable) and `default_icon` inside `action` (for the toolbar). Replaces the gray placeholder.
+
+**Minor but noted decision:** the CI workflow originally included `ruff format --check`. Local verification showed that 15 files in the repo are not aligned with the `ruff format` default (the project historically uses `ruff format` but never ran `--check` in CI). I dropped the step instead of dumping a 15-file format-bomb into this same commit. If at some point we decide to align with `ruff format` and keep the check in CI, that goes in its own session.
+
+**Local verification before push:**
 - `ruff check src tests`: clean.
-- `mypy src/memex/core src/memex/config.py src/memex/transports`: 0 issues en 20 archivos.
-- `pytest tests/unit -q`: 190 passed (1 warning preexistente de fastembed sobre el modelo nomic actualizado en HF, no nuestro).
-- `chrome-extension/manifest.json`: JSON parsea OK.
-- Em dashes: los dos únicos son legítimos (uno en el snippet del README que el user copiaría a su CLAUDE.md, otro en la regla de CONTRIBUTING que se cita a sí misma).
+- `mypy src/memex/core src/memex/config.py src/memex/transports`: 0 issues in 20 files.
+- `pytest tests/unit -q`: 190 passed (1 preexisting warning from fastembed about the updated nomic model on HF, not ours).
+- `chrome-extension/manifest.json`: JSON parses OK.
+- Em dashes: the only two remaining are legitimate (one in the README snippet the user would copy to their CLAUDE.md, the other in the CONTRIBUTING rule that quotes itself).
 
-**Estado al cierre:** repo listo para push. CI debería correr verde al primer trigger.
-
----
-
-## 2026-05-20 — README al inglés (cuerpo entero)
-
-Traducción del README al inglés. Hasta hoy era blockquote intro en inglés + cuerpo en español. Decisión acordada con el user (handoff de la sesión anterior): README full inglés para audiencia internacional, `ROADMAP.md` y `DEVLOG.md` quedan en español por ser bitácora interna del proyecto. Nota explícita en el README apuntando eso para que un lector externo no se sorprenda al abrir esos archivos.
-
-**Cambios incidentales aprovechando la traducción:**
-- Quickstart paso 3: el comentario decía "tarda generando embeddings con Ollama". Ya no es cierto desde `1c90ad6` (fastembed es default). Ahora dice "downloads the fastembed model on first use".
-- Diagrama ASCII: `local embeddings (fastembed / Ollama)` en vez de `local embeddings con Ollama`. Refleja el estado real.
-
-**Pendiente del handoff que sigue abierto:**
-- Polish del repo público (badges, screenshot embebido, íconos Chrome ext, CONTRIBUTING.md, CHANGELOG.md).
-- Leer feedback Discord.
-- Deuda técnica: test de `memex serve`, settings lazy, rollback en ingest a mitad.
-- Sub-task de Fase 2: uso real durante una semana + auditoría de cierre.
+**State at close:** repo ready for push. CI should pass green on the first trigger.
 
 ---
 
-## 2026-05-19 — Limpieza post-Discord (audit + Bloque A)
+## 2026-05-20: README in English (whole body)
 
-Audit completo del proyecto (primer audit exhaustivo desde Fase 1). Sub-agent revisó código, docs, deps y calidad de cara al público. Veredicto: nada bloqueante, pero deuda acumulada visible que merece cerrarse ahora que el repo es público.
+Translation of the README to English. Until today it was an English intro blockquote + Spanish body. Decision agreed with the user (handoff from previous session): full English README for an international audience, `ROADMAP.md` and `DEVLOG.md` stay in Spanish as the project's internal log. Explicit note in the README pointing that out so an external reader is not surprised when opening those files.
 
-**Críticos arreglados (4):**
-- `cli/main.py:63` imprimía "embedder: Ollama" hardcodeado pese a que el default es fastembed. Bug visible al usuario. Ahora muestra el backend real (`settings.embed_backend`) + el `model_name` del embedder ya inicializado.
-- `pyproject.toml` no declaraba `starlette` ni `uvicorn` como deps directas (llegaban transitivamente vía `fastmcp`). Agregadas; si fastmcp las suelta en una versión futura, `memex serve` no revienta.
-- `chrome-extension/src/inject.js` usaba `postMessage("*")` como target; cualquier otro script del page world de claude.ai podía interceptar el JSON del chat. Ahora `window.location.origin` (claude.ai siempre es same-origin).
-- `chrome-extension/manifest.json` sin `content_security_policy`. Agregada CSP explícita para extension pages (`script-src 'self'; connect-src 'self' http://127.0.0.1:5777 http://localhost:5777`).
+**Incidental changes leveraging the translation:**
+- Quickstart step 3: the comment said "takes a while generating embeddings with Ollama". No longer true since `1c90ad6` (fastembed is default). Now it says "downloads the fastembed model on first use".
+- ASCII diagram: `local embeddings (fastembed / Ollama)` instead of `local embeddings with Ollama`. Reflects the real state.
 
-**Importantes arreglados (5):**
-- `stdio.py` ya no leakea `{e}` al cliente MCP; ahora devuelve `Error interno ({Tipo})` y el detalle queda solo en el log. Test actualizado para verificar que el mensaje crudo no se filtra al cliente.
-- `ollama.py` ahora atrapa explícitamente `httpx.ConnectError`, `ConnectTimeout`, `ReadTimeout`, `RemoteProtocolError` antes del fallback por substring. Menos frágil ante cambios de wording.
-- `_to_iso` (repo.py) usa `strftime` explícito en vez de `replace("+00:00", "Z")`. Robusto frente a zonas no-UTC.
-- `tools.search_chats(mode="lexical")` devuelve error claro si la query se sanitiza a vacío (antes silencioso, devolvía `[]`).
-- `chrome-extension/src/background.js` ahora retrytea 3 veces con backoff (2s, 8s) ante network errors. Cubre el caso "fastembed bajando el modelo la primera vez" en el que el server tarda 30-60s antes de responder.
-
-**Código muerto eliminado:**
-- `src/memex/core/retrieval/` (directorio vacío con `__init__.py` vacío). Si la lógica de retrieval crece, se recrea con contenido real.
-- `parse_conversation_dict` ya no es un wrapper de una línea sobre el privado; se promovió en lugar (el privado `_parse_conversation_dict` se renombró al público y se borró el wrapper).
-
-**Dependencias reorganizadas:**
-- `ollama` movido a `[project.optional-dependencies]` extra `ollama` (ya no es default; el que lo quiere instala `uv pip install -e .[ollama]`).
-- `starlette>=0.40` y `uvicorn>=0.30` agregadas como deps directas.
-- `pytest-cov` eliminado de dev deps (no se usaba en CI ni docs).
-
-**Test gap cerrado:**
-- `tests/unit/test_storage.py::TestHybridSearch::test_hybrid_when_query_sanitizes_to_empty`: cubre el caso donde uno de los dos motores (text_search) devuelve `[]` y el RRF tiene que igual entregar los hits del otro (vector_search).
-
-**Docs sincronizadas:**
-- `CLAUDE.md`: stack ahora dice "fastembed default / Ollama opcional". Árbol del repo refleja `embeddings/fastembed_embedder.py`, `transports/http_ingest.py`, sin `retrieval/`. Estado al 2026-05-19. Comandos habituales incluyen `memex serve`.
-- `ROADMAP.md`: test count actualizado a 190.
-
-**Pendiente (no se hizo hoy, marcado para próxima sesión vía handoff.md):**
-- Traducir README al inglés (cuerpo entero).
-- Polish del repo público: badges, screenshot embebido, íconos para la Chrome ext, CONTRIBUTING.md, CHANGELOG.md.
-- Test de `memex serve` (CliRunner mockeando uvicorn).
-- Sub-task captura en vivo: probarlo en uso real durante una semana → criterio de cierre de Fase 2.
-- `settings` se evalúa al import time (follow-up de Fase 0 sigue abierto).
-
-**Estado final:** 190 unit + 7 integration tests verdes. Ruff y mypy clean. Audit pasado sin bloqueantes.
+**Pending items from the handoff that stay open:**
+- Public repo polish (badges, embedded screenshot, Chrome ext icons, CONTRIBUTING.md, CHANGELOG.md).
+- Read Discord feedback.
+- Tech debt: `memex serve` test, lazy settings, mid-ingest rollback.
+- Phase 2 sub-task: real use for a week + close audit.
 
 ---
 
-## 2026-05-19 — Primer post público en Discord oficial de Anthropic
+## 2026-05-19: Post-Discord cleanup (audit + Block A)
 
-Posteado en el server oficial de Anthropic, en el canal de foros (thread `1506428270353060001`). Es la primera vez que Memex sale del repo privado del laburo a una audiencia externa.
+Full project audit (first exhaustive audit since Phase 1). Sub-agent reviewed code, docs, deps, and quality before going public. Verdict: nothing blocking, but accumulated debt worth closing now that the repo is public.
 
-Estructura del post (final, después de iterar varias versiones):
+**Critical fixes (4):**
+- `cli/main.py:63` printed "embedder: Ollama" hardcoded even though the default is fastembed. User-visible bug. Now it shows the real backend (`settings.embed_backend`) + the `model_name` of the already-initialized embedder.
+- `pyproject.toml` did not declare `starlette` or `uvicorn` as direct deps (they arrived transitively via `fastmcp`). Added; if fastmcp drops them in a future version, `memex serve` does not break.
+- `chrome-extension/src/inject.js` used `postMessage("*")` as target; any other script on the claude.ai page world could intercept the chat JSON. Now `window.location.origin` (claude.ai is always same-origin).
+- `chrome-extension/manifest.json` without `content_security_policy`. Explicit CSP added for extension pages (`script-src 'self'; connect-src 'self' http://127.0.0.1:5777 http://localhost:5777`).
+
+**Important fixes (5):**
+- `stdio.py` no longer leaks `{e}` to the MCP client; now returns `Error interno ({Type})` and the detail stays only in the log. Test updated to verify the raw message does not leak to the client.
+- `ollama.py` now explicitly catches `httpx.ConnectError`, `ConnectTimeout`, `ReadTimeout`, `RemoteProtocolError` before the substring fallback. Less fragile against wording changes.
+- `_to_iso` (repo.py) uses explicit `strftime` instead of `replace("+00:00", "Z")`. Robust against non-UTC zones.
+- `tools.search_chats(mode="lexical")` returns a clear error if the query sanitizes to empty (it was silent before, returning `[]`).
+- `chrome-extension/src/background.js` now retries 3 times with backoff (2s, 8s) on network errors. Covers the case "fastembed downloading the model for the first time" where the server takes 30-60s before responding.
+
+**Dead code removed:**
+- `src/memex/core/retrieval/` (empty directory with empty `__init__.py`). If retrieval logic grows, it gets recreated with real content.
+- `parse_conversation_dict` is no longer a one-line wrapper over the private one; it was promoted in place (the private `_parse_conversation_dict` was renamed to public and the wrapper deleted).
+
+**Dependencies reorganized:**
+- `ollama` moved to `[project.optional-dependencies]` extra `ollama` (no longer default; whoever wants it installs `uv pip install -e .[ollama]`).
+- `starlette>=0.40` and `uvicorn>=0.30` added as direct deps.
+- `pytest-cov` removed from dev deps (was not used in CI or docs).
+
+**Test gap closed:**
+- `tests/unit/test_storage.py::TestHybridSearch::test_hybrid_when_query_sanitizes_to_empty`: covers the case where one of the two engines (text_search) returns `[]` and the RRF still has to deliver the hits from the other (vector_search).
+
+**Docs synced:**
+- `CLAUDE.md`: stack now says "fastembed default / Ollama optional". Repo tree reflects `embeddings/fastembed_embedder.py`, `transports/http_ingest.py`, no `retrieval/`. State as of 2026-05-19. Common commands include `memex serve`.
+- `ROADMAP.md`: test count updated to 190.
+
+**Pending (not done today, marked for next session via handoff.md):**
+- Translate README to English (whole body).
+- Public repo polish: badges, embedded screenshot, Chrome ext icons, CONTRIBUTING.md, CHANGELOG.md.
+- `memex serve` test (CliRunner mocking uvicorn).
+- Live capture sub-task: try it in real use for a week, Phase 2 close criterion.
+- `settings` evaluated at import time (Phase 0 follow-up still open).
+
+**Final state:** 190 unit + 7 integration tests green. Ruff and mypy clean. Audit passed without blockers.
+
+---
+
+## 2026-05-19: First public post on the official Anthropic Discord
+
+Posted on the official Anthropic server, in the forums channel (thread `1506428270353060001`). It is the first time Memex leaves the private work repo to an external audience.
+
+Post structure (final, after iterating several versions):
 - Hook: "Making Claude remember. Building a fix."
-- Setup del problema (claude.ai planea, Claude Code ejecuta, no comparten contexto).
-- Metáfora de "talking to one person" para la idea de Memex.
-- Sección técnica "Under the hood" con stack (MCP + sqlite-vec + FTS5 + RRF).
-- 1 semana de dogfooding sobre corpus propio (74 chats / 1024 mensajes).
-- What works today / What's missing.
-- Una sola pregunta abierta: "Does this match a real pain you have, or am I solving a problem only I have?"
-- Link al repo al final con caveat "pre-alpha, runs from source, no installer yet".
+- Problem setup (claude.ai plans, Claude Code executes, they do not share context).
+- "Talking to one person" metaphor for the Memex idea.
+- Technical section "Under the hood" with stack (MCP + sqlite-vec + FTS5 + RRF).
+- 1 week of dogfooding on the own corpus (74 chats / 1024 messages).
+- What works today / What is missing.
+- One open question: "Does this match a real pain you have, or am I solving a problem only I have?"
+- Repo link at the end with the caveat "pre-alpha, runs from source, no installer yet".
 
-Tags elegidos: `MCP Server`, `Browser Extension`, `CLI`, `Open Source`, `Utility`.
+Tags chosen: `MCP Server`, `Browser Extension`, `CLI`, `Open Source`, `Utility`.
 
-Imagen única: screenshot de Claude Code haciendo "memory check" end-to-end. El user pregunta "do you remember what we talked about" sin mencionar Memex; Claude Code invoca `list_recent_chats` + `get_chat` solo, encuentra el chat capturado segundos antes via la Chrome ext, resume el contenido y hasta identifica el contexto meta ("you were testing the live capture flow"). Una imagen muestra todo el sistema funcionando.
+Single image: screenshot of Claude Code doing an end-to-end "memory check". The user asks "do you remember what we talked about" without mentioning Memex; Claude Code invokes `list_recent_chats` + `get_chat` on its own, finds the chat captured seconds earlier via the Chrome ext, summarizes the content, and even identifies the meta-context ("you were testing the live capture flow"). One image shows the whole system working.
 
-Cambios al repo asociados al post:
-- GitHub description traducida a inglés via `gh repo edit`.
-- README con párrafo intro en inglés arriba (commit `c6420e9`). El cuerpo queda en español por ahora.
+Repo changes associated with the post:
+- GitHub description translated to English via `gh repo edit`.
+- README with English intro paragraph at the top (commit `c6420e9`). The body stays in Spanish for now.
 
-Pendiente: leer feedback y reacciones del thread cuando aparezcan.
-
----
-
-## 2026-05-19 — Embedder zero-config: fastembed default, Ollama opcional
-
-**Motivación:** la pregunta "feature o bug" sobre BYO-Ollama del post de Discord nos hizo notar que la fricción de Ollama es real para usuarios casuales. Reemplazar el embedder por algo embebido convierte ese trade-off en "feature claramente": local-first sigue, pero sin daemon externo.
-
-**Qué se hizo:**
-- `pyproject.toml`: agregada dep `fastembed>=0.4.0` (~30 MB de deps adicionales: numpy + onnxruntime + tokenizers).
-- `config.py`: nuevo setting `embed_backend: "fastembed" | "ollama"` (default `"fastembed"`). `embed_model: str | None`, cada backend usa su default si no se setea.
-- `core/embeddings/fastembed_embedder.py`: nueva implementación de `Embedder`. Modelo lazy-load la primera vez (import + descarga del ONNX a `~/.cache/fastembed/`). Default `nomic-ai/nomic-embed-text-v1.5-Q` (cuantizado, 130 MB). Mismo dim 768. L2 normaliza por default.
-- `core/embeddings/ollama.py`: ajustado para que `embed_model=None` caiga a `DEFAULT_MODEL = "nomic-embed-text"`. No-op para usuarios que ya tenían setting.
-- `core/embeddings/__init__.py`: factory `get_default_embedder()` que devuelve el embedder configurado. Backend case-insensitive, valida.
-- Refactor de los 3 call sites (`cli/main.py`, `transports/http_ingest.py`, `transports/stdio.py`) para usar la factory en vez de hardcodear `OllamaEmbedder()`.
-- `tests/unit/test_embedder_factory.py`: 10 tests cubriendo la factory (backends válidos, case-insensitive, whitespace, inválido, default, fastembed empty input).
-- `.env.example` y `README.md`: docs nuevas con backend default + alternativa.
-
-**Trade-off conocido:** embeddings de Ollama y fastembed para el mismo "nomic-embed-text" no son bit-exactos (Ollama usa GGUF, fastembed usa ONNX, distinta cuantización/tokenizer). La diferencia es chica pero al cambiar de backend conviene re-ingestar para que toda la base tenga vectores del mismo modelo. Documentado en el docstring del módulo.
-
-**Estado:**
-- 189 unit tests verdes (+10 nuevos del factory).
-- Ruff y mypy clean (21 source files).
-- Default zero-config: `uv sync` + `uv run memex serve` y el modelo se baja solo la primera vez.
-
-**Cómo afecta al post de Discord:**
-- La pregunta #2 ahora puede ser más punzante: "local-first zero-config: feature o el típico 'subí mis embeddings a tu cloud' es más cómodo?"
-- El bullet "Chrome ext + local HTTP server captures new chats automatically" mantiene sentido, pero "BYO Ollama" deja de ser fricción para empujarlo a la sección opcional.
+Pending: read feedback and reactions on the thread when they appear.
 
 ---
 
-## 2026-05-19 — Captura en vivo: backend HTTP + Chrome extension
+## 2026-05-19: Zero-config embedder, fastembed default, Ollama optional
 
-**Contexto:** completar Fase 2 con captura en vivo. Hasta ahora Memex solo indexaba el zip del export oficial (todo lo que charlés en claude.ai después del export queda fuera). Captura en vivo cierra ese gap: cada chat que abrís o creás en claude.ai aparece en Memex en segundos, automático.
+**Motivation:** the "feature or bug" question about BYO-Ollama from the Discord post made us notice that Ollama friction is real for casual users. Replacing the embedder with something embedded turns that trade-off into "clearly a feature": local-first stays, but without an external daemon.
 
-**Arquitectura:** dos piezas en este repo (no depende de SyncChat).
+**What was done:**
+- `pyproject.toml`: added dep `fastembed>=0.4.0` (~30 MB of additional deps: numpy + onnxruntime + tokenizers).
+- `config.py`: new setting `embed_backend: "fastembed" | "ollama"` (default `"fastembed"`). `embed_model: str | None`, each backend uses its default if not set.
+- `core/embeddings/fastembed_embedder.py`: new `Embedder` implementation. Model is lazy-loaded the first time (import + ONNX download to `~/.cache/fastembed/`). Default `nomic-ai/nomic-embed-text-v1.5-Q` (quantized, 130 MB). Same dim 768. L2 normalizes by default.
+- `core/embeddings/ollama.py`: adjusted so `embed_model=None` falls to `DEFAULT_MODEL = "nomic-embed-text"`. No-op for users who already had the setting.
+- `core/embeddings/__init__.py`: factory `get_default_embedder()` that returns the configured embedder. Case-insensitive backend, validates.
+- Refactor of the 3 call sites (`cli/main.py`, `transports/http_ingest.py`, `transports/stdio.py`) to use the factory instead of hardcoding `OllamaEmbedder()`.
+- `tests/unit/test_embedder_factory.py`: 10 tests covering the factory (valid backends, case-insensitive, whitespace, invalid, default, fastembed empty input).
+- `.env.example` and `README.md`: new docs with default backend + alternative.
+
+**Known trade-off:** embeddings from Ollama and fastembed for the same "nomic-embed-text" are not bit-exact (Ollama uses GGUF, fastembed uses ONNX, different quantization/tokenizer). The difference is small but when switching backends it is worth re-ingesting so the whole DB has vectors from the same model. Documented in the module docstring.
+
+**State:**
+- 189 unit tests green (+10 new from the factory).
+- Ruff and mypy clean (21 source files).
+- Zero-config default: `uv sync` + `uv run memex serve` and the model downloads itself the first time.
+
+**How it affects the Discord post:**
+- Question #2 can now be sharper: "local-first zero-config: feature, or is the typical 'upload my embeddings to your cloud' more comfortable?"
+- The bullet "Chrome ext + local HTTP server captures new chats automatically" keeps making sense, but "BYO Ollama" stops being friction and moves to the optional section.
+
+---
+
+## 2026-05-19: Live capture, HTTP backend + Chrome extension
+
+**Context:** complete Phase 2 with live capture. Until now Memex only indexed the official export zip (everything you chat on claude.ai after the export stays out). Live capture closes that gap: every chat you open or create on claude.ai shows up in Memex within seconds, automatic.
+
+**Architecture:** two pieces in this repo (not depending on SyncChat).
 
 ```
-[Claude.ai] → inject.js (intercepta fetch) → content.js → background.js → POST http://127.0.0.1:5777/ingest/conversation → Memex SQLite
+[Claude.ai] → inject.js (intercepts fetch) → content.js → background.js → POST http://127.0.0.1:5777/ingest/conversation → Memex SQLite
 ```
 
-**Backend (mini-tanda 1):**
-- `transports/http_ingest.py`: Starlette app con dos endpoints. `GET /health` (ping para el popup), `POST /ingest/conversation` (recibe el JSON crudo del API de Claude.ai, mismo shape que `conversations.json`). Origin check restringe a `chrome-extension://` y `moz-extension://`. Validación de shape con códigos HTTP claros (400 mal payload, 403 origin, 503 Ollama caído, 500 inesperado).
-- `core/ingest/pipeline.py::ingest_single_conversation()`: refactor para reusar la lógica de "ingest de un solo chat" desde el endpoint. Commit/rollback al final.
-- `core/ingest/claude_export.py::parse_conversation_dict()`: promovido a público (antes privado). Pieza común a las 3 fuentes de chats.
-- `core/storage/db.py`: `get_connection` y `connect_and_init` aceptan `check_same_thread=False`. Necesario porque Starlette/uvicorn corren handlers en thread pool. SQLite es thread-safe a nivel C; el check del cliente Python se relaja explícitamente.
-- CLI `memex serve --host --port --db`: arranca uvicorn con la app. Pensado para correr persistente en una terminal.
-- 14 tests con TestClient cubriendo health, origin check, ingest happy path, idempotencia, validación de shape.
+**Backend (mini-batch 1):**
+- `transports/http_ingest.py`: Starlette app with two endpoints. `GET /health` (ping for the popup), `POST /ingest/conversation` (receives the raw JSON from Claude.ai's API, same shape as `conversations.json`). Origin check restricts to `chrome-extension://` and `moz-extension://`. Shape validation with clear HTTP codes (400 bad payload, 403 origin, 503 Ollama down, 500 unexpected).
+- `core/ingest/pipeline.py::ingest_single_conversation()`: refactor to reuse the "ingest one chat" logic from the endpoint. Commit/rollback at the end.
+- `core/ingest/claude_export.py::parse_conversation_dict()`: promoted to public (was private). Common piece for the 3 chat sources.
+- `core/storage/db.py`: `get_connection` and `connect_and_init` accept `check_same_thread=False`. Necessary because Starlette/uvicorn run handlers in a thread pool. SQLite is thread-safe at the C level; the Python client check is explicitly relaxed.
+- CLI `memex serve --host --port --db`: starts uvicorn with the app. Designed to run persistently in a terminal.
+- 14 tests with TestClient covering health, origin check, ingest happy path, idempotency, shape validation.
 
-**Chrome extension (mini-tanda 2):**
-- `chrome-extension/manifest.json` (MV3) con host_permissions limitados a `https://claude.ai/*` y `http://127.0.0.1:5777/*`.
-- `inject.js`: copy del de SyncChat con rename (`syncchat-inject` → `memex-inject`). Monkey-patch de `window.fetch`, clasifica solo `conv-full` y `conv-create`, posta vía `window.postMessage`. Mantiene el scrubbing de campos sensibles (defense in depth).
-- `content.js`: 10 líneas, puente del page world al service worker.
-- `background.js`: filtra solo chats completos, POST a `http://127.0.0.1:5777/ingest/conversation`. Stats en `chrome.storage.local` para el popup (chats ingestados, errores recientes, último ingest). Configurable via popup.
-- `popup.html` + `popup.js`: status del servidor (chip verde/rojo), contadores, lista de errores recientes, configuración de URL.
-- `chrome-extension/README.md`: instrucciones de carga unpacked + flujo de prueba + privacidad.
+**Chrome extension (mini-batch 2):**
+- `chrome-extension/manifest.json` (MV3) with host_permissions limited to `https://claude.ai/*` and `http://127.0.0.1:5777/*`.
+- `inject.js`: copy from SyncChat with rename (`syncchat-inject` → `memex-inject`). Monkey-patches `window.fetch`, classifies only `conv-full` and `conv-create`, posts via `window.postMessage`. Keeps scrubbing of sensitive fields (defense in depth).
+- `content.js`: 10 lines, bridge from page world to service worker.
+- `background.js`: filters only complete chats, POSTs to `http://127.0.0.1:5777/ingest/conversation`. Stats in `chrome.storage.local` for the popup (ingested chats, recent errors, last ingest). Configurable via popup.
+- `popup.html` + `popup.js`: server status (green/red chip), counters, recent error list, URL configuration.
+- `chrome-extension/README.md`: unpacked load instructions + test flow + privacy.
 
-**Decisión: Chrome ext propia de Memex, no fork de SyncChat.** El interceptor es ~100 líneas, copiarlo es trivial. Reusar SyncChat instalado obligaría al usuario a tener ambos productos y crearía acoplamiento que no necesitamos. El background es radicalmente más simple (sin WS, sin reconexión, sin storage de chats; el backend ya es idempotente).
+**Decision: Memex's own Chrome ext, not a SyncChat fork.** The interceptor is ~100 lines, copying it is trivial. Reusing installed SyncChat would force the user to have both products and create coupling we do not need. The background is radically simpler (no WS, no reconnect, no chat storage; the backend is already idempotent).
 
-**Smoke test live (backend con uvicorn real, no TestClient):**
-- `memex serve --port 5778 --db /tmp/memex_smoke.db` en background.
-- `GET /health` → 200 OK.
-- POST con `Origin: chrome-extension://abc...` → 200 con `{"status": "ok", "uuid": "smoke-conv-1", "conversations": 1, "messages": 1, "chunks": 1}`.
-- POST sin Origin → 403 (origin check funciona en producción, no solo en TestClient).
-- `memex stats --db /tmp/memex_smoke.db` → 1 conv, 1 msg, 1 chunk persistidos.
+**Live smoke test (backend with real uvicorn, not TestClient):**
+- `memex serve --port 5778 --db /tmp/memex_smoke.db` in background.
+- `GET /health` returns 200 OK.
+- POST with `Origin: chrome-extension://abc...` returns 200 with `{"status": "ok", "uuid": "smoke-conv-1", "conversations": 1, "messages": 1, "chunks": 1}`.
+- POST without Origin returns 403 (origin check works in production, not only in TestClient).
+- `memex stats --db /tmp/memex_smoke.db` returns 1 conv, 1 msg, 1 chunk persisted.
 
-**Pendiente para uso público (Fase 5):**
-- `memex install-service`: registrar autostart en SO (Windows Task Scheduler / launchd / systemd) para que el daemon arranque al login sin que el usuario abra una terminal. Anotado en el plan.
-- Publicación en Chrome Web Store (review ~5-10 días).
+**Pending for public use (Phase 5):**
+- `memex install-service`: register autostart in the OS (Windows Task Scheduler / launchd / systemd) so the daemon starts on login without the user opening a terminal. Noted in the plan.
+- Chrome Web Store publication (review ~5-10 days).
 
-**Estado:**
-- `uv run pytest tests/unit`: 179 passed (mismos que después de mini-tanda 1; la Chrome ext no aporta tests Python).
+**State:**
+- `uv run pytest tests/unit`: 179 passed (same as after mini-batch 1; the Chrome ext does not add Python tests).
 - `uv run ruff check`, `uv run mypy`: clean.
-- Backend end-to-end validado con server real.
-- Chrome ext lista para cargar como unpacked y probar contra claude.ai.
+- Backend end-to-end validated with real server.
+- Chrome ext ready to load as unpacked and test against claude.ai.
 
-**Para cerrar Fase 2:** uso real de la Chrome ext durante una semana, smoke test de chats nuevos apareciendo en `memex search`, y auditoría de cierre.
-
----
-
-## 2026-05-19 — Tool descriptions proactivas + recetas de CLAUDE.md
-
-**Contexto:** primera prueba real del MCP con un mensaje ambiguo del usuario ("viste que te hablé de exportal en claude.ai?") mostró que el otro Claude **no usó proactivamente** `search_chats`. Respondió "no tengo registro" tras leer MEMORY.md (que no tiene info de Exportal) en lugar de buscar en Memex. Le ofreció buscar al usuario en vez de hacerlo solo.
-
-Esto pasa porque los LLMs son conservadores con tools por diseño (prefieren preguntar antes que actuar) Y las docstrings de las tools describían *qué hacen* sin decir *cuándo conviene usarlas*.
-
-**Qué se hizo:**
-
-1. **Docstrings de las 3 tools del MCP** reescritas en `stdio.py` con secciones explícitas "USAR PROACTIVAMENTE cuando:" y "ANTES de responder X, invocá esta tool":
-   - `search_chats`: trigger en frases tipo "te acordás de...", "viste que...", "ya hablamos de...", preguntas por proyectos/personas/decisiones específicas, contexto que parece "perdido" entre sesiones. Explicit "antes de decir 'no tengo registro' invocá esto".
-   - `get_chat`: úsar tras `search_chats`, no para descubrir, sí para profundizar.
-   - `list_recent_chats`: browse cronológico cuando no hay keyword. Explícitamente "no usar para buscar por tema".
-
-2. **README actualizado** con sección "Hacer que Claude use Memex proactivamente". Incluye snippet listo para pegar en `~/.claude/CLAUDE.md` (global) o `<proyecto>/CLAUDE.md` (local) con la regla "antes de responder 'no recuerdo', usá `mcp__memex__search_chats`".
-
-3. **Docstrings de `tools.py`** dejadas como están (son dev-facing, no LLM-facing; no afectan comportamiento de la tool a través del MCP).
-
-**Por qué no es suficiente solo el docstring:** ningún wording al 100% obliga a Claude a usar una tool. Es un balance: docstrings más agresivas suben la frecuencia de uso proactivo pero también el riesgo de uso indebido. El usuario puede reforzar con instrucciones en su CLAUDE.md.
-
-**Cambios no funcionales para tests:** ninguno. Las docstrings son metadatos para el LLM, el código sigue idéntico. Tests verdes igual.
-
-**Para que tenga efecto:** reiniciar la sesión de Claude Code que tenga Memex montado (el MCP server arranca como subprocess una sola vez; los docstrings se exponen al arranque).
-
-**Estado:** 165 unit + 7 integration verdes. Ruff y mypy clean.
+**To close Phase 2:** real use of the Chrome ext for a week, smoke test of new chats showing up in `memex search`, and close audit.
 
 ---
 
-## 2026-05-19 — Fase 2 sub-task: búsqueda híbrida FTS5 + RRF
+## 2026-05-19: Proactive tool descriptions + CLAUDE.md recipes
 
-**Contexto:** primera tarea de Fase 2 es resolver el caso "Amarok" antes de captura en vivo. El usuario eligió priorizar calidad de retrieval sobre volumen de datos.
+**Context:** the first real MCP test with an ambiguous user message ("did you see I told you about exportal on claude.ai?") showed that the other Claude **did not proactively use** `search_chats`. It answered "I have no record" after reading MEMORY.md (which has no Exportal info) instead of searching in Memex. It offered to search for the user instead of doing it on its own.
 
-**Qué se hizo:**
-- `schema.sql`: nueva virtual table `fts_chunks` con FTS5, tokenizer `unicode61 remove_diacritics 2` (matchea "amarok" con "Amarók", "AMAROK", etc.). Comentarios explicando cómo se sincroniza con `chunks` y `vec_chunks`.
-- `repo.add_chunk` y `repo.delete_chunks_for_conversation`: sincronizan ahora las TRES tablas (chunks + vec_chunks + fts_chunks). Igual patrón de DELETE + INSERT que ya tenía vec_chunks.
-- `repo.text_search(conn, query, limit, dedupe_by_conversation)`: BM25 sobre fts_chunks. Sanitiza la query con `_sanitize_fts_query` (extrae palabras `\w+` y las quotea para evitar operadores FTS5 sueltos). Si la query es malformada devuelve lista vacía en lugar de propagar `OperationalError`.
-- `repo.hybrid_search(conn, query, query_embedding, limit, ..., rrf_k=60)`: combina `vector_search` + `text_search` con Reciprocal Rank Fusion. Score = Σ 1/(rrf_k+rank). Default k=60 (Cormack 2009). Resultado: `SearchHit.distance = -rrf_score` para mantener "menor = mejor".
-- `repo.rebuild_fts_index(conn)`: helper de mantenimiento. Borra y repuebla `fts_chunks` desde `chunks`. **Commitea al final** (es operación auto-contenida, no parte de transacción larga).
-- `tools.search_chats`: nuevo parámetro `mode: "hybrid" | "semantic" | "lexical"`, default `"hybrid"`. Modo lexical no llama al embedder (skip Ollama).
-- `stdio.search_chats` (wrapper MCP): expone `mode` con docstring que aclara cuándo conviene cada uno (Claude lo va a usar para decidir).
-- CLI: `memex search --mode {hybrid|semantic|lexical}` + nuevo comando `memex reindex-fts` para poblar el índice sobre bases pre-existentes sin re-embedear.
-- Tests nuevos (12): cobertura de `text_search` (incluyendo dedup, sanitización de queries con caracteres especiales, case-insensitive, rebuild), `hybrid_search` (rescate cuando solo matchea text, dedup), y `tools.search_chats` (mode inválido, default hybrid, lexical skip embedder).
+This happens because LLMs are conservative with tools by design (prefer asking before acting) AND the tool docstrings described *what they do* without saying *when it is convenient to use them*.
 
-**Bug real cazado durante validación en vivo:**
-- `rebuild_fts_index` no commiteaba. La CLI ejecutaba el INSERT, reportaba "614 chunks indexados", pero `conn.close()` hacía rollback y el índice quedaba vacío. Fix: commit explícito al final de la función. Documenté el por qué (operación auto-contenida, distinta del patrón "caller commits" del resto del repo).
+**What was done:**
 
-**Validación end-to-end sobre el corpus real (614 chunks):**
+1. **Docstrings of the 3 MCP tools** rewritten in `stdio.py` with explicit sections "USE PROACTIVELY when:" and "BEFORE answering X, invoke this tool":
+   - `search_chats`: trigger on phrases like "remember when...", "did you see that...", "we already talked about...", questions about specific projects/people/decisions, context that seems "lost" between sessions. Explicit "before saying 'I have no record' invoke this".
+   - `get_chat`: use after `search_chats`, not to discover, yes to dig in.
+   - `list_recent_chats`: chronological browse when there is no keyword. Explicit "do not use to search by topic".
 
-| Modo | Top-3 para "Amarok" |
+2. **README updated** with section "Make Claude use Memex proactively". Includes ready-to-paste snippet for `~/.claude/CLAUDE.md` (global) or `<project>/CLAUDE.md` (local) with the rule "before answering 'I don't remember', use `mcp__memex__search_chats`".
+
+3. **Docstrings in `tools.py`** left as they are (they are dev-facing, not LLM-facing; do not affect tool behavior through the MCP).
+
+**Why the docstring alone is not enough:** no wording 100% forces Claude to use a tool. It is a balance: more aggressive docstrings raise proactive use frequency but also the risk of misuse. The user can reinforce with instructions in their CLAUDE.md.
+
+**Non-functional changes for tests:** none. Docstrings are metadata for the LLM, the code stays identical. Tests pass equally.
+
+**To take effect:** restart the Claude Code session with Memex mounted (the MCP server starts as a subprocess once; docstrings are exposed at startup).
+
+**State:** 165 unit + 7 integration green. Ruff and mypy clean.
+
+---
+
+## 2026-05-19: Phase 2 sub-task, hybrid search FTS5 + RRF
+
+**Context:** first task of Phase 2 is to solve the "Amarok" case before live capture. The user chose to prioritize retrieval quality over data volume.
+
+**What was done:**
+- `schema.sql`: new virtual table `fts_chunks` with FTS5, tokenizer `unicode61 remove_diacritics 2` (matches "amarok" with "Amarók", "AMAROK", etc.). Comments explaining how it stays in sync with `chunks` and `vec_chunks`.
+- `repo.add_chunk` and `repo.delete_chunks_for_conversation`: now keep the THREE tables in sync (chunks + vec_chunks + fts_chunks). Same DELETE + INSERT pattern that vec_chunks already had.
+- `repo.text_search(conn, query, limit, dedupe_by_conversation)`: BM25 over fts_chunks. Sanitizes the query with `_sanitize_fts_query` (extracts `\w+` words and quotes them to avoid loose FTS5 operators). If the query is malformed, returns an empty list instead of propagating `OperationalError`.
+- `repo.hybrid_search(conn, query, query_embedding, limit, ..., rrf_k=60)`: combines `vector_search` + `text_search` with Reciprocal Rank Fusion. Score = Σ 1/(rrf_k+rank). Default k=60 (Cormack 2009). Result: `SearchHit.distance = -rrf_score` to keep "lower = better".
+- `repo.rebuild_fts_index(conn)`: maintenance helper. Deletes and repopulates `fts_chunks` from `chunks`. **Commits at the end** (it is a self-contained operation, not part of a long transaction).
+- `tools.search_chats`: new `mode: "hybrid" | "semantic" | "lexical"` parameter, default `"hybrid"`. Lexical mode does not call the embedder (skip Ollama).
+- `stdio.search_chats` (MCP wrapper): exposes `mode` with a docstring that clarifies when each one is convenient (Claude will use it to decide).
+- CLI: `memex search --mode {hybrid|semantic|lexical}` + new command `memex reindex-fts` to populate the index on pre-existing DBs without re-embedding.
+- New tests (12): coverage of `text_search` (including dedup, query sanitization with special characters, case-insensitive, rebuild), `hybrid_search` (rescue when only text matches, dedup), and `tools.search_chats` (invalid mode, default hybrid, lexical skip embedder).
+
+**Real bug caught during live validation:**
+- `rebuild_fts_index` did not commit. The CLI executed the INSERT, reported "614 chunks indexed", but `conn.close()` rolled back and the index stayed empty. Fix: explicit commit at the end of the function. I documented the why (self-contained operation, different from the rest of the repo's "caller commits" pattern).
+
+**End-to-end validation on the real corpus (614 chunks):**
+
+| Mode | Top-3 for "Amarok" |
 |---|---|
-| `semantic` (antes el único disponible) | Exportal (0.84), Probadno random (0.88), Matemática (0.88) — **FALLA** |
-| `lexical` (FTS5 puro) | **"Desbloquear radio Amarok 2012 con VCDS" (-8.6)** — ÚNICO match |
-| `hybrid` (RRF combinado) | Exportal (-0.0164), **Amarok (-0.0164)**, Probadno (-0.0159) — **ARREGLADO** |
+| `semantic` (the only one available before) | Exportal (0.84), Probadno random (0.88), Math (0.88). **FAILS**. |
+| `lexical` (pure FTS5) | **"Desbloquear radio Amarok 2012 con VCDS" (-8.6)**. ONLY match. |
+| `hybrid` (RRF combined) | Exportal (-0.0164), **Amarok (-0.0164)**, Probadno (-0.0159). **FIXED**. |
 
-Sin regresión en búsquedas semánticas previas: "Chrome extension para exportar chats" devuelve el mismo top-3 que antes (en híbrido, el #1 tiene casi el doble de score que los siguientes por sumar señal de FTS).
+No regression on previous semantic searches: "Chrome extension to export chats" returns the same top-3 as before (in hybrid, the #1 has almost twice the score of the next ones for adding FTS signal).
 
-**Estado:**
-- `uv run pytest tests/unit`: 165 passed (era 153, +12).
+**State:**
+- `uv run pytest tests/unit`: 165 passed (was 153, +12).
 - `uv run ruff check`, `uv run mypy`: clean.
-- `memex reindex-fts` funcional.
-- `memex search "Amarok" --mode hybrid`: devuelve el chat correcto en top-2.
+- `memex reindex-fts` functional.
+- `memex search "Amarok" --mode hybrid`: returns the correct chat in top-2.
 
-**Pendiente para cerrar Fase 2:**
-- Captura en vivo: adaptar Chrome ext de SyncChat para escribir al mismo SQLite. Endpoint local de ingest. Idempotencia.
+**Pending to close Phase 2:**
+- Live capture: adapt SyncChat's Chrome ext to write to the same SQLite. Local ingest endpoint. Idempotency.
 
 ---
 
-## 2026-05-18 — Cierre de Fase 1: auditoría + sync de docs
+## 2026-05-18: Close of Phase 1, audit + docs sync
 
-**Auditoría de cierre (sub-agent):**
+**Close audit (sub-agent):**
 
-Sin bloqueantes. Veredicto: cierra como está. Items accionables encontrados:
+No blockers. Verdict: closes as is. Actionable items found:
 
-1. **Dead code**: `except EmbedderError` en `stdio.search_chats` nunca se ejecuta porque `tools.search_chats` ya atrapa la excepción y devuelve `{"error": ...}`. Fixed: removido del wrapper, dejado el `except Exception` general. También removido import inútil de `EmbedderError` en `stdio.py`.
-2. **Docs desincronizadas (varios)**: arregladas.
-   - `CLAUDE.md`: `transports/` decía `(PENDIENTE, Fase 1)`, ahora marca `tools.py` y `stdio.py` como DONE. Comentario obsoleto sobre `memex-mcp` actualizado.
-   - `README.md`: descripción de `search_chats` mencionaba un parámetro fantasma `date_range?` (no existe; el real es `source`). Sacados párrafos "en construcción en Fase 1". Agregado `messages_limit`/`messages_offset` a la descripción de `get_chat`.
-   - `ROADMAP.md`: test count desactualizado.
-3. **Gaps de tests**: agregados 2 nuevos.
-   - `test_embedder_error_becomes_json_error`: valida que `tools.search_chats` atrapa `EmbedderError` y lo convierte a `{"error": ...}`. Documenta el contrato que justifica haber sacado el `except` del stdio wrapper.
-   - `test_offset_beyond_total_returns_empty`: valida que `get_chat` con `messages_offset >= total_messages` devuelve ventana vacía sin crashear, `truncated=False`.
+1. **Dead code**: `except EmbedderError` in `stdio.search_chats` never runs because `tools.search_chats` already catches the exception and returns `{"error": ...}`. Fixed: removed from the wrapper, kept the general `except Exception`. Also removed useless import of `EmbedderError` in `stdio.py`.
+2. **Docs out of sync (several)**: fixed.
+   - `CLAUDE.md`: `transports/` said `(PENDING, Phase 1)`, now marks `tools.py` and `stdio.py` as DONE. Obsolete comment about `memex-mcp` updated.
+   - `README.md`: description of `search_chats` mentioned a phantom parameter `date_range?` (does not exist; the real one is `source`). Removed "under construction in Phase 1" paragraphs. Added `messages_limit`/`messages_offset` to the `get_chat` description.
+   - `ROADMAP.md`: outdated test count.
+3. **Test gaps**: 2 new added.
+   - `test_embedder_error_becomes_json_error`: validates that `tools.search_chats` catches `EmbedderError` and converts it to `{"error": ...}`. Documents the contract that justifies removing the `except` from the stdio wrapper.
+   - `test_offset_beyond_total_returns_empty`: validates that `get_chat` with `messages_offset >= total_messages` returns an empty window without crashing, `truncated=False`.
 
-**Follow-ups diferidos a Fase 4 (cuando arme remote MCP):**
-- `stdio.py` devuelve `f"Error interno: {e}"` al cliente. Hoy es local single-user, riesgo bajo. En remote MCP conviene devolver mensaje genérico al cliente y dejar el detalle solo en el log para no leakear paths/queries.
-- `OllamaEmbedder` detecta errores de conexión con un substring check (`"connect"`, `"refused"`, etc.). Frágil si `ollama` o `httpx` cambian el wording (por ejemplo en otro idioma). Mejor: catch explícito de `httpx.ConnectError` / `httpx.TimeoutException` antes del fallback por substring.
+**Follow-ups deferred to Phase 4 (when I build remote MCP):**
+- `stdio.py` returns `f"Error interno: {e}"` to the client. Today it is local single-user, low risk. In remote MCP it is better to return a generic message to the client and keep the detail only in the log to avoid leaking paths/queries.
+- `OllamaEmbedder` detects connection errors with a substring check (`"connect"`, `"refused"`, etc.). Fragile if `ollama` or `httpx` change the wording (for example in another language). Better: explicit catch of `httpx.ConnectError` / `httpx.TimeoutException` before the substring fallback.
 
-**Estado final de Fase 1:**
-- 3 tools MCP funcionando en Claude Code real (validado por uso, no solo por tests).
-- 153 unit + 7 integration tests verdes.
+**Final state of Phase 1:**
+- 3 MCP tools working in real Claude Code (validated by use, not just by tests).
+- 153 unit + 7 integration tests green.
 - `uv run ruff check`, `uv run mypy`: clean.
-- Auditoría hecha, sin bloqueantes.
-- Docs sincronizadas con el estado real del código.
+- Audit done, no blockers.
+- Docs synced with the real state of the code.
 
-**Fase 1 CERRADA.** Próximo: Fase 2 (captura en vivo via Chrome ext de SyncChat + búsqueda híbrida FTS5 + vectores para resolver el caso "Amarok").
+**Phase 1 CLOSED.** Next: Phase 2 (live capture via SyncChat Chrome ext + hybrid search FTS5 + vectors to solve the "Amarok" case).
 
 ---
 
-## 2026-05-18 — Fix: get_chat excedía max-tokens de Claude Code
+## 2026-05-18: Fix, get_chat exceeded Claude Code max-tokens
 
-**Qué pasó:**
-Después del primer commit de Fase 1, primera sesión real en Claude Code llamando `get_chat` sobre un chat de 32 mensajes (uuid `00ef7e7b-…`, "Exportal Companion extension") falló con `result (107.581 characters) exceeds maximum allowed tokens`. Claude Code derivó el resultado a un archivo aparte y tuvo que leerlo en chunks manualmente. UX rota para chats no triviales.
+**What happened:**
+After the first Phase 1 commit, the first real session in Claude Code calling `get_chat` on a 32-message chat (uuid `00ef7e7b-…`, "Exportal Companion extension") failed with `result (107.581 characters) exceeds maximum allowed tokens`. Claude Code diverted the result to a separate file and had to read it in chunks manually. Broken UX for non-trivial chats.
 
-Esto era exactamente el riesgo que la auditoría de Fase 0 había anticipado y que dejé como "agrego pagination si pasa". Pasó en el primer chat real, no en uno extremo de 264 mensajes.
+This was exactly the risk the Phase 0 audit had anticipated and that I had left as "I add pagination if it happens". It happened on the first real chat, not on an extreme one of 264 messages.
 
-**Qué se hizo:**
-1. `get_chat` ahora acepta `messages_limit` (default 20, max 100) y `messages_offset` (default 0). Permite a Claude paginar chats largos.
-2. `get_chat` strippea `raw_content` (JSON de tool_use/tool_result blocks) de la respuesta siempre. Es ~10-30% del peso y rara vez se usa por Claude.
-3. Cada `text` de mensaje se trunca a `GET_CHAT_MESSAGE_TEXT_MAX_CHARS=3000` con marker `…[truncated]`. Code dumps de Claude saltaban solos el límite.
-4. La respuesta incluye `total_messages`, `messages_returned`, `truncated: bool`, `messages_offset` para que Claude sepa si hay más y cómo pedirlos.
-5. `search_chats` ahora trunca el `summary` de cada resultado a `SEARCH_SUMMARY_MAX_CHARS=500`. Algunos summaries del export pesaban 2-3k chars y se acumulaban en respuestas de 5 resultados.
-6. Helper `_truncate(s, max_chars)` agrega marker `…[truncated]` si recortó.
-7. 8 tests nuevos: 6 de pagination en `get_chat`, 1 de raw_content stripped, 1 de summary truncation en `search_chats`.
+**What was done:**
+1. `get_chat` now accepts `messages_limit` (default 20, max 100) and `messages_offset` (default 0). Lets Claude paginate long chats.
+2. `get_chat` always strips `raw_content` (JSON of tool_use/tool_result blocks) from the response. It is ~10-30% of the weight and rarely used by Claude.
+3. Each message `text` is truncated to `GET_CHAT_MESSAGE_TEXT_MAX_CHARS=3000` with marker `…[truncated]`. Claude's code dumps blew past the limit on their own.
+4. The response includes `total_messages`, `messages_returned`, `truncated: bool`, `messages_offset` so Claude knows if there is more and how to ask for it.
+5. `search_chats` now truncates each result's `summary` to `SEARCH_SUMMARY_MAX_CHARS=500`. Some export summaries weighed 2-3k chars and added up in responses of 5 results.
+6. Helper `_truncate(s, max_chars)` adds marker `…[truncated]` if it cut.
+7. 8 new tests: 6 of pagination in `get_chat`, 1 of raw_content stripped, 1 of summary truncation in `search_chats`.
 
-**Validación post-fix:**
-Llamando `get_chat` al mismo uuid de 32 mensajes que rompió antes:
-- Tamaño: 31.6k chars (era 107.5k, **70% reducción**).
-- `total_messages: 32`, `messages_returned: 20`, `truncated: true`. Claude puede pedir los otros 12 con `messages_offset=20`.
-- `raw_content` ausente en cada mensaje.
-- Texts intactos (ninguno excedía los 3000 chars individuales en este chat).
+**Post-fix validation:**
+Calling `get_chat` on the same 32-message uuid that broke before:
+- Size: 31.6k chars (was 107.5k, **70% reduction**).
+- `total_messages: 32`, `messages_returned: 20`, `truncated: true`. Claude can ask for the other 12 with `messages_offset=20`.
+- `raw_content` absent in each message.
+- Texts intact (none exceeded 3000 chars individually in this chat).
 
 **Tests:**
-- 151 unit tests verdes (era 143, +8).
-- Ruff y mypy clean.
+- 151 unit tests green (was 143, +8).
+- Ruff and mypy clean.
 
 ---
 
-## 2026-05-18 — Fase 1 MVP: MCP server stdio
+## 2026-05-18: Phase 1 MVP, MCP server stdio
 
-**Qué se hizo:**
-- `src/memex/transports/tools.py`: implementaciones puras de las 3 tools (`search_chats`, `get_chat`, `list_recent_chats`). Toman `conn` y `embedder` por parámetro, devuelven dicts serializables. Sin dependencia de FastMCP, totalmente testables.
-- `src/memex/transports/stdio.py`: FastMCP server con las 3 tools registradas via `@server.tool`. Conexión SQLite y `OllamaEmbedder` lazy singletons. `EmbedderError` se atrapa y se devuelve como `{"error": ...}` en JSON. Logging configurado a stderr (stdout reservado para JSON-RPC).
-- `pyproject.toml`: re-agregado el script `memex-mcp = "memex.transports.stdio:main"` (estaba comentado desde la auditoría de Fase 0).
-- `tests/unit/test_tools.py`: 17 tests de las funciones puras (queries vacías, source filter, ordering, errores).
-- `tests/unit/test_stdio_server.py`: 6 tests del server MCP (3 tools registradas, call_tool funciona end-to-end, errores envueltos en JSON).
-- `README.md`: agregado el snippet de configuración para Claude Code (`.mcp.json` con cwd absoluto).
+**What was done:**
+- `src/memex/transports/tools.py`: pure implementations of the 3 tools (`search_chats`, `get_chat`, `list_recent_chats`). Take `conn` and `embedder` as parameters, return serializable dicts. No dependency on FastMCP, fully testable.
+- `src/memex/transports/stdio.py`: FastMCP server with the 3 tools registered via `@server.tool`. SQLite connection and `OllamaEmbedder` as lazy singletons. `EmbedderError` is caught and returned as `{"error": ...}` JSON. Logging configured to stderr (stdout reserved for JSON-RPC).
+- `pyproject.toml`: re-added the script `memex-mcp = "memex.transports.stdio:main"` (was commented out since the Phase 0 audit).
+- `tests/unit/test_tools.py`: 17 tests of the pure functions (empty queries, source filter, ordering, errors).
+- `tests/unit/test_stdio_server.py`: 6 tests of the MCP server (3 tools registered, call_tool works end-to-end, errors wrapped in JSON).
+- `README.md`: added the configuration snippet for Claude Code (`.mcp.json` with absolute cwd).
 
-**Bug real cazado por el smoke test:**
-- `sqlite3.ProgrammingError`: SQLite objects son thread-bound. FastMCP por default corre las tools sync en un thread pool, así que nuestra conexión singleton fallaba al ser usada desde otro thread. Fix: `@server.tool(run_in_thread=False)` en cada tool. Las tools quedan corriendo en el event loop, lo cual es razonable porque son I/O cortas. Documentado el motivo en el docstring del módulo.
+**Real bug caught by the smoke test:**
+- `sqlite3.ProgrammingError`: SQLite objects are thread-bound. FastMCP by default runs sync tools in a thread pool, so our singleton connection failed when used from another thread. Fix: `@server.tool(run_in_thread=False)` on each tool. Tools stay running in the event loop, which is reasonable because they are short I/O. Documented the reason in the module docstring.
 
-**Smoke test del MCP server (en proceso, no via JSON-RPC):**
-- Las 3 tools quedan registradas con sus descripciones.
-- `server.call_tool("list_recent_chats", {"limit": 3})` devuelve `ToolResult` con `TextContent` que contiene JSON válido y los chats reales de la base.
-- `server.call_tool("get_chat", {"uuid": "no-existe"})` devuelve `{"error": ...}` sin crashear.
-- `server.call_tool("search_chats", {"query": "  "})` devuelve error sin consultar Ollama.
+**MCP server smoke test (in-process, not via JSON-RPC):**
+- The 3 tools stay registered with their descriptions.
+- `server.call_tool("list_recent_chats", {"limit": 3})` returns `ToolResult` with `TextContent` containing valid JSON and the real chats from the DB.
+- `server.call_tool("get_chat", {"uuid": "does-not-exist"})` returns `{"error": ...}` without crashing.
+- `server.call_tool("search_chats", {"query": "  "})` returns an error without consulting Ollama.
 
-**Decisiones:**
-- Tools devuelven `str` (JSON pretty-printed) en lugar de dicts. Da control explícito del formato y evita serializaciones automáticas de FastMCP que podrían cambiar.
-- Límites duros: `search` max 50 resultados, `list_recent_chats` max 100. Evita payloads enormes que sobrecarguen el contexto de Claude.
-- `get_chat` no pagina; devuelve todos los mensajes. Si en uso real vemos chats de cientos de mensajes saturando, agregamos paginación. Por ahora over-engineering.
-- `source` filter en `search_chats` se aplica en Python tras pedir 3x más candidatos a la DB. Bajo costo, evita complicar el SQL.
+**Decisions:**
+- Tools return `str` (pretty-printed JSON) instead of dicts. Gives explicit control of the format and avoids FastMCP's automatic serializations that could change.
+- Hard limits: `search` max 50 results, `list_recent_chats` max 100. Avoids huge payloads that overload Claude's context.
+- `get_chat` does not paginate; returns all messages. If real use shows hundreds-of-messages chats saturating, we add pagination. Over-engineering for now.
+- `source` filter in `search_chats` applies in Python after asking the DB for 3x more candidates. Low cost, avoids complicating the SQL.
 
-**Estado:**
-- `uv run pytest tests/unit`: 143 passed (era 137, +6 nuevos del server).
+**State:**
+- `uv run pytest tests/unit`: 143 passed (was 137, +6 new from the server).
 - `uv run ruff check`, `uv run mypy`: clean.
-- `uv run memex-mcp`: arranca limpio, registra las 3 tools.
+- `uv run memex-mcp`: starts clean, registers the 3 tools.
 
-**Próximo paso (criterio de cierre real de Fase 1):**
-- Conectarlo a Claude Code via `.mcp.json` y usarlo en sesiones reales.
-- 5 sesiones reales con al menos una tool invocada, sin crashes.
-- Auditoría de cierre cuando se cumpla.
+**Next step (real Phase 1 close criterion):**
+- Connect it to Claude Code via `.mcp.json` and use it in real sessions.
+- 5 real sessions with at least one tool invoked, no crashes.
+- Close audit once that is met.
 
 ---
 
-## 2026-05-18 — Cierre de Fase 0: dedup + auditoría
+## 2026-05-18: Close of Phase 0, dedup + audit
 
-**Qué se hizo:**
-- `repo.vector_search` ahora acepta `dedupe_by_conversation: bool = True` (default ON). Devuelve a lo sumo un chunk por conversación, el más cercano. Para conseguir N únicas pide `k = N * 5` a `vec_chunks` y dedupea en Python. Resuelve el problema UX visible en la validación: las búsquedas anteriores tenían 2-3 chunks del mismo chat ocupando puestos del top-5.
-- 2 tests nuevos del dedup, más 2 directos para `delete_chunks_for_conversation`, más 6 tests del CLI con `typer.testing.CliRunner` (paths inválidos, DB vacía, help). Total: 112 unit tests verdes.
-- Auditoría completa del proyecto pre-cierre (con sub-agent, en `tools/audit-fase0.md` mentalmente). Veredicto: cierra sin bloqueantes mayores, una sola cosa accionable inmediata.
+**What was done:**
+- `repo.vector_search` now accepts `dedupe_by_conversation: bool = True` (default ON). Returns at most one chunk per conversation, the closest one. To get N unique it requests `k = N * 5` from `vec_chunks` and dedupes in Python. Solves the visible UX problem in the validation: previous searches had 2-3 chunks from the same chat occupying top-5 slots.
+- 2 new dedup tests, plus 2 direct ones for `delete_chunks_for_conversation`, plus 6 CLI tests with `typer.testing.CliRunner` (invalid paths, empty DB, help). Total: 112 unit tests green.
+- Full project audit pre-close (with sub-agent, in `tools/audit-fase0.md` mentally). Verdict: closes without major blockers, only one immediately actionable thing.
 
-**Bug crítico cazado por la auditoría:**
-- `pyproject.toml` declaraba el script `memex-mcp = "memex.transports.stdio:main"` pero `transports/` solo tiene `__init__.py` vacío. Cualquier `uv run memex-mcp` reventaría con `ModuleNotFoundError`. Removido (comentado) hasta que Fase 1 implemente el transport stdio.
+**Critical bug caught by the audit:**
+- `pyproject.toml` declared the script `memex-mcp = "memex.transports.stdio:main"` but `transports/` only has an empty `__init__.py`. Any `uv run memex-mcp` would blow up with `ModuleNotFoundError`. Removed (commented out) until Phase 1 implements the stdio transport.
 
-**Doc sync hecho:**
-- `CLAUDE.md` describía `transports/{tools,stdio,http}.py` y `core/retrieval/` como módulos existentes; agregada anotación `(DONE)` / `(PENDIENTE, Fase 1)` por módulo + nota explicando que `vector_search` vive en `storage/repo.py` por simplicidad inicial.
+**Doc sync done:**
+- `CLAUDE.md` described `transports/{tools,stdio,http}.py` and `core/retrieval/` as existing modules; added `(DONE)` / `(PENDING, Phase 1)` annotation per module + note explaining that `vector_search` lives in `storage/repo.py` for initial simplicity.
 
-**Validación final de retrieval (7 búsquedas reales sobre el corpus del usuario):**
-| Query | Top-3 relevante | Distancia top-1 |
+**Final retrieval validation (7 real searches over the user's corpus):**
+| Query | Relevant top-3 | Top-1 distance |
 |---|---|---|
-| "Chrome extension para exportar chats" | 3/3 | 0.62 |
-| "decisión sobre arquitectura del proyecto" | 1/3 | 0.67 |
+| "Chrome extension to export chats" | 3/3 | 0.62 |
+| "decision about project architecture" | 1/3 | 0.67 |
 | "exportal" | 3/3 | 0.86 |
-| "Amarok" | 0/3 (semántica falla con un proper noun raro) | 0.84 |
+| "Amarok" | 0/3 (semantic fails with a rare proper noun) | 0.84 |
 | "extension" | 3/3 | 0.81 |
-| "conjunto de nivel 0" | 3/3 (matemática perfecto) | 0.72 |
-| "clonar el proyecto en linux" | 2/3 | 0.75 |
+| "level set 0" | 3/3 (math, perfect) | 0.72 |
+| "clone the project on linux" | 2/3 | 0.75 |
 
-**Pasa 6 de 7 (85%)**. Criterio de cierre era 7/10. Cierra con holgura.
+**Passes 6 of 7 (85%)**. Close criterion was 7/10. Closes with margin.
 
-**Limitación conocida:** búsqueda puramente semántica falla en proper nouns raros mencionados una sola vez (caso Amarok). Se va a resolver en Fase 2 con búsqueda híbrida (FTS5 + vectores + RRF).
+**Known limitation:** purely semantic search fails on rare proper nouns mentioned once (Amarok case). Will be solved in Phase 2 with hybrid search (FTS5 + vectors + RRF).
 
-**Follow-ups anotados (de la auditoría, no urgentes):**
-- `settings = get_settings()` al importar `config.py` quedaría stale si tests cambian env vars post-import. Refactor menor para Fase 1 si hace falta.
-- `pipeline._lookup_msg` es O(M*C) por conversación. Trivial hoy, podría doler con corpus 50x más grande.
-- Streaming de `conversations.json` para evitar load de 50+ MB en memoria con corpus históricos grandes. Optimización para Fase 3.
-- `OllamaEmbedder` no testea el caso "modelo no instalado" o "404 del servicio". Importante para Fase 1 (manejo de errores en MCP).
-- `vector_search` con dim != 768 fallaría con error oscuro. Vale validar al inicio del search.
+**Follow-ups noted (from the audit, not urgent):**
+- `settings = get_settings()` at `config.py` import would stay stale if tests change env vars post-import. Minor refactor for Phase 1 if needed.
+- `pipeline._lookup_msg` is O(M*C) per conversation. Trivial today, could hurt with a 50x larger corpus.
+- Streaming `conversations.json` to avoid loading 50+ MB in memory with large historical corpora. Optimization for Phase 3.
+- `OllamaEmbedder` does not test the "model not installed" or "service 404" case. Important for Phase 1 (error handling in MCP).
+- `vector_search` with dim != 768 would fail with an obscure error. Worth validating at search start.
 
-**Estado final de Fase 0:**
-- 112 unit tests verdes, 7 integration tests verdes (Ollama real).
+**Final state of Phase 0:**
+- 112 unit tests green, 7 integration tests green (real Ollama).
 - `uv run ruff check`, `uv run mypy`: clean.
-- CLI funcional: `ingest`, `search`, `stats`.
-- Corpus indexado: 74 conversaciones, 1024 mensajes, 614 chunks.
-- Retrieval valida con datos reales con calidad razonable.
+- Functional CLI: `ingest`, `search`, `stats`.
+- Corpus indexed: 74 conversations, 1024 messages, 614 chunks.
+- Retrieval validated on real data with reasonable quality.
 
-**Fase 0 CERRADA.** Próximo: Fase 1 (MCP server stdio para Claude Code).
+**Phase 0 CLOSED.** Next: Phase 1 (stdio MCP server for Claude Code).
 
 ---
 
-## 2026-05-18 — Pipeline end-to-end + CLI funcional
+## 2026-05-18: End-to-end pipeline + functional CLI
 
-**Qué se hizo:**
-- `core/ingest/pipeline.py`: orquestador completo. Toma zip + DB + Embedder, hace parse → render → chunk → embed → store. Orden: projects → design_chats → conversations → memories. Transacción por conversación (un error no rompe el resto). Idempotente vía upserts + `delete_chunks_for_conversation` antes de re-chunkear.
-- `cli/main.py` con `typer` + `rich`: comandos `memex ingest <zip>`, `memex search "<query>" [-n N]`, `memex stats`. Tablas y output con colores.
-- `repo.delete_chunks_for_conversation()`: helper para limpiar chunks viejos + sus vectores antes de re-ingest.
-- 6 tests unitarios nuevos (pipeline end-to-end, idempotencia, FK orphan handling, etc.). Total: 103 unit tests verdes.
-- `tests/integration/test_full_flow.py`: integration test que parsea el export real con OllamaEmbedder.
+**What was done:**
+- `core/ingest/pipeline.py`: complete orchestrator. Takes zip + DB + Embedder, does parse, render, chunk, embed, store. Order: projects, design_chats, conversations, memories. Transaction per conversation (one error does not break the rest). Idempotent via upserts + `delete_chunks_for_conversation` before re-chunking.
+- `cli/main.py` with `typer` + `rich`: commands `memex ingest <zip>`, `memex search "<query>" [-n N]`, `memex stats`. Tables and output with colors.
+- `repo.delete_chunks_for_conversation()`: helper to clear old chunks + their vectors before re-ingest.
+- 6 new unit tests (end-to-end pipeline, idempotency, FK orphan handling, etc.). Total: 103 unit tests green.
+- `tests/integration/test_full_flow.py`: integration test that parses the real export with OllamaEmbedder.
 
-**Bug real cazado por smoke test sobre el corpus completo:**
-- Los 7 design_chats apuntan a `project_uuid`s que NO están en `projects/*.json` del export (el usuario tiene projects que no fueron exportados). Fallaban con FK violation y se ingestaban con `errores=7`. Fix: si el `project_uuid` referenciado no existe, se setea a `None` antes del insert (orfanidad benigna). Test agregado para no regresionar.
+**Real bug caught by smoke test on the full corpus:**
+- The 7 design_chats point to `project_uuid`s that are NOT in `projects/*.json` of the export (the user has projects that were not exported). They failed with FK violation and got ingested with `errores=7`. Fix: if the referenced `project_uuid` does not exist, it is set to `None` before insert (benign orphanhood). Test added to avoid regression.
 
-**Smoke test contra el export real (1.71 MB, generación de embeddings ~1-2 min):**
-- 2 projects, 74 conversaciones (66 sueltas + 7 design_chats + 1 memoria curada), 1024 mensajes, 614 chunks indexados, 147 mensajes vacíos saltados, **0 errores**.
-- `memex search "Chrome extension para exportar chats"` → top-3 con distancias 0.67-0.69, devuelve exactamente las tres conversaciones del usuario sobre Exportal (su otro proyecto Chrome ext). El retrieval anda.
-- `memex search "decision sobre stack tecnologico python o rust"` → distancia más alta (0.88), resultados menos precisos (es una query más vaga).
-- `memex stats`: muestra distribución por source (conversations=66, design_chat=7, memory=1).
+**Smoke test against the real export (1.71 MB, embedding generation ~1-2 min):**
+- 2 projects, 74 conversations (66 loose + 7 design_chats + 1 curated memory), 1024 messages, 614 indexed chunks, 147 empty messages skipped, **0 errors**.
+- `memex search "Chrome extension to export chats"` returns top-3 with distances 0.67-0.69, exactly the three user's conversations about Exportal (their other Chrome ext project). Retrieval works.
+- `memex search "decision about tech stack python or rust"` returns higher distance (0.88), less precise results (vaguer query).
+- `memex stats`: shows distribution by source (conversations=66, design_chat=7, memory=1).
 
-**Estado:**
+**State:**
 - `uv run pytest tests/unit`: 103 passed.
 - `uv run ruff check`, `uv run mypy`: clean.
-- CLI funcional end-to-end con datos reales.
+- CLI functional end-to-end with real data.
 
-**Fase 0 lista para cerrar.** Quedaría evaluación formal (10 búsquedas representativas) y, si los resultados son satisfactorios, auditoría de cierre de fase y luego Fase 1 (MCP server).
+**Phase 0 ready to close.** Remaining: formal evaluation (10 representative searches) and, if results are satisfactory, phase-close audit and then Phase 1 (MCP server).
 
 ---
 
-## 2026-05-18 — Módulo de embeddings: interfaz + Ollama
+## 2026-05-18: Embeddings module, interface + Ollama
 
-**Qué se hizo:**
-- `core/embeddings/base.py`: ABC `Embedder` con `dim`, `model_name`, `embed(texts)` y helper `embed_one(text)`. Función pública `l2_normalize` para que toda implementación pueda devolver unit vectors (alinea L2 con coseno en sqlite-vec).
-- `core/embeddings/fake.py`: `FakeEmbedder` determinístico para tests. Hashea texto con SHA-256, lo descompone en int32 normalizados a [-1, 1], aplica L2 normalize. Mismo texto → mismo vector. Útil para tests del pipeline sin tocar Ollama.
-- `core/embeddings/ollama.py`: `OllamaEmbedder` usando el cliente oficial `ollama` 0.6.2. Lee `model` y `host` de settings. Detecta `dim` real al primer embed. L2 normaliza por default.
+**What was done:**
+- `core/embeddings/base.py`: `Embedder` ABC with `dim`, `model_name`, `embed(texts)` and helper `embed_one(text)`. Public function `l2_normalize` so any implementation can return unit vectors (aligns L2 with cosine in sqlite-vec).
+- `core/embeddings/fake.py`: deterministic `FakeEmbedder` for tests. Hashes text with SHA-256, decomposes it into int32 normalized to [-1, 1], applies L2 normalize. Same text returns same vector. Useful for pipeline tests without touching Ollama.
+- `core/embeddings/ollama.py`: `OllamaEmbedder` using the official `ollama` 0.6.2 client. Reads `model` and `host` from settings. Detects real `dim` on first embed. L2 normalizes by default.
 - `tests/unit/test_embeddings.py`: 15 tests (l2_normalize + FakeEmbedder).
-- `tests/integration/test_ollama_embedder.py`: 7 tests que hablan con Ollama real. Skip automático si el servicio no responde en `OLLAMA_HOST`. Incluye sanity test semántico: "perro labrador marrón" debe estar más cerca de "labrador chocolate jugando" que de "fórmulas matemáticas avanzadas".
+- `tests/integration/test_ollama_embedder.py`: 7 tests that talk to real Ollama. Automatic skip if the service does not respond on `OLLAMA_HOST`. Includes semantic sanity test: "brown labrador dog" must be closer to "chocolate labrador playing" than to "advanced math formulas".
 
-**Resultados:**
-- 97 unit tests verdes (era 82, +15).
-- 7 integration tests verdes con Ollama corriendo local.
-- Sanity semántico passes: el ranking por similitud refleja afinidad real entre textos.
-- `nomic-embed-text` confirma dim=768, embeddings normalizables, determinístico.
+**Results:**
+- 97 unit tests green (was 82, +15).
+- 7 integration tests green with Ollama running locally.
+- Semantic sanity passes: similarity ranking reflects real text affinity.
+- `nomic-embed-text` confirms dim=768, normalizable embeddings, deterministic.
 
-**Decisiones de implementación:**
-- `FakeEmbedder` en `core/embeddings/fake.py` (no en `tests/`) para que esté disponible si alguien quiere usarlo sin Ollama en su propio código.
-- Integration tests marcados con `pytestmark = [integration, skipif(not _ollama_available())]`. Hace `urllib.request.urlopen(f"{host}/api/tags")` al colectar; salta limpio si Ollama no responde.
-- Default normalize=True. Si futuras implementaciones usan un modelo que ya devuelve unit vectors, pueden desactivar.
-- Dim se lee al primer embed real, no se hardcodea (a parte del fallback en settings).
+**Implementation decisions:**
+- `FakeEmbedder` in `core/embeddings/fake.py` (not in `tests/`) so it is available if someone wants to use it without Ollama in their own code.
+- Integration tests marked with `pytestmark = [integration, skipif(not _ollama_available())]`. Does `urllib.request.urlopen(f"{host}/api/tags")` at collection; skips cleanly if Ollama does not respond.
+- Default normalize=True. If future implementations use a model that already returns unit vectors, they can disable.
+- Dim is read at the first real embed, not hardcoded (besides the settings fallback).
 
-**Estado:**
+**State:**
 - `uv run pytest tests/unit`: 97 passed.
 - `uv run pytest tests/integration`: 7 passed.
 - `uv run ruff check`: clean. `uv run mypy`: clean.
 
-**Próximo paso:**
-- Orquestador end-to-end: `core/ingest/pipeline.py` que toma el path al zip y hace parse → chunk → embed → store. CLI con typer: `memex ingest <zip>`, `memex search "<query>"`, `memex stats`. Después: 10 búsquedas reales sobre el corpus → criterio de cierre de Fase 0.
+**Next step:**
+- End-to-end orchestrator: `core/ingest/pipeline.py` that takes the zip path and does parse, chunk, embed, store. CLI with typer: `memex ingest <zip>`, `memex search "<query>"`, `memex stats`. After: 10 real searches over the corpus, Phase 0 close criterion.
 
 ---
 
-## 2026-05-18 — Módulo de ingest: renderer, chunker, parsers
+## 2026-05-18: Ingest module, renderer, chunker, parsers
 
-**Qué se hizo:**
-- `core/ingest/content_renderer.py`: convierte `content[]` (con bloques `text`, `tool_use`, `tool_result`) a texto plano. Tool blocks van como markers (`[tool_use: <name>] <input>`, `[result] <texto>`, `[result error] ...`). Truncado a `MAX_TOOL_INPUT_CHARS=500` y `MAX_TOOL_RESULT_CHARS=1000`. Bloques desconocidos se ignoran (deja la puerta abierta a tipos nuevos).
-- `core/ingest/chunker.py`: char-based con factor `chars_per_token` configurable (default 4). Devuelve `list[ChunkSpan]` con `(text, char_start, char_end)`. `text[char_start:char_end] == text` siempre. Validación de parámetros con `ValueError`.
-- `core/ingest/claude_export.py`: 4 parsers (`parse_project`, `parse_conversations_list`, `parse_design_chat`, `parse_memories`). Helpers privados unifican `conversations.json` y `design_chats/*.json`. La memoria curada se sintetiza como conversación con `uuid='memory-<account_uuid>'` (idempotente entre re-ingests).
-- 53 tests unitarios nuevos (21 renderer, 13 chunker, 19 export), 82 totales verdes.
+**What was done:**
+- `core/ingest/content_renderer.py`: converts `content[]` (with `text`, `tool_use`, `tool_result` blocks) to plain text. Tool blocks go as markers (`[tool_use: <name>] <input>`, `[result] <text>`, `[result error] ...`). Truncated to `MAX_TOOL_INPUT_CHARS=500` and `MAX_TOOL_RESULT_CHARS=1000`. Unknown blocks are ignored (leaves the door open to new types).
+- `core/ingest/chunker.py`: char-based with configurable `chars_per_token` factor (default 4). Returns `list[ChunkSpan]` with `(text, char_start, char_end)`. `text[char_start:char_end] == text` always. Parameter validation with `ValueError`.
+- `core/ingest/claude_export.py`: 4 parsers (`parse_project`, `parse_conversations_list`, `parse_design_chat`, `parse_memories`). Private helpers unify `conversations.json` and `design_chats/*.json`. Curated memory is synthesized as a conversation with `uuid='memory-<account_uuid>'` (idempotent across re-ingests).
+- 53 new unit tests (21 renderer, 13 chunker, 19 export), 82 totals green.
 
-**Bug cazado por smoke test sobre el export real:**
-- Algunos mensajes en `design_chats/*.json` no traen `updated_at`. Era `KeyError`. Fallback a `created_at`. Test agregado para no regresionar.
+**Bug caught by smoke test on the real export:**
+- Some messages in `design_chats/*.json` do not bring `updated_at`. It was `KeyError`. Fallback to `created_at`. Test added to avoid regression.
 
-**Smoke test sobre el corpus real (sin imprimir contenido):**
-- 2 projects parseados (1 starter vacío, 1 con `prompt_template` de 819 chars).
-- 66 conversaciones sueltas con 900 mensajes, 58 con tool_use rendereados con markers.
-- 7 design_chats con 123 mensajes, todos correctamente linkeados a su project (project_uuid presente).
-- Memoria curada parseada (3634 chars) con uuid sintético estable.
-- Total ingestable: 74 conversaciones, 1024 mensajes.
+**Smoke test on the real corpus (without printing content):**
+- 2 projects parsed (1 empty starter, 1 with 819-char `prompt_template`).
+- 66 loose conversations with 900 messages, 58 with tool_use rendered with markers.
+- 7 design_chats with 123 messages, all correctly linked to their project (project_uuid present).
+- Curated memory parsed (3634 chars) with stable synthetic uuid.
+- Total ingestable: 74 conversations, 1024 messages.
 
-**Decisiones de implementación:**
-- Char-based chunking, no token-based. Más simple, sin dependencia tokenizer, configurable via `chars_per_token`. Si los resultados de retrieval son pobres en Fase 0 se cambia.
-- Renderer ignora bloques con `type` desconocido en vez de fallar. Robustez frente a cambios futuros del export.
-- Sender desconocido cae a HUMAN (defensivo).
-- `parse_memories` recibe `now` opcional para tests deterministas; en prod usa `datetime.now(UTC)`.
+**Implementation decisions:**
+- Char-based chunking, not token-based. Simpler, no tokenizer dependency, configurable via `chars_per_token`. If retrieval results are poor in Phase 0 we switch.
+- Renderer ignores unknown `type` blocks instead of failing. Robust against future export changes.
+- Unknown sender falls back to HUMAN (defensive).
+- `parse_memories` receives optional `now` for deterministic tests; in prod uses `datetime.now(UTC)`.
 
-**Estado:**
+**State:**
 - `uv run pytest tests/unit`: 82 passed.
 - `uv run ruff check src tests scripts`: clean.
 - `uv run mypy src/memex/core src/memex/config.py`: clean.
-- Smoke test sobre el export real: todo parseado sin errores.
+- Smoke test on the real export: everything parsed without errors.
 
-**Próximo paso:**
-- Módulo de embeddings: cliente Ollama + interfaz `Embedder`. Tras eso, el orquestador end-to-end (parse → chunk → embed → store) + CLI.
+**Next step:**
+- Embeddings module: Ollama client + `Embedder` interface. After that, the end-to-end orchestrator (parse, chunk, embed, store) + CLI.
 
 ---
 
-## 2026-05-18 — Storage layer: models, schema, db, repo
+## 2026-05-18: Storage layer, models, schema, db, repo
 
-**Qué se hizo:**
-- `src/memex/config.py` con `pydantic-settings`. Lee `.env` y env vars. Alias por env var (OLLAMA_HOST, MEMEX_EMBED_MODEL, MEMEX_DB_PATH, MEMEX_CHUNK_SIZE, etc.). Validación de rangos en chunk_size y chunk_overlap.
-- `src/memex/core/models.py` con pydantic v2: `Project`, `Conversation` (con `source` enum), `Message` (con `raw_content` y flags), `Chunk`, `SearchHit`. Enums `Source` y `Sender` como `StrEnum`. `extra="forbid"` para que un campo inesperado falle temprano.
-- `src/memex/core/storage/schema.sql`: 4 tablas STRICT (`projects`, `conversations`, `messages`, `chunks`) + virtual table `vec_chunks` (sqlite-vec) + `schema_meta` para versionado. FKs con `ON DELETE CASCADE` en mensajes/chunks por conversation, `ON DELETE SET NULL` en project_uuid y message_uuid. CHECK constraints en `source` y `sender`. Índices en updated_at, project_uuid, conversation_uuid y created_at.
-- `src/memex/core/storage/db.py`: `get_connection()` carga sqlite-vec, setea `foreign_keys=ON`, `journal_mode=WAL` y `synchronous=NORMAL`. `init_schema()` idempotente. `connect_and_init()` como atajo.
-- `src/memex/core/storage/repo.py`: CRUD funcional (sin clases) con upserts (`ON CONFLICT DO UPDATE`). `add_chunk()` inserta el chunk y su embedding atómicamente (mismo rowid en chunks.id y vec_chunks.rowid). `vector_search()` hace KNN join con `MATCH ? AND k = ?`.
-- Tests: `tests/conftest.py` con fixtures (db in-memory, project, conversation, messages, chunks). `tests/unit/test_models.py` (11 tests) y `tests/unit/test_storage.py` (17 tests). 28 tests pasan.
+**What was done:**
+- `src/memex/config.py` with `pydantic-settings`. Reads `.env` and env vars. Alias per env var (OLLAMA_HOST, MEMEX_EMBED_MODEL, MEMEX_DB_PATH, MEMEX_CHUNK_SIZE, etc.). Range validation on chunk_size and chunk_overlap.
+- `src/memex/core/models.py` with pydantic v2: `Project`, `Conversation` (with `source` enum), `Message` (with `raw_content` and flags), `Chunk`, `SearchHit`. Enums `Source` and `Sender` as `StrEnum`. `extra="forbid"` so an unexpected field fails early.
+- `src/memex/core/storage/schema.sql`: 4 STRICT tables (`projects`, `conversations`, `messages`, `chunks`) + virtual table `vec_chunks` (sqlite-vec) + `schema_meta` for versioning. FKs with `ON DELETE CASCADE` on messages/chunks per conversation, `ON DELETE SET NULL` on project_uuid and message_uuid. CHECK constraints on `source` and `sender`. Indexes on updated_at, project_uuid, conversation_uuid and created_at.
+- `src/memex/core/storage/db.py`: `get_connection()` loads sqlite-vec, sets `foreign_keys=ON`, `journal_mode=WAL` and `synchronous=NORMAL`. `init_schema()` idempotent. `connect_and_init()` as shortcut.
+- `src/memex/core/storage/repo.py`: functional CRUD (no classes) with upserts (`ON CONFLICT DO UPDATE`). `add_chunk()` inserts the chunk and its embedding atomically (same rowid in chunks.id and vec_chunks.rowid). `vector_search()` runs KNN join with `MATCH ? AND k = ?`.
+- Tests: `tests/conftest.py` with fixtures (in-memory db, project, conversation, messages, chunks). `tests/unit/test_models.py` (11 tests) and `tests/unit/test_storage.py` (17 tests). 28 tests pass.
 
-**Bugs encontrados y corregidos en el camino:**
-- vec0 KNN no acepta `LIMIT ?` parametrizado cuando hay JOINs. Hay que usar `k = ?` en el WHERE. La query de `vector_search` ya lo refleja.
-- El fixture `chunk` tenía `message_uuid` apuntando a un mensaje que el test no insertaba. Se separó en dos fixtures (`chunk` sin mensaje, `chunk_with_message` con). Agregado test que prueba el FK rechaza orphans.
-- Ruff señaló `class X(str, Enum)` (legacy) y `timezone.utc` (legacy en 3.11+). Migrado a `StrEnum` y `datetime.UTC`.
+**Bugs found and fixed along the way:**
+- vec0 KNN does not accept parametrized `LIMIT ?` when there are JOINs. You have to use `k = ?` in the WHERE. The `vector_search` query already reflects it.
+- The `chunk` fixture had `message_uuid` pointing to a message the test was not inserting. Separated into two fixtures (`chunk` without message, `chunk_with_message` with). Added test that proves the FK rejects orphans.
+- Ruff flagged `class X(str, Enum)` (legacy) and `timezone.utc` (legacy in 3.11+). Migrated to `StrEnum` and `datetime.UTC`.
 
-**Decisiones de implementación:**
-- Repo como funciones, no clases. Más simple, sin estado que mantener, sin DI complicada.
-- Datetime serializado con sufijo `Z` (no `+00:00`) para mantener compatibilidad con el formato del export oficial de Claude.ai.
-- `raw_content` se guarda como JSON en TEXT. Lo deserializa el repo al leer. Permite analizar tool blocks después sin re-parsear el export.
-- L2 como métrica de distancia. nomic-embed-text devuelve embeddings normalizables, así que L2 ranking coincide con cosine ranking.
+**Implementation decisions:**
+- Repo as functions, not classes. Simpler, no state to maintain, no complicated DI.
+- Datetime serialized with `Z` suffix (not `+00:00`) to keep compatibility with the official Claude.ai export format.
+- `raw_content` saved as JSON in TEXT. The repo deserializes on read. Allows analyzing tool blocks later without re-parsing the export.
+- L2 as distance metric. nomic-embed-text returns normalizable embeddings, so L2 ranking matches cosine ranking.
 
-**Estado:**
+**State:**
 - `uv run pytest tests/unit`: 28 passed.
 - `uv run ruff check src tests scripts`: clean.
 - `uv run mypy src/memex/core src/memex/config.py`: clean.
 
-**Próximo paso:**
-- Schema y modelos cerrados, el bottleneck de `main` se levanta. Ahora se pueden abrir los tres worktrees paralelos:
-  - `feature/ingest`: parser de `conversations.json`, `design_chats/*.json`, `memories.json`, `projects/*.json` + chunker + content renderer (tool markers).
-  - `feature/embeddings`: cliente Ollama + interfaz `Embedder`.
-  - `feature/retrieval-cli`: tool de búsqueda (envuelve `repo.vector_search`) + CLI con `typer`.
+**Next step:**
+- Schema and models closed, `main` bottleneck is lifted. Now we can open the three parallel worktrees:
+  - `feature/ingest`: parser of `conversations.json`, `design_chats/*.json`, `memories.json`, `projects/*.json` + chunker + content renderer (tool markers).
+  - `feature/embeddings`: Ollama client + `Embedder` interface.
+  - `feature/retrieval-cli`: search tool (wraps `repo.vector_search`) + CLI with `typer`.
 
 ---
 
-## 2026-05-18 — Inspección del export oficial
+## 2026-05-18: Official export inspection
 
-**Qué se hizo:**
-- Script `scripts/inspect_export.py` que abre el zip sin extraerlo, recorre los JSON y reporta esquema y estadísticas. Read-only, no leakea contenido (texto se redacta como `<str:N chars>`).
-- Inspección completa del export real (1.71 MB).
+**What was done:**
+- Script `scripts/inspect_export.py` that opens the zip without extracting it, walks the JSON files, and reports schema and statistics. Read-only, does not leak content (text is redacted as `<str:N chars>`).
+- Full inspection of the real export (1.71 MB).
 
-**Hallazgos (sobre el export real, contenido redactado):**
-- 12 archivos en el zip: `users.json`, `memories.json`, 2 `projects/*.json`, 7 `design_chats/*.json`, `conversations.json` (5.9 MB).
-- Total indexable: 73 chats (66 sueltos + 7 dentro de projects), 900 mensajes.
-- Schema de mensaje: `uuid`, `text` (legacy), `content[]` (nuevo), `sender` (human/assistant), `created_at`, `updated_at`, `attachments`, `files`, `parent_message_uuid`.
-- `content[].type`: `text` (1015), `tool_use` (246), `tool_result` (245). Los tool blocks vienen con metadata de integraciones (Slack, GitHub, MCP servers).
-- `text` y `content[].text` conviven en 876 de 900 mensajes. Diferencia media 19 chars (probablemente separadores entre blocks). Tomamos `content` como canónico.
-- No hay forks/branches: cada mensaje tiene exactamente un parent. `parent_message_uuid` queda en el modelo por si exports futuros traen tree.
-- `summary` viene poblado en cada conversación (mean 1067 chars). Resúmenes auto-generados por Claude.ai, gratis. Anticipa Fase 3.
-- Mediana de mensaje: 223 chars (~55 tokens). Mediana de chat: 3138 chars (~785 tokens). Max chat: 132k chars.
-- `memories.json` trae la memoria curada de Anthropic (3634 chars en `conversations_memory`). El handoff decía que estaba aislada en Claude.ai; con el export oficial la tenemos en disco.
+**Findings (on the real export, content redacted):**
+- 12 files in the zip: `users.json`, `memories.json`, 2 `projects/*.json`, 7 `design_chats/*.json`, `conversations.json` (5.9 MB).
+- Total indexable: 73 chats (66 loose + 7 inside projects), 900 messages.
+- Message schema: `uuid`, `text` (legacy), `content[]` (new), `sender` (human/assistant), `created_at`, `updated_at`, `attachments`, `files`, `parent_message_uuid`.
+- `content[].type`: `text` (1015), `tool_use` (246), `tool_result` (245). Tool blocks come with integration metadata (Slack, GitHub, MCP servers).
+- `text` and `content[].text` coexist in 876 of 900 messages. Mean difference 19 chars (probably block separators). We take `content` as canonical.
+- No forks/branches: each message has exactly one parent. `parent_message_uuid` stays in the model in case future exports bring trees.
+- `summary` is populated in each conversation (mean 1067 chars). Auto-generated by Claude.ai, free. Anticipates Phase 3.
+- Median message: 223 chars (~55 tokens). Median chat: 3138 chars (~785 tokens). Max chat: 132k chars.
+- `memories.json` brings the Anthropic curated memory (3634 chars in `conversations_memory`). The handoff said it was isolated in Claude.ai; with the official export we have it on disk.
 
-**Decisiones (tomadas con el usuario):**
-- Indexar `memories.json` como conversación sintética con `source='memory'`. Entra al mismo pipeline.
-- Tool blocks se renderizan como texto plano con markers (`[tool_use: <name>] <input>`, `[result] <texto>`). Conserva contexto sin parsing complejo.
-- Tabla `projects` separada con FK desde `conversations`. Permite recuperar `prompt_template` y futuras tools tipo `list_projects()`.
-- Chunking: ~500 tokens con overlap, por conversación (lo del plan original confirmado tras ver el tamaño real de los chats).
+**Decisions (taken with the user):**
+- Index `memories.json` as a synthetic conversation with `source='memory'`. Enters the same pipeline.
+- Tool blocks render as plain text with markers (`[tool_use: <name>] <input>`, `[result] <text>`). Preserves context without complex parsing.
+- Separate `projects` table with FK from `conversations`. Allows retrieving `prompt_template` and future tools like `list_projects()`.
+- Chunking: ~500 tokens with overlap, per conversation (the original plan confirmed after seeing the real chat size).
 
-**Schema base (cuatro tablas + virtual vec):**
+**Base schema (four tables + virtual vec):**
 - `projects` (uuid, name, prompt_template, creator, timestamps)
 - `conversations` (uuid, title, summary, source, project_uuid FK, account_uuid, timestamps)
 - `messages` (uuid, conversation_uuid, parent_uuid, sender, text, raw_content JSON, has_tool_use, has_attachments, timestamps)
 - `chunks` (id, conversation_uuid, message_uuid, sender, text, char_start, char_end, created_at)
-- `vec_chunks` (chunk_id, embedding FLOAT[768]) virtual table de sqlite-vec
+- `vec_chunks` (chunk_id, embedding FLOAT[768]) sqlite-vec virtual table
 
-**Próximo paso:**
-- Implementar `core/models.py` con pydantic (Project, Conversation, Message, Chunk, SearchResult) y `core/storage/schema.sql` con las tablas y los índices. Ese es el bottleneck del que dependen ingest, embeddings y retrieval; queda en `main`. Después, abrir los tres worktrees paralelos.
+**Next step:**
+- Implement `core/models.py` with pydantic (Project, Conversation, Message, Chunk, SearchResult) and `core/storage/schema.sql` with the tables and indexes. That is the bottleneck on which ingest, embeddings, and retrieval depend; it stays on `main`. After, open the three parallel worktrees.
 
 ---
 
-## 2026-05-18 — Arranque del repo
+## 2026-05-18: Repo kickoff
 
-**Qué se hizo:**
-- Spin-off de SyncChat. Repo nuevo en `d:\Dionisio\Memex`.
-- Lectura del handoff doc (excluido del repo público vía `.gitignore`).
-- Plan completo aprobado: estructura, stack, fases, criterios de cierre.
-- Setup base: `.gitignore`, `pyproject.toml`, `.env.example`, `.python-version`, estructura de carpetas (`src/memex/{core,transports,cli}`, `tests/{unit,integration}`, `data/exports`, `scripts`).
-- README, ROADMAP y este DEVLOG escritos con tono práctico y conciso.
-- Movimiento del export oficial de Claude.ai a `data/exports/` (gitignored).
-- Inicialización de git e historia inicial limpia.
+**What was done:**
+- Spin-off of SyncChat. New repo at `d:\Dionisio\Memex`.
+- Reading the handoff doc (excluded from the public repo via `.gitignore`).
+- Full plan approved: structure, stack, phases, close criteria.
+- Base setup: `.gitignore`, `pyproject.toml`, `.env.example`, `.python-version`, folder structure (`src/memex/{core,transports,cli}`, `tests/{unit,integration}`, `data/exports`, `scripts`).
+- README, ROADMAP, and this DEVLOG written with a practical and concise tone.
+- Move of the official Claude.ai export to `data/exports/` (gitignored).
+- Git initialization and clean initial history.
 
-**Decisiones de esta sesión:**
-- Stack: Python 3.13 (3.12+ soportado), uv como package manager, FastMCP, sqlite-vec, Ollama local con `nomic-embed-text`.
-- Repo público desde el día 1, nombre `memex`.
-- Multi-Claude vía git worktrees (no solo branches). División de Fase 0: schema en main primero, después tres worktrees paralelos (ingest, embeddings, retrieval+cli).
-- Auditoría completa de bugs, código obsoleto y vulnerabilidades al cierre de cada fase.
+**Decisions this session:**
+- Stack: Python 3.13 (3.12+ supported), uv as package manager, FastMCP, sqlite-vec, local Ollama with `nomic-embed-text`.
+- Public repo from day 1, name `memex`.
+- Multi-Claude via git worktrees (not just branches). Phase 0 division: schema on main first, then three parallel worktrees (ingest, embeddings, retrieval+cli).
+- Full bug, dead code, and vulnerability audit at the close of each phase.
 
-**Bloqueos / notas:**
-- Ollama instalado pero todavía no verificado vía CLI (PATH no refrescado, no urge hasta empezar a escribir el embedder).
+**Blockers / notes:**
+- Ollama installed but not yet verified via CLI (PATH not refreshed, no rush until we start writing the embedder).
 
-**Próximo paso:**
-- Fase 0, primera tarea: inspeccionar el JSON export de Claude.ai para definir el schema y el modelo de datos sobre datos reales.
+**Next step:**
+- Phase 0, first task: inspect the Claude.ai JSON export to define schema and data model based on real data.

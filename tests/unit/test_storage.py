@@ -21,6 +21,58 @@ class TestSchema:
         init_schema(db)
         assert schema_version(db) == "1"
 
+    def test_additive_migration_adds_content_hash_to_legacy_db(self) -> None:
+        """Simula una base creada con un schema viejo (sin `content_hash`).
+
+        Cuando `init_schema` corre sobre esa base, debe ejecutar la migración
+        aditiva y dejar la columna disponible sin perder datos existentes.
+        """
+        import sqlite3 as _sqlite
+
+        from memex.core.storage.db import _apply_additive_migrations
+
+        conn = _sqlite.connect(":memory:")
+        conn.row_factory = _sqlite.Row
+        # Schema "viejo": conversations sin content_hash.
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                uuid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                summary TEXT,
+                source TEXT NOT NULL,
+                project_uuid TEXT,
+                account_uuid TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) STRICT;
+            INSERT INTO conversations (uuid, title, source, created_at, updated_at)
+            VALUES ('c-old', 'Legacy chat', 'conversations', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+            """
+        )
+
+        # Migración corre sin error.
+        _apply_additive_migrations(conn)
+        # Es idempotente.
+        _apply_additive_migrations(conn)
+
+        cols = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM pragma_table_info('conversations')"
+            ).fetchall()
+        }
+        assert "content_hash" in cols
+
+        # El registro viejo sigue ahí, con content_hash NULL.
+        row = conn.execute(
+            "SELECT title, content_hash FROM conversations WHERE uuid = ?",
+            ("c-old",),
+        ).fetchone()
+        assert row["title"] == "Legacy chat"
+        assert row["content_hash"] is None
+        conn.close()
+
     def test_required_tables_exist(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
             "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name"

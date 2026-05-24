@@ -119,15 +119,16 @@ def insert_conversation(conn: sqlite3.Connection, conv: Conversation) -> None:
         """
         INSERT INTO conversations (
             uuid, title, summary, source, project_uuid, account_uuid,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, content_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(uuid) DO UPDATE SET
             title = excluded.title,
             summary = excluded.summary,
             source = excluded.source,
             project_uuid = excluded.project_uuid,
             account_uuid = excluded.account_uuid,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            content_hash = excluded.content_hash
         """,
         (
             conv.uuid,
@@ -138,6 +139,7 @@ def insert_conversation(conn: sqlite3.Connection, conv: Conversation) -> None:
             conv.account_uuid,
             _to_iso(conv.created_at),
             _to_iso(conv.updated_at),
+            conv.content_hash,
         ),
     )
 
@@ -170,7 +172,59 @@ def list_recent_conversations(
     return [_row_to_conversation(r) for r in rows]
 
 
+def update_conversation_summary(
+    conn: sqlite3.Connection,
+    uuid: str,
+    summary: str,
+) -> bool:
+    """Actualiza solo el campo `summary` de una conversación.
+
+    Pensado para el lazy summarizer en `tools.search_chats`: una vez generado
+    el summary contra el LLM, lo persistimos sin tocar el resto del row. No
+    altera `content_hash` ni `updated_at` porque la conv no cambió, solo se le
+    agregó un derivado nuevo.
+
+    Devuelve True si actualizó una fila, False si el uuid no existía.
+    """
+    cursor = conn.execute(
+        "UPDATE conversations SET summary = ? WHERE uuid = ?",
+        (summary, uuid),
+    )
+    return cursor.rowcount > 0
+
+
+def get_conversation_text(conn: sqlite3.Connection, uuid: str) -> str:
+    """Reconstruye el texto canónico de una conversación a partir de sus mensajes.
+
+    Devuelve la misma forma que usa el pipeline al chunkear: cada mensaje
+    precedido por `[sender]\\n`, separados por línea en blanco. Si la
+    conversación no existe o no tiene mensajes con texto, devuelve "".
+
+    Útil para el lazy summarizer en `tools.search_chats`: dado el uuid de un
+    chat candidato, reconstruye el texto sin meter pipeline en el call site.
+    """
+    rows = conn.execute(
+        """
+        SELECT sender, text
+        FROM messages
+        WHERE conversation_uuid = ? AND text != ''
+        ORDER BY created_at ASC
+        """,
+        (uuid,),
+    ).fetchall()
+    if not rows:
+        return ""
+    parts = [f"[{row['sender']}]\n{row['text']}" for row in rows]
+    return "\n\n".join(parts) + "\n\n"
+
+
 def _row_to_conversation(row: sqlite3.Row) -> Conversation:
+    # `content_hash` puede no estar en bases muy viejas si la migración no
+    # corrió todavía; defensivo por las dudas.
+    try:
+        content_hash = row["content_hash"]
+    except (IndexError, KeyError):
+        content_hash = None
     return Conversation(
         uuid=row["uuid"],
         title=row["title"],
@@ -180,6 +234,7 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         account_uuid=row["account_uuid"],
         created_at=_from_iso(row["created_at"]),
         updated_at=_from_iso(row["updated_at"]),
+        content_hash=content_hash,
     )
 
 

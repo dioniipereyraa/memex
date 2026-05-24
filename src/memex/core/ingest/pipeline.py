@@ -19,6 +19,7 @@ error en una no rompe el progreso del resto.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -72,6 +73,11 @@ def ingest_export(
 
     `batch_size` controla cuántos chunks se embeben por llamada a Ollama. 32
     suele dar buen balance latencia/throughput sin meter mucha presión al servicio.
+
+    Nota sobre summaries: el pipeline NO genera summaries por LLM (Fase 3 los
+    movió a generación on-demand en `tools.search_chats`). El `content_hash`
+    se persiste igual, porque el lazy summarizer lo usa para detectar si una
+    conv cambió y forzar regen aunque ya haya un summary guardado.
     """
     cs = chunk_size if chunk_size is not None else settings.chunk_size
     co = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
@@ -118,7 +124,14 @@ def ingest_export(
                 for conv, messages in parsed_list:
                     try:
                         _ingest_conversation(
-                            conn, embedder, conv, messages, summary, cs, co, batch_size
+                            conn,
+                            embedder,
+                            conv,
+                            messages,
+                            summary,
+                            cs,
+                            co,
+                            batch_size,
                         )
                         conn.commit()
                     except Exception as e:
@@ -209,6 +222,11 @@ def _ingest_conversation(
     Si `conv.project_uuid` referencia un project que no está en la base (sucede
     en el export real: design_chats apuntan a projects que el usuario tiene pero
     que no fueron exportados), se setea a None para no violar el FK.
+
+    El `content_hash` (SHA-256 del texto canónico) se calcula y persiste acá
+    aunque no se genere summary: lo consume el lazy summarizer en
+    `tools.search_chats` para detectar si una conv cambió desde la última
+    generación y forzar regen aunque ya haya un summary cacheado.
     """
     if conv.project_uuid is not None:
         exists = conn.execute(
@@ -223,6 +241,23 @@ def _ingest_conversation(
             )
             conv = conv.model_copy(update={"project_uuid": None})
 
+    # `_join_messages` no toca DB, solo procesa los objetos en memoria.
+    # Lo llamamos temprano para tener el hash listo antes del upsert.
+    full_text, msg_map = _join_messages(messages, summary)
+    content_hash = _hash_content(full_text) if full_text else None
+
+    # Preservar el summary cacheado si la conv ya existía y el contenido NO
+    # cambió. Importante: el upsert pisa `summary` con `excluded.summary`,
+    # así que si dejamos el `conv.summary` del parser (típicamente None o el
+    # summary del export oficial), perdemos el summary lazy que pudo haberse
+    # generado en queries previas. Acá lo restauramos si aplica.
+    if content_hash is not None:
+        existing = repo.get_conversation(conn, conv.uuid)
+        if existing is not None and existing.summary and existing.content_hash == content_hash:
+            conv = conv.model_copy(update={"summary": existing.summary})
+
+    conv = conv.model_copy(update={"content_hash": content_hash})
+
     repo.insert_conversation(conn, conv)
     summary.conversations += 1
 
@@ -233,7 +268,6 @@ def _ingest_conversation(
     # Limpiar chunks viejos para que la re-ingesta sea idempotente.
     repo.delete_chunks_for_conversation(conn, conv.uuid)
 
-    full_text, msg_map = _join_messages(messages, summary)
     if not full_text:
         return
 
@@ -261,6 +295,12 @@ def _ingest_conversation(
             )
             repo.add_chunk(conn, chunk, vec)
             summary.chunks += 1
+
+
+def _hash_content(text: str) -> str:
+    """SHA-256 hex del texto canónico. Estable, suficiente para detectar
+    cambios. No es cripto: solo un fingerprint para comparar."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _join_messages(

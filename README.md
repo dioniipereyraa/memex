@@ -6,9 +6,7 @@
 
 Local-first MCP server that indexes your Claude.ai chat history and exposes it to Claude Code (and, soon, to Claude.ai via remote MCP). The goal: give Claude Code the same context Claude.ai already has.
 
-**Status:** pre-alpha. Phases 0 and 1 closed. **Phase 2 in progress:** hybrid FTS5 + RRF search closed (fixes the "Amarok" case); live capture via Chrome extension + local HTTP server working, pending a week of real usage and a phase-close audit.
-
-> Internal docs (`ROADMAP.md`, `DEVLOG.md`) are kept in Spanish on purpose. They are the project journal, not user-facing material.
+**Status:** pre-alpha. Phases 0, 1 and 2 closed. **Phase 3 in progress** (quality pass on retrieval): on-demand auto-summaries at first `search_chats` landed; chat ↔ project/repo association, `SessionStart` hook, and `find_related` tool still pending.
 
 ![Session memory check](docs/screenshots/session-memory-check.jpeg)
 
@@ -72,7 +70,7 @@ ollama pull nomic-embed-text
 ## MCP server tools (v1)
 
 - `search_chats(query, limit=5, source?, mode="hybrid")` searches the corpus. Modes: `hybrid` (default, combines vector search + FTS5 BM25 via Reciprocal Rank Fusion), `semantic` (vectors only), `lexical` (FTS5 only, ideal for proper nouns or exact terms). `source` filters by origin (`conversations`, `design_chat`, `memory`). Deduplicated per conversation.
-- `get_chat(uuid, messages_limit=20, messages_offset=0)` fetches a conversation with its messages, paginated. `raw_content` is omitted; each message is truncated to 3000 chars to stay inside the client's token budget.
+- `get_chat(uuid, messages_limit=10, messages_offset=0)` fetches a conversation with its messages, paginated. `raw_content` is omitted; each message is truncated to 1500 chars to stay inside the client's token budget (worst-case response ~17k chars). Long chats are paginated with `messages_offset`; max `messages_limit` is 100.
 - `list_recent_chats(limit=10, source?)` lists the latest chats ordered by last update.
 
 Search is also reachable from the CLI with `memex search "query" --mode {hybrid|semantic|lexical}`. For databases created before the hybrid FTS5 work, run `memex reindex-fts` once to populate the lexical index.
@@ -96,6 +94,27 @@ Once your local database is populated (`memex ingest`), start the MCP server wit
 Set `cwd` to the absolute path where you cloned Memex (where `pyproject.toml` lives). Restart Claude Code and the tools `search_chats`, `get_chat`, `list_recent_chats` will show up in the session.
 
 The same searches are also available from the CLI via `uv run memex search "..."` if you prefer them outside Claude Code.
+
+## Auto-summaries (Phase 3, optional)
+
+When `search_chats` returns a chat that does not have a summary yet, Memex can generate one on-the-fly using Claude Haiku. The summary is persisted, so the next search of the same chat hits cache and does not pay the API again. This way you only pay for chats you actually look at, not for the whole corpus.
+
+Opt-in. Off by default. Cap: at most 3 summaries generated per `search_chats` call (parallel), to bound latency and per-query cost.
+
+1. Install the extra (adds the `anthropic` SDK):
+   ```bash
+   uv sync --extra summaries
+   ```
+2. In your `.env` (or as env vars), set:
+   ```bash
+   ANTHROPIC_API_KEY=sk-ant-...
+   MEMEX_SUMMARY_ENABLED=true
+   ```
+3. Use `search_chats` from Claude Code as usual. The first time a chat appears in results without a cached summary, Memex generates one. Subsequent searches return the cached summary instantly.
+
+Configurable via env: `MEMEX_SUMMARY_MODEL` (default `claude-haiku-4-5-20251001`), `MEMEX_SUMMARY_MAX_TOKENS` (default 200). If the API fails for a particular chat (no key, rate limit, network), that one result comes back without a summary, the search itself never aborts, and the warning is logged.
+
+Cost model: bulk ingest of an export with 74 chats costs $0 (no summaries are generated at ingest time). Each unique chat you actually open in a search costs roughly $0.01 (Haiku, ~5-10k input + ~200 output tokens). $5 of API credits comfortably covers months of use.
 
 ## Live capture (Phase 2)
 

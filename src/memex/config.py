@@ -50,6 +50,16 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO", alias="MEMEX_LOG_LEVEL")
 
+    # Auto-summaries con Claude Haiku. Opt-in: por default OFF para evitar
+    # llamadas a la API durante ingest masivo. Activar con
+    # MEMEX_SUMMARY_ENABLED=true + ANTHROPIC_API_KEY seteada.
+    summary_enabled: bool = Field(default=False, alias="MEMEX_SUMMARY_ENABLED")
+    summary_model: str = Field(default="claude-haiku-4-5-20251001", alias="MEMEX_SUMMARY_MODEL")
+    summary_max_tokens: int = Field(default=200, alias="MEMEX_SUMMARY_MAX_TOKENS", ge=32, le=2048)
+    # API key se respeta como nombre estándar de Anthropic (no MEMEX_-prefixed)
+    # para reutilizar la key que ya tengas en el shell.
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+
 
 def get_settings() -> Settings:
     """Factory para Settings.

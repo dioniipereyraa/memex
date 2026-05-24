@@ -57,6 +57,10 @@ class Conversation(BaseModel):
     account_uuid: str | None = None
     created_at: datetime
     updated_at: datetime
+    # Hash SHA-256 (hex) del texto canónico de la conversación al momento del
+    # último ingest. Lo usa el pipeline para decidir si re-generar derivados
+    # caros (ej. summary con LLM) cuando se re-ingesta el mismo chat.
+    content_hash: str | None = None
 
 
 class Message(BaseModel):

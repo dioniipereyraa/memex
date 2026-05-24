@@ -207,6 +207,150 @@ class TestSearchChats:
         assert result["results"][0]["summary"].endswith("…[truncated]")
 
 
+class TestSearchChatsLazySummaries:
+    """Tests del wire del Summarizer on-demand en `tools.search_chats`."""
+
+    def _populate_n_chats(
+        self,
+        db: sqlite3.Connection,
+        n: int,
+        with_summary: list[bool] | None = None,
+    ) -> list[str]:
+        """Crea N conversaciones con un chunk cada una. `with_summary[i]`
+        indica si la conv `i` arranca con summary cacheado."""
+        embedder = FakeEmbedder(dim=768)
+        uuids: list[str] = []
+        flags = with_summary if with_summary is not None else [False] * n
+        for i in range(n):
+            uuid = f"conv-{i:03d}"
+            conv = Conversation(
+                uuid=uuid,
+                title=f"Chat {i}",
+                summary=f"Summary cacheado de {i}" if flags[i] else None,
+                source=Source.CONVERSATIONS,
+                created_at=datetime(2026, 5, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+            repo.insert_conversation(db, conv)
+            msg = Message(
+                uuid=f"msg-{i:03d}",
+                conversation_uuid=uuid,
+                sender=Sender.HUMAN,
+                text=f"hola mundo desde el chat {i}",
+                created_at=conv.created_at,
+                updated_at=conv.updated_at,
+            )
+            repo.insert_message(db, msg)
+            chunk = Chunk(
+                conversation_uuid=uuid,
+                text=msg.text,
+                char_start=0,
+                char_end=len(msg.text),
+                created_at=conv.updated_at,
+            )
+            repo.add_chunk(db, chunk, embedder.embed_one(msg.text))
+            uuids.append(uuid)
+        return uuids
+
+    def test_no_summarizer_means_no_generation(self, db: sqlite3.Connection) -> None:
+        """Sin summarizer pasado, search_chats devuelve summary=None tal cual está en DB."""
+        from memex.core.summaries.fake import FakeSummarizer
+
+        self._populate_n_chats(db, 2)
+        summarizer = FakeSummarizer()
+        # Pasar summarizer=None explícito.
+        result = tools.search_chats(db, FakeEmbedder(dim=768), query="hola", summarizer=None)
+        assert result["count"] >= 1
+        for r in result["results"]:
+            assert r["summary"] is None
+        # El summarizer no se llamó (sentinel: pasamos uno, pero como None,
+        # el flow no debería tocarlo).
+        assert summarizer.calls == 0
+
+    def test_lazy_generates_for_results_without_summary(self, db: sqlite3.Connection) -> None:
+        from memex.core.summaries.fake import FakeSummarizer
+
+        self._populate_n_chats(db, 2)
+        summarizer = FakeSummarizer(max_words=4)
+        result = tools.search_chats(
+            db, FakeEmbedder(dim=768), query="hola", limit=2, summarizer=summarizer
+        )
+        # Los 2 results vienen sin summary cacheado → 2 generaciones.
+        assert summarizer.calls == 2
+        for r in result["results"]:
+            assert r["summary"] is not None
+            assert r["summary"].startswith("Chat ")  # FakeSummarizer usa el title.
+
+    def test_lazy_skips_already_cached(self, db: sqlite3.Connection) -> None:
+        from memex.core.summaries.fake import FakeSummarizer
+
+        self._populate_n_chats(db, 2, with_summary=[True, False])
+        summarizer = FakeSummarizer(max_words=4)
+        result = tools.search_chats(
+            db, FakeEmbedder(dim=768), query="hola", limit=2, summarizer=summarizer
+        )
+        # Solo 1 generación (el que no tenía summary). El otro se respeta tal cual.
+        assert summarizer.calls == 1
+        summaries = {r["conversation_uuid"]: r["summary"] for r in result["results"]}
+        assert summaries["conv-000"] == "Summary cacheado de 0"
+
+    def test_lazy_caps_at_three(self, db: sqlite3.Connection) -> None:
+        """Si hay más de SEARCH_SUMMARY_LAZY_CAP candidatos sin summary, solo
+        se generan los primeros 3 (los más relevantes). El resto queda sin
+        summary en este response, pero el siguiente search puede generarlos."""
+        from memex.core.summaries.fake import FakeSummarizer
+
+        self._populate_n_chats(db, 5)
+        summarizer = FakeSummarizer()
+        tools.search_chats(db, FakeEmbedder(dim=768), query="hola", limit=5, summarizer=summarizer)
+        assert summarizer.calls == tools.SEARCH_SUMMARY_LAZY_CAP
+        # Los summaries generados están persistidos.
+        with_summary = db.execute(
+            "SELECT COUNT(*) FROM conversations WHERE summary IS NOT NULL"
+        ).fetchone()[0]
+        assert with_summary == tools.SEARCH_SUMMARY_LAZY_CAP
+
+    def test_lazy_persists_to_db(self, db: sqlite3.Connection) -> None:
+        """Después de un search, el summary queda persistido (próximo search es cache hit)."""
+        from memex.core.summaries.fake import FakeSummarizer
+
+        self._populate_n_chats(db, 1)
+        summarizer = FakeSummarizer()
+        # Primera búsqueda: genera 1.
+        tools.search_chats(db, FakeEmbedder(dim=768), query="hola", summarizer=summarizer)
+        assert summarizer.calls == 1
+        # En DB queda el summary.
+        conv = repo.get_conversation(db, "conv-000")
+        assert conv is not None
+        assert conv.summary is not None
+
+        # Segunda búsqueda: cache hit, no se llama de nuevo.
+        tools.search_chats(db, FakeEmbedder(dim=768), query="hola", summarizer=summarizer)
+        assert summarizer.calls == 1  # sin cambios
+
+    def test_lazy_silent_fail_per_chat(self, db: sqlite3.Connection) -> None:
+        """Si el summarizer levanta SummarizerError, ese result viene sin
+        summary pero los demás siguen normales y el search no aborta."""
+        from memex.core.summaries.fake import FakeSummarizer
+
+        self._populate_n_chats(db, 2)
+        # FakeSummarizer(fail=True) falla siempre.
+        summarizer = FakeSummarizer(fail=True)
+        result = tools.search_chats(
+            db, FakeEmbedder(dim=768), query="hola", limit=2, summarizer=summarizer
+        )
+        # El search NO aborta.
+        assert result.get("count", 0) >= 1
+        # Ninguno tiene summary nuevo.
+        for r in result["results"]:
+            assert r["summary"] is None
+        # No quedó persistido (no hubo summary exitoso).
+        with_summary = db.execute(
+            "SELECT COUNT(*) FROM conversations WHERE summary IS NOT NULL"
+        ).fetchone()[0]
+        assert with_summary == 0
+
+
 class TestGetChat:
     def test_basic_get(self, populated_db: sqlite3.Connection, conversation: Conversation) -> None:
         result = tools.get_chat(populated_db, conversation.uuid)
@@ -280,14 +424,14 @@ class TestGetChatPagination:
             repo.insert_message(db, msg)
         return conv.uuid
 
-    def test_default_returns_first_20(self, db: sqlite3.Connection, long_chat: str) -> None:
+    def test_default_returns_first_10(self, db: sqlite3.Connection, long_chat: str) -> None:
         result = tools.get_chat(db, long_chat)
         assert result["total_messages"] == 50
-        assert result["messages_returned"] == 20
+        assert result["messages_returned"] == 10
         assert result["messages_offset"] == 0
         assert result["truncated"] is True
         assert result["messages"][0]["uuid"] == "msg-000"
-        assert result["messages"][-1]["uuid"] == "msg-019"
+        assert result["messages"][-1]["uuid"] == "msg-009"
 
     def test_offset_paginates(self, db: sqlite3.Connection, long_chat: str) -> None:
         result = tools.get_chat(db, long_chat, messages_limit=20, messages_offset=20)
@@ -329,7 +473,7 @@ class TestGetChatPagination:
             updated_at=datetime(2026, 5, 1, tzinfo=UTC),
         )
         repo.insert_conversation(db, conv)
-        long_text = "x" * 5000  # más de GET_CHAT_MESSAGE_TEXT_MAX_CHARS (3000)
+        long_text = "x" * 5000  # más de GET_CHAT_MESSAGE_TEXT_MAX_CHARS (1500)
         msg = Message(
             uuid="m1",
             conversation_uuid=conv.uuid,
