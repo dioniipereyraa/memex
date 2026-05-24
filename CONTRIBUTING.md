@@ -1,6 +1,6 @@
 # Contributing to Memex
 
-Thanks for taking a look. Memex is pre-alpha, runs from source, and the roadmap is driven by a single user-facing goal: give Claude Code the same context Claude.ai already has. Phases and close criteria live in [ROADMAP.md](ROADMAP.md); the project journal in [DEVLOG.md](DEVLOG.md). Both are in Spanish, on purpose (they are internal bitácora).
+Thanks for taking a look. Memex is pre-alpha, runs from source, and the roadmap is driven by a single user-facing goal: give Claude Code the same context Claude.ai already has. Phases and close criteria live in [ROADMAP.md](ROADMAP.md); the project journal in [DEVLOG.md](DEVLOG.md).
 
 ## Scope of contributions
 

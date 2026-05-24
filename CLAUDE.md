@@ -1,82 +1,88 @@
 # CLAUDE.md
 
-Contexto y reglas para cualquier instancia de Claude Code trabajando en este repo (incluyendo worktrees paralelos).
+Context and rules for any Claude Code instance working in this repo (including parallel worktrees).
 
-## Idea del proyecto en una línea
+## Project idea in one line
 
-Que el contexto que tenga Claude.ai lo tenga también Claude Code. Todo lo demás (storage, embeddings, MCP, captura) es plomería para lograr eso.
+The context Claude.ai has should also be available to Claude Code. Everything else (storage, embeddings, MCP, capture) is plumbing to get there.
 
-Detalle completo en [README.md](README.md) y [ROADMAP.md](ROADMAP.md).
+Full detail in [README.md](README.md) and [ROADMAP.md](ROADMAP.md).
 
-## Reglas de trabajo (aplicar SIEMPRE)
+## Working rules (apply ALWAYS)
 
-1. **Leer el código antes y después de editarlo.** Antes para no romper nada, después para verificar lo que quedó.
-2. **Mantener README, ROADMAP y DEVLOG al día con cada cambio relevante.** Actualizarlos en la misma iteración que el código.
-3. **Revisar el código recién escrito en busca de bugs** antes de cerrar la tarea.
-4. **Al cerrar cada fase del ROADMAP, auditar el proyecto entero** en busca de bugs, código obsoleto y vulnerabilidades. Entregar informe escrito.
-5. **Planear antes de codear.** Nada de escribir código sin un plan claro.
-6. **Si hay dudas reales, preguntar.** No asumir.
-7. **Código y planes pensados para escalar.** Separación clara de responsabilidades (core puro, transport intercambiable, embedder y storage detrás de interfaces).
-8. **Sin guiones largos como conector.** Usar comas, puntos, paréntesis. Aplica a docs, commits, código y respuestas al usuario.
-9. **Sin shoutout a Claude en commits.** Nada de `Co-Authored-By` ni footers de IA. Commits firmados solo por el autor humano.
-10. **Aplicar estas reglas en cada iteración.**
+1. **Read the code before and after editing.** Before so you do not break anything, after to verify what ended up there.
+2. **Keep README, ROADMAP, and DEVLOG in sync with every relevant change.** Update them in the same iteration as the code.
+3. **Review the code you just wrote for bugs** before closing the task.
+4. **When closing each ROADMAP phase, audit the whole project** for bugs, obsolete code, and vulnerabilities. Deliver a written report.
+5. **Plan before coding.** No writing code without a clear plan.
+6. **If there are real doubts, ask.** Do not assume.
+7. **Code and plans designed to scale.** Clear separation of responsibilities (pure core, swappable transport, embedder and storage behind interfaces).
+8. **No em dashes as connectors.** Use commas, periods, parentheses. Applies to docs, commits, code, and replies to the user.
+9. **No Claude shoutouts in commits.** No `Co-Authored-By`, no AI footers. Commits signed only by the human author.
+10. **Apply these rules in every iteration.**
 
 ## Stack
 
-- Python 3.12+, gestor de paquetes [uv](https://docs.astral.sh/uv/).
-- [FastMCP](https://github.com/jlowin/fastmcp) para el server MCP (soporta stdio y SSE/HTTP).
-- SQLite + [sqlite-vec](https://github.com/asg017/sqlite-vec) para storage y vector search.
-- [fastembed](https://github.com/qdrant/fastembed) por default (zero-config, ONNX embebido) u [Ollama](https://ollama.com) opcional con `nomic-embed-text`. Backend configurable via `MEMEX_EMBED_BACKEND`.
-- `pydantic` + `pydantic-settings` para config y modelos.
-- `typer` + `rich` para CLI.
-- `pytest`, `ruff`, `mypy` para test/lint/typecheck.
+- Python 3.12+, package manager [uv](https://docs.astral.sh/uv/).
+- [FastMCP](https://github.com/jlowin/fastmcp) for the MCP server (supports stdio and SSE/HTTP).
+- SQLite + [sqlite-vec](https://github.com/asg017/sqlite-vec) for storage and vector search.
+- [fastembed](https://github.com/qdrant/fastembed) by default (zero-config, embedded ONNX) or optional [Ollama](https://ollama.com) with `nomic-embed-text`. Backend configurable via `MEMEX_EMBED_BACKEND`.
+- `pydantic` + `pydantic-settings` for config and models.
+- `typer` + `rich` for CLI.
+- `pytest`, `ruff`, `mypy` for test/lint/typecheck.
 
-## Arquitectura
+## Architecture
 
 ```
 src/memex/
-├── config.py            ← settings con pydantic-settings (DONE)
-├── core/                ← librería pura, sin transport
+├── config.py            ← settings with pydantic-settings (DONE)
+├── core/                ← pure library, no transport
 │   ├── models.py        ← Project, Conversation, Message, Chunk, SearchHit
 │   ├── storage/         ← SQLite + sqlite-vec + FTS5 (schema, db, repo)
 │   └── ingest/          ← parsers + chunker + pipeline (content_renderer, chunker, claude_export, pipeline)
 ├── core/embeddings/     ← factory + interfaces
 │   ├── base.py          ← Embedder ABC + EmbedderError + l2_normalize
 │   ├── fastembed_embedder.py  ← default (ONNX, zero-config)
-│   ├── ollama.py        ← opcional (extra `ollama`)
-│   ├── fake.py          ← FakeEmbedder determinístico para tests
-│   └── __init__.py      ← get_default_embedder() — factory según MEMEX_EMBED_BACKEND
-├── transports/          ← bindings MCP + HTTP local
-│   ├── tools.py         ← lógica pura de las 3 tools MCP
-│   ├── stdio.py         ← entrypoint MCP stdio con FastMCP (memex-mcp)
-│   ├── http_ingest.py   ← server HTTP local para captura en vivo (Starlette)
-│   └── http.py          ← SSE/HTTP remote MCP (TBD, Fase 4)  ← no existe todavía
-└── cli/                 ← CLI con typer (ingest, search, stats, serve, reindex-fts)
+│   ├── ollama.py        ← optional (extra `ollama`)
+│   ├── fake.py          ← deterministic FakeEmbedder for tests
+│   └── __init__.py      ← get_default_embedder() factory based on MEMEX_EMBED_BACKEND
+├── core/summaries/      ← LLM summarizer (Phase 3)
+│   ├── base.py          ← Summarizer ABC + SummarizerError
+│   ├── anthropic_summarizer.py  ← real backend, lazy SDK import
+│   ├── fake.py          ← deterministic FakeSummarizer for tests
+│   └── __init__.py      ← get_default_summarizer() factory, returns None if disabled
+├── transports/          ← MCP bindings + local HTTP
+│   ├── tools.py         ← pure logic of the 3 MCP tools
+│   ├── stdio.py         ← stdio MCP entrypoint with FastMCP (memex-mcp)
+│   ├── http_ingest.py   ← local HTTP server for live capture (Starlette)
+│   └── http.py          ← SSE/HTTP remote MCP (TBD, Phase 4)  ← does not exist yet
+└── cli/                 ← CLI with typer (ingest, search, stats, serve, reindex-fts)
 ```
 
-**Regla de dependencias:** `core/` no importa de `transports/` ni de `cli/`. Las flechas apuntan para adentro.
+**Dependency rule:** `core/` does not import from `transports/` or `cli/`. Arrows point inward.
 
-**Estado al 2026-05-19 (Fase 2 en progreso):**
-- Fases 0 y 1 cerradas con audit. Fase 2 con sub-tasks cerrados: búsqueda híbrida FTS5 + RRF, captura en vivo (Chrome ext + HTTP server local), embedder zero-config con fastembed default.
-- `vector_search`, `text_search` y `hybrid_search` viven en `core/storage/repo.py`. El directorio `core/retrieval/` se eliminó (estaba vacío); si la lógica de retrieval crece (re-ranking, filtros complejos), se vuelve a crear con contenido real.
-- `transports/http.py` no existe aún; lo agrega Fase 4 cuando se arme el remote MCP. La captura en vivo usa `transports/http_ingest.py` (otro server local, distinto del MCP).
+**State as of 2026-05-23 (Phase 3 in progress):**
+- Phases 0, 1, and 2 closed with audit. Phase 3 first sub-task closed: on-demand auto-summaries via Claude Haiku (opt-in, lazy at first `search_chats`, persisted).
+- `vector_search`, `text_search`, and `hybrid_search` live in `core/storage/repo.py`. The `core/retrieval/` directory was removed (it was empty); if retrieval logic grows (re-ranking, complex filters), it gets recreated with real content.
+- `transports/http.py` does not exist yet; Phase 4 adds it when the remote MCP is built. Live capture uses `transports/http_ingest.py` (a different local server, not the MCP).
 
-## Comandos habituales
+## Common commands
 
 ```bash
-uv sync                       # instala deps + crea .venv
-uv run pytest                 # tests (-m 'not integration' para saltar integration)
+uv sync                       # install deps + create .venv
+uv sync --extra summaries     # also install anthropic SDK (for the optional summaries feature)
+uv run pytest                 # tests (-m 'not integration' to skip integration)
 uv run ruff check src tests   # lint
 uv run ruff format src tests  # format
-uv run mypy src/memex/core    # type check (estricto en core)
+uv run mypy src/memex/core    # type check (strict in core)
 uv run memex --help           # CLI (ingest, search, stats, serve, reindex-fts)
-uv run memex-mcp              # MCP server stdio (para Claude Code / Desktop)
-uv run memex serve            # HTTP server local para captura en vivo desde Chrome ext
+uv run memex-mcp              # stdio MCP server (for Claude Code / Desktop)
+uv run memex serve            # local HTTP server for live capture from Chrome ext
 ```
 
-## Multi-Claude con git worktrees
+## Multi-Claude with git worktrees
 
-Para trabajar varios Claudes en paralelo sobre tareas independientes:
+To run several Claudes in parallel on independent tasks:
 
 ```bash
 git worktree add ../Memex-ingest feature/ingest
@@ -84,24 +90,24 @@ git worktree add ../Memex-embed  feature/embeddings
 git worktree add ../Memex-store  feature/storage
 ```
 
-Cada worktree es una carpeta separada con su propio branch y su propio `.venv` (uv aísla solo). Convergen al mismo `.git`. Cada Claude trabaja sin pisarse archivos, y al mergear todos los cambios entran al mismo repo.
+Each worktree is a separate folder with its own branch and its own `.venv` (uv isolates on its own). They converge to the same `.git`. Each Claude works without stepping on files, and at merge time all changes land in the same repo.
 
-**Limitaciones:** los worktrees no se ven entre sí hasta el merge. Conviene dividir por módulo independiente, no por feature transversal. El coordinador es el humano (o un Claude "lead" en `main`).
+**Limits:** worktrees do not see each other until merge. Better to split by independent module, not by cross-cutting feature. The coordinator is the human (or a "lead" Claude on `main`).
 
-## Datos sensibles
+## Sensitive data
 
-Todo lo que está en `data/` es personal y NUNCA va al repo (ya excluido por `.gitignore`):
-- `data/exports/*.zip`: exports de Claude.ai con conversaciones reales.
-- `data/memex.db`: base SQLite con chats indexados.
+Everything in `data/` is personal and NEVER goes to the repo (already excluded by `.gitignore`):
+- `data/exports/*.zip`: Claude.ai exports with real conversations.
+- `data/memex.db`: SQLite database with indexed chats.
 
-El archivo `MEMEX.md` también está en `.gitignore` porque es un documento de contexto interno (handoff de SyncChat), no para usuarios.
+The `MEMEX.md` file is also in `.gitignore` because it is an internal context document (SyncChat handoff), not for users.
 
-## Convenciones de commit
+## Commit conventions
 
-- Mensajes claros, modo imperativo, en español o inglés (cualquiera consistente dentro del mensaje).
-- Sin `Co-Authored-By: Claude...`. Sin footers de IA. Sin `Generated with Claude Code`.
-- Un commit por unidad lógica de cambio.
+- Clear messages, imperative mood, English or Spanish (whichever is consistent within the message).
+- No `Co-Authored-By: Claude...`. No AI footers. No `Generated with Claude Code`.
+- One commit per logical unit of change.
 
-## Memoria persistente
+## Persistent memory
 
-Hay memoria del proyecto en `C:\Users\dioni\.claude\projects\d--Dionisio-Memex\memory\`. Contiene reglas de workflow, contexto del usuario, decisiones de setup. Leer al iniciar cada sesión.
+There is project memory at `C:\Users\dioni\.claude\projects\d--Dionisio-Memex\memory\`. It contains workflow rules, user context, setup decisions. Read it at the start of each session.
