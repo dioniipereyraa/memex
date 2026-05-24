@@ -84,13 +84,92 @@ class TestSchema:
             "messages",
             "chunks",
             "vec_chunks",
+            "fts_chunks",
             "schema_meta",
+            "repos",
+            "chat_repos",
         ):
-            assert expected in names, f"falta tabla {expected} en {sorted(names)}"
+            assert expected in names, f"missing table {expected} in {sorted(names)}"
 
     def test_foreign_keys_enabled(self, db: sqlite3.Connection) -> None:
         row = db.execute("PRAGMA foreign_keys").fetchone()
         assert row[0] == 1
+
+    def test_chat_repos_cascade_on_conversation_delete(self, db: sqlite3.Connection) -> None:
+        """Borrar una conversation cascadea sus asociaciones en chat_repos."""
+        db.execute(
+            "INSERT INTO conversations (uuid, title, source, created_at, updated_at) "
+            "VALUES ('c1', 'T', 'conversations', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO repos (key, name, registered_at) "
+            "VALUES ('r1', 'repo1', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO chat_repos (conversation_uuid, repo_key, source, associated_at) "
+            "VALUES ('c1', 'r1', 'auto', '2026-01-01T00:00:00.000Z')"
+        )
+        assert db.execute("SELECT COUNT(*) FROM chat_repos").fetchone()[0] == 1
+
+        db.execute("DELETE FROM conversations WHERE uuid = 'c1'")
+        assert db.execute("SELECT COUNT(*) FROM chat_repos").fetchone()[0] == 0
+        # El repo sobrevive.
+        assert db.execute("SELECT COUNT(*) FROM repos").fetchone()[0] == 1
+
+    def test_chat_repos_cascade_on_repo_delete(self, db: sqlite3.Connection) -> None:
+        """Borrar un repo cascadea sus asociaciones en chat_repos (la conv sobrevive)."""
+        db.execute(
+            "INSERT INTO conversations (uuid, title, source, created_at, updated_at) "
+            "VALUES ('c1', 'T', 'conversations', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO repos (key, name, registered_at) "
+            "VALUES ('r1', 'repo1', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO chat_repos (conversation_uuid, repo_key, source, associated_at) "
+            "VALUES ('c1', 'r1', 'manual', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute("DELETE FROM repos WHERE key = 'r1'")
+        assert db.execute("SELECT COUNT(*) FROM chat_repos").fetchone()[0] == 0
+        # La conversation sobrevive.
+        assert db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 1
+
+    def test_chat_repos_source_check_constraint(self, db: sqlite3.Connection) -> None:
+        """`source` debe ser 'auto' o 'manual'."""
+        db.execute(
+            "INSERT INTO conversations (uuid, title, source, created_at, updated_at) "
+            "VALUES ('c1', 'T', 'conversations', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO repos (key, name, registered_at) "
+            "VALUES ('r1', 'repo1', '2026-01-01T00:00:00.000Z')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO chat_repos (conversation_uuid, repo_key, source, associated_at) "
+                "VALUES ('c1', 'r1', 'invalid', '2026-01-01T00:00:00.000Z')"
+            )
+
+    def test_chat_repos_primary_key_prevents_dup(self, db: sqlite3.Connection) -> None:
+        """No se puede asociar dos veces la misma conv al mismo repo."""
+        db.execute(
+            "INSERT INTO conversations (uuid, title, source, created_at, updated_at) "
+            "VALUES ('c1', 'T', 'conversations', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO repos (key, name, registered_at) "
+            "VALUES ('r1', 'repo1', '2026-01-01T00:00:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO chat_repos (conversation_uuid, repo_key, source, associated_at) "
+            "VALUES ('c1', 'r1', 'auto', '2026-01-01T00:00:00.000Z')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO chat_repos (conversation_uuid, repo_key, source, associated_at) "
+                "VALUES ('c1', 'r1', 'manual', '2026-01-01T00:00:00.000Z')"
+            )
 
 
 class TestProjectRepo:

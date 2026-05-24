@@ -16,7 +16,7 @@ import re
 import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import sqlite_vec
 
@@ -29,6 +29,9 @@ from memex.core.models import (
     Sender,
     Source,
 )
+
+if TYPE_CHECKING:
+    from memex.core.repos.discovery import ChatRepoAssociation, RepoInfo
 
 
 def _to_iso(dt: datetime) -> str:
@@ -679,3 +682,167 @@ def _row_to_search_hit(row: sqlite3.Row) -> SearchHit:
     )
     snippet = chunk.text[:280] + ("…" if len(chunk.text) > 280 else "")
     return SearchHit(chunk=chunk, conversation=conv, distance=row["distance"], snippet=snippet)
+
+
+# ---------- Repos and chat ↔ repo associations ----------
+
+
+def insert_repo(conn: sqlite3.Connection, info: RepoInfo) -> None:
+    """Upsert a repo by its canonical key.
+
+    Re-registering an existing key refreshes its mutable fields (path,
+    remote_url, name, manifest_name) but keeps `registered_at`. Cascade
+    deletes are handled by the FK with `chat_repos.repo_key`.
+    """
+    conn.execute(
+        """
+        INSERT INTO repos (key, path, remote_url, name, manifest_name, registered_at)
+        VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(key) DO UPDATE SET
+            path = excluded.path,
+            remote_url = excluded.remote_url,
+            name = excluded.name,
+            manifest_name = excluded.manifest_name
+        """,
+        (info.key, info.path, info.remote_url, info.name, info.manifest_name),
+    )
+
+
+def get_repo(conn: sqlite3.Connection, key: str) -> RepoInfo | None:
+    row = conn.execute("SELECT * FROM repos WHERE key = ?", (key,)).fetchone()
+    return _row_to_repo_info(row) if row else None
+
+
+def list_repos(conn: sqlite3.Connection) -> list[RepoInfo]:
+    """All registered repos, ordered by name (case-insensitive)."""
+    rows = conn.execute("SELECT * FROM repos ORDER BY LOWER(name)").fetchall()
+    return [_row_to_repo_info(r) for r in rows]
+
+
+def delete_repo(conn: sqlite3.Connection, key: str) -> bool:
+    """Remove a repo. Returns True if a row was deleted.
+
+    `chat_repos` rows are removed by the ON DELETE CASCADE FK.
+    """
+    cursor = conn.execute("DELETE FROM repos WHERE key = ?", (key,))
+    return cursor.rowcount > 0
+
+
+def associate_chat_repo(
+    conn: sqlite3.Connection,
+    conversation_uuid: str,
+    repo_key: str,
+    *,
+    source: str = "auto",
+    confidence: float | None = None,
+) -> None:
+    """Upsert one association row.
+
+    On conflict (same conv + same repo), the new `source` and `confidence`
+    win. Typical case: a manual `memex tag` overrides an auto association
+    by re-calling with `source='manual'`, and the next ingest re-asserts
+    auto without losing the manual record (we keep the more authoritative
+    one, see `_priority_source`).
+    """
+    if source not in ("auto", "manual"):
+        raise ValueError(f"Invalid source: {source!r}. Expected 'auto' or 'manual'.")
+
+    # If a manual association exists, do not let an `auto` rewrite it back.
+    existing = conn.execute(
+        "SELECT source FROM chat_repos WHERE conversation_uuid = ? AND repo_key = ?",
+        (conversation_uuid, repo_key),
+    ).fetchone()
+    if existing is not None and existing["source"] == "manual" and source == "auto":
+        return
+
+    conn.execute(
+        """
+        INSERT INTO chat_repos (conversation_uuid, repo_key, source, confidence, associated_at)
+        VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(conversation_uuid, repo_key) DO UPDATE SET
+            source = excluded.source,
+            confidence = excluded.confidence
+        """,
+        (conversation_uuid, repo_key, source, confidence),
+    )
+
+
+def dissociate_chat_repo(
+    conn: sqlite3.Connection,
+    conversation_uuid: str,
+    repo_key: str,
+) -> bool:
+    """Remove an association. Returns True if a row was deleted."""
+    cursor = conn.execute(
+        "DELETE FROM chat_repos WHERE conversation_uuid = ? AND repo_key = ?",
+        (conversation_uuid, repo_key),
+    )
+    return cursor.rowcount > 0
+
+
+def list_repos_for_conversation(
+    conn: sqlite3.Connection, conversation_uuid: str
+) -> list[ChatRepoAssociation]:
+    """Repos associated to a given conv, with source + confidence per row.
+
+    Hydrates the full `RepoInfo` from the `repos` table via JOIN.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            r.key, r.path, r.remote_url, r.name, r.manifest_name,
+            cr.source, cr.confidence
+        FROM chat_repos cr
+        JOIN repos r ON r.key = cr.repo_key
+        WHERE cr.conversation_uuid = ?
+        ORDER BY cr.confidence DESC NULLS LAST, r.name
+        """,
+        (conversation_uuid,),
+    ).fetchall()
+    from memex.core.repos.discovery import ChatRepoAssociation
+
+    return [
+        ChatRepoAssociation(
+            repo=_row_to_repo_info(r),
+            source=r["source"],
+            confidence=r["confidence"],
+        )
+        for r in rows
+    ]
+
+
+def list_conversations_for_repo(
+    conn: sqlite3.Connection, repo_key: str
+) -> list[tuple[str, str, float | None]]:
+    """List `(conversation_uuid, source, confidence)` tuples for one repo.
+
+    Used by `search_chats` boost: given the active repo, we get the set of
+    conv uuids to score higher.
+    """
+    rows = conn.execute(
+        """
+        SELECT conversation_uuid, source, confidence
+        FROM chat_repos
+        WHERE repo_key = ?
+        """,
+        (repo_key,),
+    ).fetchall()
+    return [(r["conversation_uuid"], r["source"], r["confidence"]) for r in rows]
+
+
+def _row_to_repo_info(row: sqlite3.Row) -> RepoInfo:
+    """Reconstruct a `RepoInfo` from a `repos` table row.
+
+    The import is local to avoid a circular import: `core/repos/` does
+    not import from `core/storage/` either, so this keeps the deps a tree
+    instead of a graph.
+    """
+    from memex.core.repos.discovery import RepoInfo
+
+    return RepoInfo(
+        key=row["key"],
+        path=row["path"],
+        remote_url=row["remote_url"],
+        name=row["name"],
+        manifest_name=row["manifest_name"],
+    )

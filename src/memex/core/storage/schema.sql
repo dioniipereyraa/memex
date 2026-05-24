@@ -111,3 +111,37 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
     text,
     tokenize = 'unicode61 remove_diacritics 2'
 );
+
+-- Repos conocidos por Memex. Cada uno con una clave canónica estable que el
+-- matcher genera al registrar (`memex repos add <path>`). El path absoluto
+-- canonicalizado (forward slashes, lowercase en Windows) es la clave por
+-- default; si hay remote URL del git, se guarda como columna separada.
+--
+-- name = nombre amigable (último segmento del path o manifest.name).
+-- manifest_name = `name` del pyproject.toml / package.json / Cargo.toml si
+-- existe; nullable. Lo usa el matcher como una de las señales para asociar.
+CREATE TABLE IF NOT EXISTS repos (
+    key TEXT PRIMARY KEY,
+    path TEXT,
+    remote_url TEXT,
+    name TEXT NOT NULL,
+    manifest_name TEXT,
+    registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+-- Many-to-many entre conversaciones y repos. Una conv puede asociarse a más
+-- de un repo (el típico caso: chat que tocó dos repos relacionados). Cada
+-- asociación lleva un `source` (auto = detectada por el matcher al ingest;
+-- manual = el user lo etiquetó con `memex tag`) y un `confidence` 0.0-1.0
+-- que se usa para boost en `search_chats(repo=...)`.
+CREATE TABLE IF NOT EXISTS chat_repos (
+    conversation_uuid TEXT NOT NULL REFERENCES conversations(uuid) ON DELETE CASCADE,
+    repo_key TEXT NOT NULL REFERENCES repos(key) ON DELETE CASCADE,
+    source TEXT NOT NULL CHECK (source IN ('auto', 'manual')),
+    confidence REAL,
+    associated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (conversation_uuid, repo_key)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_chat_repos_repo ON chat_repos(repo_key);
+CREATE INDEX IF NOT EXISTS idx_chat_repos_conv ON chat_repos(conversation_uuid);
