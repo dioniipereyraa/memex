@@ -456,3 +456,196 @@ class TestPipelineContentHash:
             assert conv.summary == "Una charla corta."
         finally:
             db.close()
+
+
+class TestPipelineRepoAutoScan:
+    """Auto-association of chats to registered repos on ingest.
+
+    The matcher runs after `_ingest_conversation` persists the conv + messages.
+    With no repos registered the pass is a no-op. With repos registered,
+    matching chats get a `source='auto'` association.
+    """
+
+    def _zip_with_conv(self, tmp_path: Path, payload: dict) -> Path:
+        return _build_zip(tmp_path, {"conversations.json": json.dumps([payload])})
+
+    def test_no_repos_means_no_associations(self, tmp_path: Path) -> None:
+        zip_path = self._zip_with_conv(tmp_path, CONVERSATION_JSON)
+        db = connect_and_init(":memory:")
+        try:
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+            assocs = repo.list_repos_for_conversation(db, "conv-1")
+            assert assocs == []
+        finally:
+            db.close()
+
+    def test_matching_repo_gets_auto_association(self, tmp_path: Path) -> None:
+        from memex.core.repos.discovery import RepoInfo
+
+        db = connect_and_init(":memory:")
+        try:
+            # Register a repo whose remote URL appears literally in the chat text.
+            repo.insert_repo(
+                db,
+                RepoInfo(
+                    key="github.com/test/algoritmos",
+                    path="d:/dev/algoritmos",
+                    remote_url="github.com/test/algoritmos",
+                    name="algoritmos",
+                    manifest_name=None,
+                ),
+            )
+
+            # Build a chat that mentions the remote URL in a message.
+            chat_with_repo = {
+                **CONVERSATION_JSON,
+                "uuid": "conv-with-repo",
+                "chat_messages": [
+                    {
+                        "uuid": "msg-1",
+                        "text": "Mirá github.com/test/algoritmos a ver si te sirve",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Mirá github.com/test/algoritmos a ver si te sirve",
+                            }
+                        ],
+                        "sender": "human",
+                        "created_at": "2026-05-10T10:00:00.000Z",
+                        "updated_at": "2026-05-10T10:00:00.000Z",
+                        "attachments": [],
+                        "files": [],
+                        "parent_message_uuid": None,
+                    },
+                ],
+            }
+            zip_path = self._zip_with_conv(tmp_path, chat_with_repo)
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+
+            assocs = repo.list_repos_for_conversation(db, "conv-with-repo")
+            assert len(assocs) == 1
+            assert assocs[0].repo.key == "github.com/test/algoritmos"
+            assert assocs[0].source == "auto"
+            assert assocs[0].confidence == 1.0  # remote URL signal
+
+            # The unrelated CONVERSATION_JSON in another test should NOT match.
+            zip_unrelated = self._zip_with_conv(tmp_path, CONVERSATION_JSON)
+            ingest_export(db, zip_unrelated, FakeEmbedder(dim=768))
+            unrelated_assocs = repo.list_repos_for_conversation(db, "conv-1")
+            assert unrelated_assocs == []
+        finally:
+            db.close()
+
+    def test_reingest_is_idempotent(self, tmp_path: Path) -> None:
+        """Re-ingesting the same chat does not duplicate associations."""
+        from memex.core.repos.discovery import RepoInfo
+
+        db = connect_and_init(":memory:")
+        try:
+            repo.insert_repo(
+                db,
+                RepoInfo(
+                    key="github.com/test/repo",
+                    path=None,
+                    remote_url="github.com/test/repo",
+                    name="repo",
+                    manifest_name=None,
+                ),
+            )
+            payload = {
+                **CONVERSATION_JSON,
+                "uuid": "conv-reingest",
+                "chat_messages": [
+                    {
+                        "uuid": "m1",
+                        "text": "use github.com/test/repo",
+                        "content": [{"type": "text", "text": "use github.com/test/repo"}],
+                        "sender": "human",
+                        "created_at": "2026-05-10T10:00:00.000Z",
+                        "updated_at": "2026-05-10T10:00:00.000Z",
+                        "attachments": [],
+                        "files": [],
+                        "parent_message_uuid": None,
+                    }
+                ],
+            }
+            zip_path = self._zip_with_conv(tmp_path, payload)
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+
+            assocs = repo.list_repos_for_conversation(db, "conv-reingest")
+            assert len(assocs) == 1
+        finally:
+            db.close()
+
+    def test_manual_association_survives_reingest(self, tmp_path: Path) -> None:
+        """A manual tag is not overwritten by the auto-scan on reingest.
+
+        The chat text does NOT mention the manually-tagged repo, but the
+        association persists because `associate_chat_repo` refuses to let
+        an auto pass touch a manual row. The matcher would not propose
+        this association on its own.
+        """
+        from memex.core.repos.discovery import RepoInfo
+
+        db = connect_and_init(":memory:")
+        try:
+            # Two repos: one mentioned, one not.
+            repo.insert_repo(
+                db,
+                RepoInfo(
+                    key="github.com/auto/mentioned",
+                    path=None,
+                    remote_url="github.com/auto/mentioned",
+                    name="mentioned",
+                    manifest_name=None,
+                ),
+            )
+            repo.insert_repo(
+                db,
+                RepoInfo(
+                    key="github.com/manual/tagged",
+                    path=None,
+                    remote_url="github.com/manual/tagged",
+                    name="tagged",
+                    manifest_name=None,
+                ),
+            )
+
+            # Chat mentions only the "mentioned" one.
+            payload = {
+                **CONVERSATION_JSON,
+                "uuid": "conv-mixed",
+                "chat_messages": [
+                    {
+                        "uuid": "m1",
+                        "text": "check github.com/auto/mentioned",
+                        "content": [{"type": "text", "text": "check github.com/auto/mentioned"}],
+                        "sender": "human",
+                        "created_at": "2026-05-10T10:00:00.000Z",
+                        "updated_at": "2026-05-10T10:00:00.000Z",
+                        "attachments": [],
+                        "files": [],
+                        "parent_message_uuid": None,
+                    }
+                ],
+            }
+            zip_path = self._zip_with_conv(tmp_path, payload)
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+
+            # User manually tags the other repo.
+            repo.associate_chat_repo(db, "conv-mixed", "github.com/manual/tagged", source="manual")
+            db.commit()
+
+            # Re-ingest. Auto-scan would not propose the "manual/tagged" repo
+            # (no mention in text); but the manual tag should survive.
+            ingest_export(db, zip_path, FakeEmbedder(dim=768))
+
+            assocs = repo.list_repos_for_conversation(db, "conv-mixed")
+            keys = {a.repo.key: a.source for a in assocs}
+            assert keys == {
+                "github.com/auto/mentioned": "auto",
+                "github.com/manual/tagged": "manual",
+            }
+        finally:
+            db.close()

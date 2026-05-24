@@ -42,6 +42,7 @@ from memex.core.ingest.claude_export import (
     parse_project,
 )
 from memex.core.models import Chunk, Conversation, Message, Source
+from memex.core.repos import match_text
 from memex.core.storage import repo
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,11 @@ def _ingest_conversation(
     if not full_text:
         return
 
+    # Auto-detect repo associations. No-op if no repos are registered.
+    # Manual ('manual' source) associations are preserved by
+    # `repo.associate_chat_repo` (it refuses to overwrite a manual tag).
+    _scan_repos(conn, conv.uuid, full_text)
+
     spans = chunk_text(
         full_text,
         max_tokens=chunk_size_tokens,
@@ -301,6 +307,35 @@ def _hash_content(text: str) -> str:
     """SHA-256 hex del texto canónico. Estable, suficiente para detectar
     cambios. No es cripto: solo un fingerprint para comparar."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _scan_repos(conn: sqlite3.Connection, conversation_uuid: str, text: str) -> None:
+    """Run the repo matcher and persist auto-associations.
+
+    Called from `_ingest_conversation` after the conv + messages are
+    persisted. Reads the registered repos from DB, runs the matcher, and
+    upserts each match as a `source='auto'` association.
+
+    Idempotent: re-ingesting unchanged content re-asserts the same set of
+    associations. Manual tags survive because `associate_chat_repo`
+    refuses to overwrite a `manual` with `auto`.
+
+    No-op when there are no repos registered yet (very common: a fresh
+    user has not run `memex repos add` yet). Errors from the matcher are
+    not caught here; they would indicate a bug, not a runtime condition.
+    """
+    repos = repo.list_repos(conn)
+    if not repos:
+        return
+    matches = match_text(text, repos)
+    for match in matches:
+        repo.associate_chat_repo(
+            conn,
+            conversation_uuid,
+            match.repo_key,
+            source="auto",
+            confidence=match.confidence,
+        )
 
 
 def _join_messages(
