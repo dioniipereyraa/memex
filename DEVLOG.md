@@ -6,6 +6,75 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-05-24 (later): Phase 3 sub-tasks 3 and 4, SessionStart hook + find_related
+
+After closing sub-task 2 (chat ↔ repo association) earlier in the same session, we kept going through the rest of Phase 3 feature work.
+
+**Sub-task 3: SessionStart hook.**
+
+The plan from the start was "Memex provides a command, the user wires it into a hook." That keeps Memex out of the business of monkey-patching Claude Code config; the hook is opt-in and the integration point is well-defined.
+
+What landed:
+- `memex session-context` CLI command. Auto-detects the active repo by walking up from `cwd` until it finds a `.git` (new `find_repo_root` helper). Resolves the path to a registered repo via the same shared resolver `search_chats(repo=...)` uses. Prints a short Markdown blob to stdout: title, uuid, summary (truncated), and `[manual]` / `[auto X.XX]` source tag per chat. Manual associations come first, then auto sorted by confidence.
+- Silent no-op (empty stdout) when no `.git` is found, the repo is not registered, or there are no associations. Diagnostics go to stderr so the hook does not pollute the injected context.
+- `find_repo_root` handles both forms of `.git`: directory (regular checkout) and file (gitlink, used by `git worktree`). Caught while writing the tests.
+- Extracted `_resolve_repo_key` from `transports/tools.py` to a new `core/repos/resolve.py` so the CLI (which lives outside `transports`) can reuse it. Architecture-rule clean: `core/storage` no longer needs to know how to do the resolution, and both consumers downstream import the same function.
+
+5 new CLI tests (no-git silent, unregistered silent, no-associations silent, prints associated chats with manual-first ordering, `--limit` respected) plus 4 for `find_repo_root` (current dir, ancestor, no .git, gitlink-file worktree form).
+
+**Sub-task 4: `find_related` tool.**
+
+The fourth MCP tool. Sibling of `search_chats` but for a different shape of input: long, free-form text instead of a short keyword query. Pure vector search; no FTS because for long inputs BM25 over individual tokens is noisier than embedding similarity.
+
+Design points:
+- Input capped at `FIND_RELATED_MAX_INPUT_CHARS=4000` chars. Bounds latency and keeps us inside the embedder's context window.
+- Same `repo=...` boost as `search_chats`. Shares `_resolve_repo_key` and `_apply_repo_boost` from the previous sub-tasks.
+- Returns the same result shape as `search_chats` so Claude can consume both the same way. The added field `context_chars` lets the caller see how much of the input was actually used (in case it was truncated).
+- Docstring on the MCP wrapper explains the contrast: keywords → `search_chats`, long text / "more like this" → `find_related`, chronological browse → `list_recent_chats`.
+
+7 new tests: empty context, response shape, truncation, limit clamp, unknown repo error, boost reorder, embedder error.
+
+**State at close of feature work:**
+
+- 331 unit tests green (was 220 at the start of this session, +111).
+- ruff + ruff format + mypy clean.
+- 4 MCP tools registered (`search_chats`, `get_chat`, `list_recent_chats`, `find_related`).
+- CLI gained `repos` sub-app (4 commands) + `tag`, `untag`, `session-context` (3 top-level).
+
+**Pending:** sub-task 5, phase-close audit (the project rule). Then Phase 3 is fully closed.
+
+---
+
+## 2026-05-24: Phase 3 sub-task 2, chat ↔ repo association
+
+Landed end to end in this session. New module, schema, CLI, pipeline auto-scan, and search-time boost. 65 new unit tests, suite at 315 green.
+
+**What it does:**
+
+User registers a repo with `memex repos add <path>`. Memex reads `.git/config` and the local manifests to extract a stable identity (remote URL when present, normalized; path-based fallback otherwise). At ingest time, each chat gets matched against the registered repos with four signals (remote URL literal, absolute path literal, manifest name word-bounded, display name word-bounded) and associations are persisted in `chat_repos` with a `confidence` score and a `source` of `'auto'`. When Claude Code calls `search_chats(query, repo=...)`, results that touch the repo get a ranking boost proportional to confidence; chats outside the repo still appear lower down (not a filter).
+
+**Why the design ended up like this:**
+
+- Many-to-many table instead of a column on `conversations`: a single chat often touches more than one repo (monorepos, related projects). Single-column would have forced an arbitrary primary tag.
+- Remote URL preferred over path as the canonical key: stable across machines and clones. Two checkouts of the same repo collapse to the same key. Path is fallback for repos without git.
+- Auto + manual override (instead of one or the other): auto cuts onboarding to a single command (`scan`); manual handles the cases auto gets wrong. `associate_chat_repo` refuses to overwrite a manual tag with an auto write, so the user always wins.
+- Boost, not filter: when the user asks "remember the auth thing?", a chat from a different repo that exactly matches the topic should still surface, just below the in-repo chats. A filter would hide it.
+- Threshold of 0.5: the matcher's lowest signal (display name) hits at 0.5; anything lower (which would be partial heuristics not implemented today) gets dropped. Tuning knob exposed.
+
+**Bugs caught during the session:**
+
+- The CLI initially used `→` and `↔` characters in output and docstrings. Rich tried to render them and hit `UnicodeEncodeError` because Windows console default is cp1252. Replaced with ASCII (`->`, `chat-to-repo`). Lesson noted: keep CLI output ASCII-only.
+- The matcher initially used `from typing import Iterable`; ruff (UP035) flagged it as legacy. Moved to `collections.abc`.
+- The mypy run failed on `RepoInfo` and `ChatRepoAssociation` not being defined when used as string forward refs in `storage/repo.py`. Fix: `TYPE_CHECKING` import block at the top, runtime import deferred inside the helper functions (avoids the circular `core/storage` ↔ `core/repos` problem).
+
+**Tests:** 65 new across `test_repos_keys`, `test_repos_discovery`, `test_repos_matcher`, `test_repos_storage`, `test_cli_repos`, plus `TestPipelineRepoAutoScan` in `test_pipeline.py` and `TestSearchChatsRepoBoost` in `test_tools.py`. Total: 250 → 315.
+
+**State:** ruff + ruff format --check + mypy clean. Suite green. CLI usable end-to-end (`memex repos add`, scan, `search_chats(repo=...)`).
+
+**Next sub-tasks of Phase 3:** SessionStart hook (proactive context injection at session start) and `find_related(current_context)` tool. After both: phase-close audit.
+
+---
+
 ## 2026-05-23 (evening): get_chat defaults lowered + DEVLOG/ROADMAP translated to English
 
 Two unrelated cleanup tasks bundled at the close of the on-demand summaries sub-task, before starting the next Phase 3 item.

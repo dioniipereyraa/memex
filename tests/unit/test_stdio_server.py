@@ -56,7 +56,7 @@ def mcp_server_with_temp_db(tmp_path):
 class TestServerStructure:
     @pytest.mark.asyncio
     async def test_three_tools_registered(self) -> None:
-        names = ("search_chats", "get_chat", "list_recent_chats")
+        names = ("search_chats", "get_chat", "list_recent_chats", "find_related")
         for name in names:
             tool = await stdio.server.get_tool(name)
             assert tool is not None, f"tool {name} no está registrada"

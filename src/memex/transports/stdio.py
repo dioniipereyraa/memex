@@ -102,6 +102,7 @@ def search_chats(
     limit: int = 5,
     source: str | None = None,
     mode: str = "hybrid",
+    repo: str | None = None,
 ) -> str:
     """Acceso a la memoria persistente del usuario: TODOS sus chats pasados de Claude.ai.
 
@@ -139,6 +140,13 @@ def search_chats(
             mayoría de los casos), 'semantic' (solo vectores, para similitud
             conceptual pura), 'lexical' (solo FTS5 BM25, ideal para nombres
             propios exactos o términos técnicos).
+        repo: Opcional. Si estás corriendo en un repo y querés priorizar
+            chats relacionados a ese repo, pasá el path absoluto (ej.
+            "d:/dionisio/memex") o la URL del remote git. Acepta cualquier
+            forma; Memex la canonicaliza. Chats asociados al repo reciben
+            un boost de ranking proporcional al match confidence; chats
+            fuera del repo siguen apareciendo más abajo (no es filtro).
+            Requiere haber registrado el repo con `memex repos add`.
 
     Returns:
         JSON con `query`, `mode`, `count`, y `results`: lista ordenada por
@@ -156,6 +164,7 @@ def search_chats(
             source,
             mode,
             summarizer=_get_summarizer(),
+            repo_arg=repo,
         )
     except Exception as e:
         logger.exception("Error en search_chats")
@@ -242,6 +251,54 @@ def list_recent_chats(limit: int = 10, source: str | None = None) -> str:
         logger.exception("Error en list_recent_chats")
         # Mensaje genérico al cliente para no leakear paths/queries en el error
         # (el detalle queda en el log via logger.exception arriba).
+        result = {"error": f"Error interno ({type(e).__name__})."}
+    return _serialize(result)
+
+
+@server.tool(run_in_thread=False)
+def find_related(
+    context: str,
+    limit: int = 5,
+    repo: str | None = None,
+) -> str:
+    """Encuentra chats relacionados a un contexto libre (no a una query corta).
+
+    Distinto de `search_chats`: esta tool acepta input largo (un párrafo, el
+    contenido de un archivo, lo que se está discutiendo ahora) y devuelve
+    chats semánticamente relacionados. Internamente usa búsqueda vectorial
+    pura (sin FTS) porque para inputs largos las palabras exactas pesan
+    menos que la similitud de embedding.
+
+    USAR cuando:
+    - Querés "más como esto": tenés un texto en mano y querés ver qué chats
+      del historial trataron temas similares.
+    - El usuario está pegando un párrafo / código / log y necesitás contexto
+      previo automáticamente, sin tener que armar una query con keywords.
+    - Querés sugerir chats relevantes proactivamente sin que el usuario los pida.
+
+    Para búsquedas con keywords cortos, usar `search_chats`. Para una lista
+    cronológica reciente, `list_recent_chats`.
+
+    Args:
+        context: Texto libre. Se trunca a 4000 chars antes de embebar para
+            acotar latencia.
+        limit: Cantidad de resultados (default 5, max 50).
+        repo: Opcional. Mismo boost por repo que `search_chats`.
+
+    Returns:
+        JSON con `count`, `context_chars` (cuántos chars del input se usaron),
+        y `results` (mismo shape que `search_chats`).
+    """
+    try:
+        result = tools.find_related(
+            _get_conn(),
+            _get_embedder(),
+            context,
+            limit,
+            repo_arg=repo,
+        )
+    except Exception as e:
+        logger.exception("Error en find_related")
         result = {"error": f"Error interno ({type(e).__name__})."}
     return _serialize(result)
 

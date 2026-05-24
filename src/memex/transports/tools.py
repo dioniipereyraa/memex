@@ -45,6 +45,21 @@ GET_CHAT_MESSAGE_TEXT_MAX_CHARS = 1500  # Code dumps largos explotan solos sin e
 
 VALID_SEARCH_MODES = ("hybrid", "semantic", "lexical")
 
+# When `search_chats(repo=...)` is provided, results associated to the
+# given repo get their distance lowered by `REPO_BOOST_WEIGHT * confidence`.
+# Weight chosen so that a high-confidence match (confidence ~= 1.0) clearly
+# beats a slightly more semantically-similar but unrelated chat, without
+# steamrolling matches that have a strong base score on their own.
+REPO_BOOST_WEIGHT = 0.3
+# How many extra candidates we fetch when boosting, so the reorder has room
+# to surface relevant chats that were just outside the top-N before boosting.
+REPO_BOOST_OVERSAMPLE = 5
+
+# `find_related` accepts free-form context (potentially a whole file or
+# message). We cap the embedded text to keep latency bounded and to stay
+# well inside the embedding model's context window.
+FIND_RELATED_MAX_INPUT_CHARS = 4000
+
 
 def search_chats(
     conn: sqlite3.Connection,
@@ -54,6 +69,7 @@ def search_chats(
     source: str | None = None,
     mode: str = "hybrid",
     summarizer: Summarizer | None = None,
+    repo_arg: str | None = None,
 ) -> dict[str, Any]:
     """Búsqueda sobre todos los chats indexados.
 
@@ -76,11 +92,17 @@ def search_chats(
     no aborta). Los summaries generados se persisten para que la próxima query
     pegue cache.
 
+    Si `repo_arg` es no-None, los chats asociados a ese repo reciben un boost
+    de ranking proporcional a su `confidence` de asociación. Chats fuera del
+    repo siguen apareciendo. `repo_arg` puede ser un key canónico, una URL
+    remote git, o un path absoluto; resolvemos cualquiera de los tres.
+
     Errores como dict con clave `error`:
     - source inválido
     - mode inválido
     - query vacía
     - embedder falla (Ollama caído / modelo faltante) en modos hybrid/semantic
+    - `repo_arg` no corresponde a ningún repo registrado
     """
     q = query.strip()
     if not q:
@@ -100,9 +122,30 @@ def search_chats(
         except ValueError:
             return _invalid_source_error(source)
 
-    # Para filtrar por source en Python (no lo soporta el repo todavía), pedimos
-    # más candidatos para no quedarnos cortos.
-    fetch_limit = limit * 3 if src_filter is not None else limit
+    # Resolve the repo argument upfront so we fail fast on an unknown key.
+    resolved_repo_key: str | None = None
+    repo_boost_map: dict[str, float] = {}
+    if repo_arg is not None:
+        resolved_repo_key = _resolve_repo_key(conn, repo_arg)
+        if resolved_repo_key is None:
+            return {
+                "error": (
+                    f"No registered repo matches {repo_arg!r}. "
+                    "Run `memex repos list` to see registered repos, "
+                    "or `memex repos add <path>` to register one."
+                ),
+            }
+        # Map of conversation_uuid -> confidence (used to boost ranking).
+        for uuid, _src, conf in repo.list_conversations_for_repo(conn, resolved_repo_key):
+            repo_boost_map[uuid] = conf if conf is not None else 1.0
+
+    # Oversample when filtering by source or boosting by repo so we have
+    # enough candidates after re-ranking.
+    fetch_limit = limit
+    if src_filter is not None:
+        fetch_limit *= 3
+    if resolved_repo_key is not None:
+        fetch_limit = max(fetch_limit, limit * REPO_BOOST_OVERSAMPLE)
 
     if mode == "lexical":
         # En lexical puro, si la query se sanitiza a vacío (solo símbolos, CJK
@@ -131,6 +174,11 @@ def search_chats(
 
     if src_filter is not None:
         hits = [h for h in hits if h.conversation.source == src_filter]
+
+    # Apply repo boost (if any) BEFORE truncating, so chats that ranked just
+    # outside the top-N pre-boost can surface when they belong to the repo.
+    if repo_boost_map and hits:
+        hits = _apply_repo_boost(hits, repo_boost_map)
 
     hits = hits[:limit]
 
@@ -252,6 +300,40 @@ def _generate_lazy_summaries(
     return enriched
 
 
+def _resolve_repo_key(conn: sqlite3.Connection, repo_arg: str) -> str | None:
+    """Thin shim around `core.repos.resolve_repo_key` for backwards-compat.
+
+    The actual resolution logic lives in `core/repos/resolve.py` so the CLI
+    can use it too. Tests import this symbol from `tools` for convenience.
+    """
+    from memex.core.repos import resolve_repo_key
+
+    return resolve_repo_key(conn, repo_arg)
+
+
+def _apply_repo_boost(
+    hits: list[SearchHit],
+    boost_map: dict[str, float],
+) -> list[SearchHit]:
+    """Lower the `distance` of hits whose conversation is associated to the
+    target repo, then re-sort ascending.
+
+    `boost_map` is `conversation_uuid -> confidence` (0.0-1.0). Hits not in
+    the map keep their original distance. Returns a new list of `SearchHit`
+    with potentially-updated `distance`, sorted ascending (lower = better).
+    """
+    boosted: list[SearchHit] = []
+    for hit in hits:
+        conf = boost_map.get(hit.conversation.uuid)
+        if conf is not None:
+            new_distance = hit.distance - REPO_BOOST_WEIGHT * conf
+            boosted.append(hit.model_copy(update={"distance": new_distance}))
+        else:
+            boosted.append(hit)
+    boosted.sort(key=lambda h: h.distance)
+    return boosted
+
+
 def get_chat(
     conn: sqlite3.Connection,
     uuid: str,
@@ -318,6 +400,90 @@ def get_chat(
                 "has_attachments": m.has_attachments,
             }
             for m in window
+        ],
+    }
+
+
+def find_related(
+    conn: sqlite3.Connection,
+    embedder: Embedder,
+    context: str,
+    limit: int = 5,
+    repo_arg: str | None = None,
+) -> dict[str, Any]:
+    """Find chats semantically related to a free-form context blob.
+
+    Unlike `search_chats`, this is intended for longer inputs (file
+    contents, message snippets, current discussion). It runs pure vector
+    search (no lexical / FTS5) because the input length makes word-by-word
+    BM25 less informative than embedding similarity.
+
+    Args:
+        conn: SQLite connection.
+        embedder: Embedder to convert `context` into a query vector.
+        context: Free-form text. Capped to `FIND_RELATED_MAX_INPUT_CHARS`
+            before embedding so latency stays bounded.
+        limit: Max results (1-50).
+        repo_arg: Optional repo path / remote URL / canonical key. Same
+            boost semantics as `search_chats`.
+
+    Returns dict with `count`, `context_chars` (how much we actually
+    embedded), and `results`. Error dict on empty context, embedder
+    failure, or unregistered repo.
+    """
+    ctx = context.strip()
+    if not ctx:
+        return {"error": "El contexto no puede estar vacío."}
+
+    if len(ctx) > FIND_RELATED_MAX_INPUT_CHARS:
+        ctx = ctx[:FIND_RELATED_MAX_INPUT_CHARS]
+
+    limit = max(1, min(limit, SEARCH_LIMIT_MAX))
+
+    resolved_repo_key: str | None = None
+    repo_boost_map: dict[str, float] = {}
+    if repo_arg is not None:
+        resolved_repo_key = _resolve_repo_key(conn, repo_arg)
+        if resolved_repo_key is None:
+            return {
+                "error": (
+                    f"No registered repo matches {repo_arg!r}. "
+                    "Run `memex repos list` to see registered repos."
+                ),
+            }
+        for uuid, _src, conf in repo.list_conversations_for_repo(conn, resolved_repo_key):
+            repo_boost_map[uuid] = conf if conf is not None else 1.0
+
+    try:
+        query_vec = embedder.embed_one(ctx)
+    except EmbedderError as e:
+        return {"error": str(e)}
+
+    fetch_limit = limit * (REPO_BOOST_OVERSAMPLE if resolved_repo_key else 1)
+    hits = repo.vector_search(conn, query_vec, limit=fetch_limit)
+
+    if repo_boost_map and hits:
+        hits = _apply_repo_boost(hits, repo_boost_map)
+
+    hits = hits[:limit]
+
+    return {
+        "context_chars": len(ctx),
+        "count": len(hits),
+        "results": [
+            {
+                "rank": i + 1,
+                "conversation_uuid": h.conversation.uuid,
+                "title": h.conversation.title,
+                "summary": _truncate(h.conversation.summary, SEARCH_SUMMARY_MAX_CHARS),
+                "source": h.conversation.source.value,
+                "project_uuid": h.conversation.project_uuid,
+                "distance": round(h.distance, 4),
+                "snippet": h.snippet,
+                "created_at": h.conversation.created_at.isoformat(),
+                "updated_at": h.conversation.updated_at.isoformat(),
+            }
+            for i, h in enumerate(hits)
         ],
     }
 

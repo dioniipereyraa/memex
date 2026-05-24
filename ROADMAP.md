@@ -2,7 +2,7 @@
 
 > Last updated: 2026-05-23
 
-**Current state:** Phases 0, 1, and 2 closed (2026-05-20). **Phase 3 in progress:** first sub-task closed (auto-generated summaries **on-demand at the first `search_chats`** with Claude Haiku, opt-in via `MEMEX_SUMMARY_ENABLED` + `ANTHROPIC_API_KEY`). Remaining sub-tasks: chat ↔ project/repo association, SessionStart hook, `find_related` tool, phase-close audit. **220 unit tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0, 1, and 2 closed (2026-05-20). **Phase 3 in progress:** four feature sub-tasks closed (auto-generated summaries on-demand, chat ↔ project/repo association, SessionStart hook, `find_related` tool). Remaining: phase-close audit. **331 unit tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
@@ -80,9 +80,9 @@ The context Claude.ai has should also be available to Claude Code. Every phase h
 
 **Tasks:**
 - [x] **Auto-generated summaries with Claude Haiku, on-demand at the first `search_chats`.** Opt-in via `MEMEX_SUMMARY_ENABLED=true` + `ANTHROPIC_API_KEY`. Optional extra `summaries` brings the Anthropic SDK. Design: when `tools.search_chats` returns hits, if a summarizer is active, up to 3 summaries are generated lazily in parallel (`ThreadPoolExecutor`) only for the top-N conversations without a cached summary. The result is persisted with `repo.update_conversation_summary`, so the next query of the same conv hits cache. Silent fail per chat: if the API fails for one, that result comes back without a summary and the rest proceed normally; the search never aborts. The pipeline persists `conversations.content_hash` (SHA-256 hex of the canonical text) to invalidate stale summaries when content changes (live capture appends messages). Pivot decision: the original approach (generate at ingest-time) was slow and spent on chats the user never consulted; on-demand pays only for what gets used. 24 new tests. (2026-05-23)
-- [ ] Chat ↔ project/repo association (so Claude Code matches against the current repo).
-- [ ] Optional `SessionStart` hook to inject proactive context.
-- [ ] `find_related(current_context)` tool.
+- [x] **Chat ↔ project/repo association.** New `repos` and `chat_repos` tables. `core/repos/` module: `keys.py` canonicalizes paths + git remote URLs into stable keys; `discovery.py` reads `.git/config` and `pyproject.toml`/`package.json`/`Cargo.toml`; `matcher.py` scans chat text for 4 signals (remote URL 1.0, path 0.9, manifest name 0.8, display name 0.5) with a 0.5 threshold. Auto-scan runs at ingest time. CLI: `memex repos add/list/remove/scan` + `memex tag/untag` for manual overrides (manual associations are sticky). `search_chats(query, repo=...)` accepts a path / remote URL / canonical key, resolves it, and boosts associated chats by `0.3 * confidence` (lower distance = better; chats outside the repo still appear). 65 new unit tests covering keys (21), discovery (11), matcher (15), storage helpers (18), pipeline auto-scan (4), CLI (15), search boost + resolve (7). (2026-05-24)
+- [x] **Optional `SessionStart` hook.** New `memex session-context` command. Detects the active repo from cwd (walks up looking for `.git` via new `find_repo_root` helper), resolves it through the registered-repos table, and prints a short Markdown blob with the top N chats (manual first, then auto by confidence). Silent no-op when no `.git`, repo not registered, or no associations (diagnostics go to stderr so the hook does not pollute the injected context). User wires it into `.claude/settings.json` `SessionStart` hook. `_resolve_repo_key` extracted from `transports/tools.py` to `core/repos/resolve.py` so both the CLI and the search tool share it. 9 new tests (5 CLI command + 4 `find_repo_root`). (2026-05-24)
+- [x] **`find_related(current_context)` tool.** New MCP tool for "more like this" retrieval: takes free-form text (paragraph, file contents, current discussion) and returns semantically similar chats. Pure vector search (no FTS, since long input makes BM25 less informative). Input capped at `FIND_RELATED_MAX_INPUT_CHARS=4000` chars. Same repo-boost semantics as `search_chats`. Wired into `stdio.py` as the 4th MCP tool. 7 new tests. (2026-05-24)
 - [ ] Phase-close audit.
 
 **Estimated duration:** 1 to 2 weeks.

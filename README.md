@@ -69,9 +69,10 @@ ollama pull nomic-embed-text
 
 ## MCP server tools (v1)
 
-- `search_chats(query, limit=5, source?, mode="hybrid")` searches the corpus. Modes: `hybrid` (default, combines vector search + FTS5 BM25 via Reciprocal Rank Fusion), `semantic` (vectors only), `lexical` (FTS5 only, ideal for proper nouns or exact terms). `source` filters by origin (`conversations`, `design_chat`, `memory`). Deduplicated per conversation.
+- `search_chats(query, limit=5, source?, mode="hybrid", repo?)` searches the corpus. Modes: `hybrid` (default, combines vector search + FTS5 BM25 via Reciprocal Rank Fusion), `semantic` (vectors only), `lexical` (FTS5 only, ideal for proper nouns or exact terms). `source` filters by origin (`conversations`, `design_chat`, `memory`). `repo` boosts results associated to a registered repo (see "Repo associations" below). Deduplicated per conversation.
 - `get_chat(uuid, messages_limit=10, messages_offset=0)` fetches a conversation with its messages, paginated. `raw_content` is omitted; each message is truncated to 1500 chars to stay inside the client's token budget (worst-case response ~17k chars). Long chats are paginated with `messages_offset`; max `messages_limit` is 100.
 - `list_recent_chats(limit=10, source?)` lists the latest chats ordered by last update.
+- `find_related(context, limit=5, repo?)` takes free-form text (a paragraph, a file contents, the current discussion) and returns chats that are semantically related. Pure vector search, no FTS, capped at 4000 input chars. Useful when you want "more like this" without typing a keyword query.
 
 Search is also reachable from the CLI with `memex search "query" --mode {hybrid|semantic|lexical}`. For databases created before the hybrid FTS5 work, run `memex reindex-fts` once to populate the lexical index.
 
@@ -115,6 +116,61 @@ Opt-in. Off by default. Cap: at most 3 summaries generated per `search_chats` ca
 Configurable via env: `MEMEX_SUMMARY_MODEL` (default `claude-haiku-4-5-20251001`), `MEMEX_SUMMARY_MAX_TOKENS` (default 200). If the API fails for a particular chat (no key, rate limit, network), that one result comes back without a summary, the search itself never aborts, and the warning is logged.
 
 Cost model: bulk ingest of an export with 74 chats costs $0 (no summaries are generated at ingest time). Each unique chat you actually open in a search costs roughly $0.01 (Haiku, ~5-10k input + ~200 output tokens). $5 of API credits comfortably covers months of use.
+
+## Repo associations (Phase 3)
+
+Memex can associate each chat with the local code repos it touches, and boost those chats when `search_chats` is invoked from inside a repo. So when you ask Claude Code something like "remember the auth refactor we discussed?", chats that touched the *current* repo rank higher than unrelated chats with the same keywords.
+
+How it works:
+
+1. Register a repo:
+   ```bash
+   uv run memex repos add /path/to/your/repo
+   ```
+   Memex reads `.git/config` (origin URL), and `pyproject.toml` / `package.json` / `Cargo.toml` (package name). The canonical key prefers the git remote (stable across clones) over the path.
+
+2. Run a one-time scan over chats you already ingested:
+   ```bash
+   uv run memex repos scan
+   ```
+   Each chat gets matched against every registered repo. The matcher uses 4 signals (highest wins): remote URL literal in chat text (confidence 1.0), absolute path literal (0.9), manifest name word-bounded (0.8), display name word-bounded (0.5). Anything below 0.5 is dropped. New chats ingested after registering the repo are auto-scanned at ingest time.
+
+3. From Claude Code, search with the repo argument:
+   ```text
+   search_chats(query="auth refactor", repo="d:/dionisio/memex")
+   ```
+   Or pass the git remote URL, or the canonical key from `memex repos list`. Chats associated to the repo get their distance reduced by `0.3 * confidence`. Chats outside the repo still appear lower down (it is a boost, not a filter).
+
+CLI helpers:
+
+```bash
+uv run memex repos list           # show registered repos
+uv run memex repos remove <key>   # unregister + cascade-remove associations
+uv run memex tag <chat-uuid> <repo-key>    # manual override (sticky vs auto-scan)
+uv run memex untag <chat-uuid> <repo-key>  # remove an association
+```
+
+A `manual` tag survives subsequent auto-scans: once you tag a chat by hand, the matcher will not overwrite it.
+
+### Proactive context injection (`SessionStart` hook)
+
+Claude Code supports hooks that run shell commands at session boundaries. Memex ships `memex session-context`, designed to be wired into the `SessionStart` hook so every new Claude Code session in a registered repo starts with a Markdown blob listing the most relevant past chats. No query needed.
+
+To enable it, add to your `.claude/settings.json` (project-local) or `~/.claude/settings.json` (user-global):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "command": "uv run memex session-context"
+    }]
+  }
+}
+```
+
+The command auto-detects the active repo by walking up from `cwd` until it finds `.git`. If the repo is registered in Memex and has associated chats, it prints a short Markdown blob with the top N (default 5) chats, ordered by `manual` first, then `auto` by confidence. If anything fails (no `.git`, repo not registered, no associations), it prints nothing on stdout (only diagnostics on stderr), so the hook is a silent no-op in that case.
+
+You can also run the command by hand to debug: `uv run memex session-context [--repo <path>] [--limit N]`.
 
 ## Live capture (Phase 2)
 

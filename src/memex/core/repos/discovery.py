@@ -122,6 +122,26 @@ def _read_manifest_name(repo_path: Path) -> str | None:
     return None
 
 
+def find_repo_root(start: str | Path) -> Path | None:
+    """Walk up from `start` looking for a `.git` entry.
+
+    Returns the first parent directory (inclusive of `start`) that contains
+    a `.git` (file or directory; the latter covers worktrees). Returns
+    `None` if no `.git` is found before reaching the filesystem root.
+
+    Used by `memex session-context` to detect the active repo without
+    requiring the user to pass it explicitly.
+    """
+    current = Path(start).resolve()
+    while True:
+        if (current / ".git").exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
 def parse_repo(path: str | Path) -> RepoInfo:
     """Read a directory and produce a `RepoInfo`.
 

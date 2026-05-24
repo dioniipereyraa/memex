@@ -176,3 +176,39 @@ def test_file_path_raises(tmp_path: Path) -> None:
     f.write_text("not a dir", encoding="utf-8")
     with pytest.raises(NotADirectoryError):
         parse_repo(f)
+
+
+class TestFindRepoRoot:
+    def test_finds_at_current_dir(self, tmp_path: Path) -> None:
+        from memex.core.repos.discovery import find_repo_root
+
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        assert find_repo_root(repo) == repo
+
+    def test_finds_in_ancestor(self, tmp_path: Path) -> None:
+        from memex.core.repos.discovery import find_repo_root
+
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        nested = repo / "src" / "memex"
+        nested.mkdir(parents=True)
+        assert find_repo_root(nested) == repo
+
+    def test_returns_none_if_no_git(self, tmp_path: Path) -> None:
+        from memex.core.repos.discovery import find_repo_root
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert find_repo_root(empty) is None
+
+    def test_handles_git_as_file_for_worktree(self, tmp_path: Path) -> None:
+        """Git worktrees have `.git` as a file (gitlink), not a directory."""
+        from memex.core.repos.discovery import find_repo_root
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text("gitdir: ../main/.git/worktrees/wt", encoding="utf-8")
+        assert find_repo_root(worktree) == worktree

@@ -23,6 +23,25 @@ Phase 3 starting: quality pass on retrieval. First sub-task done: auto-summaries
 - `tools.get_chat` defaults lowered to fit comfortably inside the Claude Code MCP token budget: `messages_limit` 20 → 10, per-message text cap 3000 → 1500 chars. Worst-case response ~17k chars (was ~62k, which occasionally exceeded the client limit and triggered the "result saved to file" fallback). Hard max `messages_limit=100` unchanged; callers needing more detail can opt in explicitly. Docstrings updated so Claude paginates with `messages_offset=10` on long chats.
 - `ROADMAP.md` and `DEVLOG.md` translated to English (previously Spanish, kept as internal journal). README note about Spanish internal docs removed.
 
+### Added (chat ↔ repo association, Phase 3 sub-task 2)
+- New `repos` and `chat_repos` tables (many-to-many with `source ∈ {'auto', 'manual'}`, `confidence`, cascade FKs on both ends).
+- New `core/repos/` module:
+  - `keys.py`: `normalize_path`, `normalize_remote` (SCP/HTTPS git URLs), `canonical_repo_key` (prefers remote over path).
+  - `discovery.py`: `parse_repo(path)` reads `.git/config` and `pyproject.toml`/`package.json`/`Cargo.toml`; produces a `RepoInfo`. `ChatRepoAssociation` dataclass for joined rows.
+  - `matcher.py`: `match_text(text, repos, threshold)` returns `Match(repo_key, confidence)` per repo with four signals (remote URL 1.0, path 0.9, manifest name 0.8, display name 0.5; highest wins per repo).
+- Storage helpers in `core/storage/repo.py`: `insert_repo`, `get_repo`, `list_repos`, `delete_repo`, `associate_chat_repo` (refuses to overwrite `manual` with `auto`), `dissociate_chat_repo`, `list_repos_for_conversation` (joined, hydrated), `list_conversations_for_repo`.
+- Pipeline auto-scan at ingest: `_ingest_conversation` runs the matcher against all registered repos after persisting the conv and upserts `source='auto'` associations. No-op when no repos are registered.
+- CLI: new `memex repos` sub-app (`add`, `list`, `remove`, `scan`) and top-level `memex tag` / `memex untag` for manual overrides.
+- `tools.search_chats(query, ..., repo=...)` accepts a path / git remote URL / canonical key. Resolves it via `_resolve_repo_key`, then `_apply_repo_boost` lowers the distance of associated hits by `REPO_BOOST_WEIGHT (0.3) * confidence` and re-sorts. Oversamples candidates (×5) when boosting so chats just outside the top-N can surface. Unregistered repo argument short-circuits with an actionable error pointing at `memex repos add`.
+- `stdio.search_chats` MCP wrapper exposes `repo` to Claude Code; docstring instructs it to pass the cwd when working inside a repo.
+- 65 new unit tests across keys (21), discovery (11), matcher (15), storage helpers (18), pipeline auto-scan (4), CLI (15), and search boost / resolve (7).
+
+### Added (SessionStart hook + find_related, Phase 3 sub-tasks 3 and 4)
+- `memex session-context` CLI command. Auto-detects the active repo from cwd (new `find_repo_root` walks up looking for `.git`, handles both directory and gitlink-file forms used by worktrees). Resolves to a registered repo, prints a short Markdown blob with up to N associated chats (manual first, then auto by confidence). Designed to be wired into Claude Code's `SessionStart` hook in `.claude/settings.json`. Silent no-op when no `.git`, repo not registered, or no associations (diagnostics go to stderr).
+- `_resolve_repo_key` extracted from `transports/tools.py` to new `core/repos/resolve.py`. Single source of truth shared by `search_chats(repo=...)`, `find_related(repo=...)`, and the new session-context command.
+- `find_related(context, limit, repo)` MCP tool: takes free-form text and returns semantically similar chats via pure vector search. Capped at `FIND_RELATED_MAX_INPUT_CHARS=4000` chars to bound embedder latency. Same repo-boost mechanic as `search_chats`. Wired into `stdio.py` as the 4th MCP tool with docstring guiding Claude when to prefer it over `search_chats`.
+- 16 new unit tests: 5 for the session-context CLI (no-git, unregistered, no-associations, prints associated, limit respected), 4 for `find_repo_root`, 7 for `find_related` (empty context, shape, truncation, limit clamp, unknown repo, boost reorders, embedder error).
+
 ## [0.0.2] - 2026-05-20
 
 Phase 2 closed. Live capture + hybrid search work end-to-end. First public-facing polish (badges, screenshot, CONTRIBUTING, CHANGELOG, CI). Windows autostart as preview of Phase 5. Closing audit applied, 3 important fixes + 4 minor fixes landed in this release.

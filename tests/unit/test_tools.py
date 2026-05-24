@@ -351,6 +351,261 @@ class TestSearchChatsLazySummaries:
         assert with_summary == 0
 
 
+class TestSearchChatsRepoBoost:
+    """Tests of the `repo=...` boost in `tools.search_chats`.
+
+    `_apply_repo_boost` and `_resolve_repo_key` are tested directly for
+    determinism; the integration cases use the FakeEmbedder + populated DB
+    fixture to verify the param plumbs through end-to-end.
+    """
+
+    def test_apply_boost_lowers_distance_for_matched_hits(self) -> None:
+        """Hits in the boost map get their distance reduced by weight * confidence."""
+        from memex.core.models import Chunk, Conversation, SearchHit, Source
+        from memex.transports.tools import REPO_BOOST_WEIGHT, _apply_repo_boost
+
+        def _hit(uuid: str, distance: float) -> SearchHit:
+            return SearchHit(
+                chunk=Chunk(
+                    conversation_uuid=uuid,
+                    text="x",
+                    char_start=0,
+                    char_end=1,
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+                conversation=Conversation(
+                    uuid=uuid,
+                    title=uuid,
+                    source=Source.CONVERSATIONS,
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+                distance=distance,
+                snippet=uuid,
+            )
+
+        # Three hits: c1 is ahead, c2 is behind by a small margin, c3 is far.
+        hits = [_hit("c1", 0.10), _hit("c2", 0.15), _hit("c3", 0.40)]
+        # c2 belongs to the repo with high confidence; c3 with low; c1 not at all.
+        result = _apply_repo_boost(hits, {"c2": 1.0, "c3": 0.5})
+        by_uuid = {h.conversation.uuid: h.distance for h in result}
+        # c2 distance is 0.15 - 0.3 * 1.0 = -0.15.
+        assert by_uuid["c2"] == pytest.approx(0.15 - REPO_BOOST_WEIGHT * 1.0)
+        # c3 distance is 0.40 - 0.3 * 0.5 = 0.25.
+        assert by_uuid["c3"] == pytest.approx(0.40 - REPO_BOOST_WEIGHT * 0.5)
+        # c1 unchanged.
+        assert by_uuid["c1"] == 0.10
+        # Ordering after boost: c2 (-0.15), c1 (0.10), c3 (0.25).
+        assert [h.conversation.uuid for h in result] == ["c2", "c1", "c3"]
+
+    def test_resolve_repo_key_accepts_canonical_key(self, db: sqlite3.Connection) -> None:
+        from memex.core.repos.discovery import RepoInfo
+        from memex.transports.tools import _resolve_repo_key
+
+        repo.insert_repo(
+            db,
+            RepoInfo(
+                key="github.com/me/proj",
+                path="/dev/proj",
+                remote_url="git@github.com:me/proj.git",
+                name="proj",
+                manifest_name=None,
+            ),
+        )
+        assert _resolve_repo_key(db, "github.com/me/proj") == "github.com/me/proj"
+
+    def test_resolve_repo_key_accepts_remote_url(self, db: sqlite3.Connection) -> None:
+        from memex.core.repos.discovery import RepoInfo
+        from memex.transports.tools import _resolve_repo_key
+
+        repo.insert_repo(
+            db,
+            RepoInfo(
+                key="github.com/me/proj",
+                path=None,
+                remote_url="git@github.com:me/proj.git",
+                name="proj",
+                manifest_name=None,
+            ),
+        )
+        # Pass HTTPS form; resolver normalizes to the canonical key.
+        assert _resolve_repo_key(db, "https://github.com/me/proj.git") == "github.com/me/proj"
+
+    def test_resolve_repo_key_unknown_returns_none(self, db: sqlite3.Connection) -> None:
+        from memex.transports.tools import _resolve_repo_key
+
+        assert _resolve_repo_key(db, "github.com/nobody/none") is None
+
+    def test_unknown_repo_arg_returns_error(self, db: sqlite3.Connection) -> None:
+        """An unregistered `repo_arg` short-circuits with an actionable error."""
+        result = tools.search_chats(
+            db, FakeEmbedder(dim=768), query="anything", repo_arg="github.com/nobody/none"
+        )
+        assert "error" in result
+        assert "github.com/nobody/none" in result["error"]
+        assert "memex repos add" in result["error"]
+
+    def test_no_repo_arg_means_no_boost(self, db: sqlite3.Connection) -> None:
+        """Sanity: without `repo_arg` the search runs as before."""
+        # Populate a couple of chats.
+        TestSearchChatsLazySummaries()._populate_n_chats(db, 2)
+        result = tools.search_chats(db, FakeEmbedder(dim=768), query="hola", limit=2)
+        assert result["count"] >= 1
+        # results have a `distance` field present.
+        for r in result["results"]:
+            assert "distance" in r
+
+    def test_boost_changes_ranking(self, db: sqlite3.Connection) -> None:
+        """End-to-end: a chat associated to the queried repo outranks an unrelated
+        chat that would normally rank similar or better.
+
+        We use FakeEmbedder so the base ranking is arbitrary (hash-based) but
+        stable. We pick the chat that ranked second (or worse) without boost
+        and associate it. After boost, it should appear above whatever ranked
+        first before.
+        """
+        from memex.core.repos.discovery import RepoInfo
+
+        uuids = TestSearchChatsLazySummaries()._populate_n_chats(db, 3)
+        # Run without boost to see the base order.
+        baseline = tools.search_chats(db, FakeEmbedder(dim=768), query="hola", limit=3)
+        baseline_order = [r["conversation_uuid"] for r in baseline["results"]]
+        assert len(baseline_order) >= 2
+
+        # Pick the chat that ranks LAST in baseline. Associate it to a repo.
+        loser = baseline_order[-1]
+        repo.insert_repo(
+            db,
+            RepoInfo(
+                key="github.com/test/boostme",
+                path=None,
+                remote_url="github.com/test/boostme",
+                name="boostme",
+                manifest_name=None,
+            ),
+        )
+        repo.associate_chat_repo(
+            db, loser, "github.com/test/boostme", source="auto", confidence=1.0
+        )
+        db.commit()
+
+        boosted = tools.search_chats(
+            db,
+            FakeEmbedder(dim=768),
+            query="hola",
+            limit=3,
+            repo_arg="github.com/test/boostme",
+        )
+        boosted_order = [r["conversation_uuid"] for r in boosted["results"]]
+        # The loser is now first (the boost was strong enough to flip the order).
+        assert boosted_order[0] == loser
+        # All baseline UUIDs are still present (boost re-ranks, does not filter).
+        assert set(boosted_order) == set(baseline_order)
+        assert uuids  # populated something
+
+
+class TestFindRelated:
+    """Tests for the `find_related(context, limit, repo)` MCP tool."""
+
+    def _populate(self, db: sqlite3.Connection, n: int) -> list[str]:
+        """Insert n chats with a chunk each. Reuses the lazy-summaries helper."""
+        return TestSearchChatsLazySummaries()._populate_n_chats(db, n)
+
+    def test_empty_context_returns_error(self, db: sqlite3.Connection) -> None:
+        result = tools.find_related(db, FakeEmbedder(dim=768), context="   ")
+        assert "error" in result
+        assert "vac" in result["error"].lower()
+
+    def test_returns_results_with_expected_shape(self, db: sqlite3.Connection) -> None:
+        self._populate(db, 3)
+        result = tools.find_related(db, FakeEmbedder(dim=768), context="some long text here")
+        assert "results" in result
+        assert "count" in result
+        assert "context_chars" in result
+        if result["results"]:
+            r0 = result["results"][0]
+            for key in (
+                "rank",
+                "conversation_uuid",
+                "title",
+                "source",
+                "distance",
+                "snippet",
+            ):
+                assert key in r0
+
+    def test_truncates_long_context(self, db: sqlite3.Connection) -> None:
+        """If context exceeds FIND_RELATED_MAX_INPUT_CHARS, only the prefix is used."""
+        self._populate(db, 1)
+        long_ctx = "x" * (tools.FIND_RELATED_MAX_INPUT_CHARS + 1000)
+        result = tools.find_related(db, FakeEmbedder(dim=768), context=long_ctx)
+        assert result["context_chars"] == tools.FIND_RELATED_MAX_INPUT_CHARS
+
+    def test_limit_clamped(self, db: sqlite3.Connection) -> None:
+        self._populate(db, 3)
+        result = tools.find_related(db, FakeEmbedder(dim=768), context="hi", limit=9999)
+        assert len(result["results"]) <= tools.SEARCH_LIMIT_MAX
+
+    def test_unknown_repo_returns_error(self, db: sqlite3.Connection) -> None:
+        result = tools.find_related(
+            db, FakeEmbedder(dim=768), context="hi", repo_arg="github.com/no/such"
+        )
+        assert "error" in result
+        assert "no/such" in result["error"]
+
+    def test_repo_boost_reorders(self, db: sqlite3.Connection) -> None:
+        """Same boost mechanic as search_chats: associated chats outrank unrelated ones."""
+        from memex.core.repos.discovery import RepoInfo
+
+        uuids = self._populate(db, 3)
+        # Baseline: top-1 without boost.
+        baseline = tools.find_related(db, FakeEmbedder(dim=768), context="hola", limit=3)
+        assert len(baseline["results"]) >= 2
+        baseline_first = baseline["results"][0]["conversation_uuid"]
+
+        # Pick a non-first chat and associate to a repo.
+        non_first = next(
+            r["conversation_uuid"]
+            for r in baseline["results"]
+            if r["conversation_uuid"] != baseline_first
+        )
+        repo.insert_repo(
+            db,
+            RepoInfo(
+                key="boost/repo",
+                path=None,
+                remote_url=None,
+                name="repo",
+                manifest_name=None,
+            ),
+        )
+        repo.associate_chat_repo(db, non_first, "boost/repo", source="auto", confidence=1.0)
+        db.commit()
+
+        boosted = tools.find_related(
+            db, FakeEmbedder(dim=768), context="hola", limit=3, repo_arg="boost/repo"
+        )
+        assert boosted["results"][0]["conversation_uuid"] == non_first
+        assert uuids  # populated something
+
+    def test_embedder_error_becomes_json_error(self, db: sqlite3.Connection) -> None:
+        class _BrokenEmbedder(Embedder):
+            @property
+            def dim(self) -> int:
+                return 768
+
+            @property
+            def model_name(self) -> str:
+                return "broken"
+
+            def embed(self, texts):  # type: ignore[override]
+                raise EmbedderError("Ollama down")
+
+        result = tools.find_related(db, _BrokenEmbedder(), context="hi")
+        assert "error" in result
+        assert "Ollama down" in result["error"]
+
+
 class TestGetChat:
     def test_basic_get(self, populated_db: sqlite3.Connection, conversation: Conversation) -> None:
         result = tools.get_chat(populated_db, conversation.uuid)

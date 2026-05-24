@@ -14,21 +14,29 @@ Public surface:
 
 from __future__ import annotations
 
-from memex.core.repos.discovery import ChatRepoAssociation, RepoInfo, parse_repo
+from memex.core.repos.discovery import (
+    ChatRepoAssociation,
+    RepoInfo,
+    find_repo_root,
+    parse_repo,
+)
 from memex.core.repos.keys import (
     canonical_repo_key,
     normalize_path,
     normalize_remote,
 )
 from memex.core.repos.matcher import Match, match_text
+from memex.core.repos.resolve import resolve_repo_key
 
 __all__ = [
     "ChatRepoAssociation",
     "Match",
     "RepoInfo",
     "canonical_repo_key",
+    "find_repo_root",
     "match_text",
     "normalize_path",
     "normalize_remote",
     "parse_repo",
+    "resolve_repo_key",
 ]
