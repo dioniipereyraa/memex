@@ -2,7 +2,7 @@
 
 > Last updated: 2026-05-23
 
-**Current state:** Phases 0, 1, and 2 closed (2026-05-20). **Phase 3 in progress:** four feature sub-tasks closed (auto-generated summaries on-demand, chat ↔ project/repo association, SessionStart hook, `find_related` tool). Remaining: phase-close audit. **331 unit tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0, 1, 2, and 3 closed (Phase 3 closed 2026-05-24). All Phase 3 sub-tasks shipped: auto-generated summaries on-demand, chat ↔ project/repo association, SessionStart hook, `find_related` tool. Close audit passed with 2 small fixes applied during the pass and 6 minor items deferred. **331 unit tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
@@ -83,7 +83,7 @@ The context Claude.ai has should also be available to Claude Code. Every phase h
 - [x] **Chat ↔ project/repo association.** New `repos` and `chat_repos` tables. `core/repos/` module: `keys.py` canonicalizes paths + git remote URLs into stable keys; `discovery.py` reads `.git/config` and `pyproject.toml`/`package.json`/`Cargo.toml`; `matcher.py` scans chat text for 4 signals (remote URL 1.0, path 0.9, manifest name 0.8, display name 0.5) with a 0.5 threshold. Auto-scan runs at ingest time. CLI: `memex repos add/list/remove/scan` + `memex tag/untag` for manual overrides (manual associations are sticky). `search_chats(query, repo=...)` accepts a path / remote URL / canonical key, resolves it, and boosts associated chats by `0.3 * confidence` (lower distance = better; chats outside the repo still appear). 65 new unit tests covering keys (21), discovery (11), matcher (15), storage helpers (18), pipeline auto-scan (4), CLI (15), search boost + resolve (7). (2026-05-24)
 - [x] **Optional `SessionStart` hook.** New `memex session-context` command. Detects the active repo from cwd (walks up looking for `.git` via new `find_repo_root` helper), resolves it through the registered-repos table, and prints a short Markdown blob with the top N chats (manual first, then auto by confidence). Silent no-op when no `.git`, repo not registered, or no associations (diagnostics go to stderr so the hook does not pollute the injected context). User wires it into `.claude/settings.json` `SessionStart` hook. `_resolve_repo_key` extracted from `transports/tools.py` to `core/repos/resolve.py` so both the CLI and the search tool share it. 9 new tests (5 CLI command + 4 `find_repo_root`). (2026-05-24)
 - [x] **`find_related(current_context)` tool.** New MCP tool for "more like this" retrieval: takes free-form text (paragraph, file contents, current discussion) and returns semantically similar chats. Pure vector search (no FTS, since long input makes BM25 less informative). Input capped at `FIND_RELATED_MAX_INPUT_CHARS=4000` chars. Same repo-boost semantics as `search_chats`. Wired into `stdio.py` as the 4th MCP tool. 7 new tests. (2026-05-24)
-- [ ] Phase-close audit.
+- [x] Phase-close audit. No blockers. 2 critical fixes applied during the pass: `assert` in `cli/main.py::session_context` replaced with explicit branch (asserts get stripped under `python -O`), and `…` (U+2026) in `repos scan` status replaced with `...` for cp1252 safety. 6 minor deferrals documented in DEVLOG (N+1 in scan_repos, scan transaction granularity, CLI help language mix, theoretical race in associate_chat_repo, Rich table truncation on long keys, case-sensitivity asymmetry between Windows/Linux). Detail in DEVLOG entry "2026-05-24 (close)". (2026-05-24)
 
 **Estimated duration:** 1 to 2 weeks.
 

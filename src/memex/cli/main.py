@@ -404,7 +404,7 @@ def repos_scan(
 
         new_or_refreshed = 0
         scanned = 0
-        with console.status(f"[yellow]Scanning {len(chats)} chats…[/yellow]"):
+        with console.status(f"[yellow]Scanning {len(chats)} chats...[/yellow]"):
             for chat in chats:
                 text = repo.get_conversation_text(conn, chat["uuid"])
                 if not text:
@@ -566,7 +566,11 @@ def session_context(
             return
 
         info = repo.get_repo(conn, key)
-        assert info is not None, "resolve_repo_key returned a missing key"
+        if info is None:
+            # Race: resolve_repo_key found it, then it got removed before
+            # get_repo. Treat as not-registered.
+            _stderr(f"[memex] Repo with key {key!r} disappeared mid-lookup.")
+            return
 
         # Manual associations first, then auto by confidence descending.
         rows = repo.list_conversations_for_repo(conn, key)

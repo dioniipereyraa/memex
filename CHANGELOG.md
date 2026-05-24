@@ -2,11 +2,13 @@
 
 All notable changes to Memex are documented here.
 
-Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and lives in `0.0.x` while in pre-alpha. No tags have been cut yet; the entries below summarize work by phase as defined in [ROADMAP.md](ROADMAP.md).
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
 ## [Unreleased]
 
-Phase 3 starting: quality pass on retrieval. First sub-task done: auto-summaries with Claude Haiku, generated **on-demand at search time** (not at ingest).
+## [0.1.0] - 2026-05-24
+
+Phase 3 closed: quality pass on retrieval. All four feature sub-tasks shipped and audited.
 
 ### Added
 - Optional auto-summary generation per chat, powered by Claude Haiku via the Anthropic API. Opt-in by setting `MEMEX_SUMMARY_ENABLED=true` and `ANTHROPIC_API_KEY`. Summaries are generated lazily when `search_chats` returns a chat that does not have one cached: up to 3 in parallel per call (`ThreadPoolExecutor`), silent fail per chat if the API errors. The summary is stored in `conversations.summary` and persists, so subsequent searches hit cache and do not pay the API again.

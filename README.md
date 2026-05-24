@@ -6,7 +6,7 @@
 
 Local-first MCP server that indexes your Claude.ai chat history and exposes it to Claude Code (and, soon, to Claude.ai via remote MCP). The goal: give Claude Code the same context Claude.ai already has.
 
-**Status:** pre-alpha. Phases 0, 1 and 2 closed. **Phase 3 in progress** (quality pass on retrieval): on-demand auto-summaries at first `search_chats` landed; chat ↔ project/repo association, `SessionStart` hook, and `find_related` tool still pending.
+**Status:** alpha (`0.1.0`). Phases 0 to 3 closed. Phase 3 quality pass shipped: on-demand auto-summaries, chat ↔ project/repo association, `SessionStart` hook, and `find_related` tool. Next is Phase 5 (release polish) so an external user can install without `git clone`.
 
 ![Session memory check](docs/screenshots/session-memory-check.jpeg)
 

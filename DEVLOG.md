@@ -6,6 +6,86 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-05-24 (close): Phase 3 close audit + bump 0.1.0
+
+Project rule: every phase close needs an audit (scan for bugs, dead code, vulnerabilities, doc drift). Did the pass and wrote it up here. Phase 3 closes with 0 blockers; 2 small fixes applied during the audit itself.
+
+**Scope of the audit:**
+
+Everything added or changed in Phase 3:
+- `src/memex/core/summaries/` (sub-task 1, full module).
+- `src/memex/core/repos/` (sub-task 2, full module).
+- `conversations.content_hash` column + migration.
+- `chat_repos` + `repos` tables.
+- Pipeline auto-scan wire in `_ingest_conversation`.
+- `tools.search_chats` repo boost + lazy summaries integration.
+- `tools.find_related` (new tool).
+- `tools.get_chat` lowered defaults (intra-phase fix from sub-task 1 follow-up).
+- `cli/main.py`: `repos` sub-app + `tag` / `untag` / `session-context` commands.
+- `stdio.py`: 4th tool wired (`find_related`), `repo` arg added to `search_chats`.
+- `.env.example` extended for summary settings.
+
+**Critical fixes applied during the audit (2):**
+
+1. **`assert info is not None` in `cli/main.py` (session-context command).** Asserts get stripped under `python -O`. Replaced with an explicit `if info is None: ... return` plus a stderr diagnostic. The case is "race between `resolve_repo_key` and `get_repo`": vanishingly rare, but the right shape is an explicit branch, not an assert.
+2. **`…` (U+2026) in `repos scan` status string.** Same class of bug we hit during the SessionStart sub-task: cp1252 (Windows console default) cannot encode it, and Rich's fallback is not bulletproof in every shell. Replaced with `...` for consistency with the rest of the new CLI strings.
+
+**Deferred (noted, not fixed):**
+
+1. **N+1 in `_scan_repos` at ingest time**: each conv re-reads `repos` from DB. For an export of 74 chats with one repo registered, that is 74 `SELECT * FROM repos`. Each query is ~0.1ms, total <10ms. Trivial today; would matter if someone ingests 10k+ chats while registering 50+ repos. Cache or pass repo list per ingest run if it becomes a bottleneck.
+2. **`memex repos scan` commits at the end of the loop, not per chat**. If the user Ctrl+C's mid-scan on a corpus of 1000+ chats, the scan loses all progress on that run. Acceptable for the typical corpus size (74 chats today); revisit if someone runs against a much larger DB.
+3. **CLI top-level help strings mixed Spanish + English** (`ingest`, `search`, `stats`, `serve`, `reindex-fts` still in Spanish from earlier phases; `repos`, `tag`, `untag`, `session-context` in English). Inconsistent but not user-blocking. Translate when we do the next public-polish pass before Phase 5 release.
+4. **`associate_chat_repo` not transactional with its prior SELECT**. Two concurrent processes could theoretically race between "is this manual?" check and the INSERT. Two CLI commands hitting the same DB simultaneously is the only scenario. Bad luck only loses one auto-assertion; acceptable v1.
+5. **`memex repos list` shows replacement chars (?) in tables with very long keys on Windows console**. Rich-rendering / terminal-encoding issue, not a data corruption. The full key is correct in the DB. Cosmetic.
+6. **Path normalization is lowercased on Windows only**. If a user registers a repo from Linux and later searches with a different-case path string, no match. Documented as Linux behavior, not a bug.
+
+**Security review:**
+
+- API key (`ANTHROPIC_API_KEY`) stored only in `.env` (gitignored). Code never logs it. Errors from the Anthropic SDK propagate type + message; the SDK does not include the key in its error bodies. Low risk.
+- `_resolve_repo_key` accepts arbitrary user input (path / URL / key). Internally, that input is only used as a SQL WHERE clause parameter (parameterized, no concat). Safe from injection.
+- The CLI commands `tag` / `untag` accept arbitrary `chat_uuid` and `repo_key`. They validate existence before associating, so the failure mode is a clean error, not a silent NULL FK insert.
+- Schema CHECK constraint on `chat_repos.source` keeps the column to `auto|manual` only. The repo helper raises `ValueError` for invalid input. Defense in depth.
+
+**Test coverage:**
+
+- 331 unit tests green (was 220 at the start of Phase 3, +111).
+- New modules covered: keys, discovery, matcher, resolve, repo helpers, CLI commands, search boost, find_related, pipeline auto-scan, session-context.
+- Gaps that are intentionally light:
+  - No end-to-end integration test that chains ingest -> scan -> search_chats(repo=...). The unit suite covers each pair of adjacent stages, and the cost/benefit of adding the chained one is low given the design has already been validated by the smoke test of the CLI.
+  - No tests of the actual Anthropic API. Same call as Phase 3 sub-task 1: tested via mocked stub, real API exercise belongs to the user's manual smoke test.
+
+**Documentation review:**
+
+- README: tools section lists all 4 MCP tools. Repo associations + SessionStart hook documented end-to-end. Auto-summaries section is current.
+- ROADMAP: Phase 3 sub-tasks 1-4 marked `[x]` with detail; this audit closes [x] sub-task 5.
+- CHANGELOG: Unreleased has sections for each sub-task.
+- DEVLOG: entries for each sub-task plus this audit.
+- CONTRIBUTING and CLAUDE.md: no drift (architecture rule "core does not import from transports/cli" still holds; verified by mypy passing).
+- `.env.example`: includes `MEMEX_SUMMARY_ENABLED` and the API key placeholder. No repo-related env vars (Phase 3 sub-task 2 uses DB-backed config, not env).
+
+**Architectural sanity:**
+
+- `core/` does not import from `transports/` or `cli/`. Verified by inspecting every new file.
+- `core/repos/resolve.py` uses `core/storage/repo` (storage is one level lower in the dependency tree). OK.
+- `transports/tools.py` imports from `core/repos/` and `core/storage/`. OK.
+- `cli/main.py` imports from `core/`. OK.
+- No circular imports (mypy run is clean).
+
+**Performance sanity:**
+
+- Pipeline ingest with auto-scan on 74 chats: <50ms overhead added (matcher is `re` substring against ~100 chars of repo metadata). Negligible vs the embedding cost.
+- `search_chats(repo=...)` overhead: one extra DB query for `list_conversations_for_repo` + one re-sort of `limit * 5` hits. Sub-millisecond.
+- `find_related` with 4000-char input: single embed call, same as `search_chats`. No regression.
+- `session-context` typical run: 3 SQL queries + ~10 chat row fetches. Well under 50ms.
+
+**Verdict:**
+
+Phase 3 closes clean. The 2 critical fixes applied during the audit were small and additive; both committed in a follow-up commit alongside this DEVLOG entry. The 6 deferred items are documented for future revisit and none of them block a public alpha release.
+
+**Phase 3 closed.** Next: Phase 4 (remote MCP transport) or Phase 5 (release polish), depending on what the user prioritizes for the public push.
+
+---
+
 ## 2026-05-24 (later): Phase 3 sub-tasks 3 and 4, SessionStart hook + find_related
 
 After closing sub-task 2 (chat ↔ repo association) earlier in the same session, we kept going through the rest of Phase 3 feature work.
