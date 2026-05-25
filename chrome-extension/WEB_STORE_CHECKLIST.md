@@ -100,7 +100,7 @@ browser, and POSTs it to a local Memex server running on 127.0.0.1.
 Nothing leaves your machine.
 
 Requires:
-  * Memex installed locally (pip install memex-mcp).
+  * Memex installed locally (pip install memex-chats).
   * `memex serve` running.
 
 Repo and docs: https://github.com/dioniipereyraa/memex

@@ -6,6 +6,22 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-05-25 (evening): PyPI name collision, rename to `memex-chats`
+
+First publish attempt failed. The name `memex-mcp` was already claimed on PyPI by an unrelated MCP project (Hill Patel / STiFLeR7) and version 0.3.9 had been pushed earlier the same day. So both `memex` (Caleb McCarthy, long-standing) and `memex-mcp` (claimed today) are taken.
+
+**Decision.** Rename the PyPI distribution to `memex-chats`. The CLI script names (`memex`, `memex-mcp`) stay because `[project.scripts]` is decoupled from the distribution name. Anyone who already wired `.mcp.json` to the `memex-mcp` command is unaffected.
+
+Why `memex-chats`: it is descriptive of what the tool indexes, available on PyPI, and short. Considered `memex-claude` (brand-clearer but possible trademark friction with Anthropic if the project grows), `memex-claudeai`, `chatmemex`. Verified availability via the PyPI JSON API (HTTP 404 = free) on all candidates before deciding.
+
+Touched: `pyproject.toml` (`name`), `PRIVACY.md`, `README.md` install commands, `chrome-extension/WEB_STORE_CHECKLIST.md`, `CHANGELOG.md`, and this DEVLOG. Rebuilt `dist/` so the wheel name aligns. Historical entries about the prior `memex` -> `memex-mcp` rename were kept as-is (record of what happened).
+
+**Security note.** While testing publish I asked the user to paste a PyPI token; they pasted it into the chat. Treated as compromised and asked them to revoke + reissue on the spot. Lesson learned: keep tokens out of the chat input field entirely.
+
+**Next:** rebuild wheel, commit, push, then publish to PyPI with a fresh token.
+
+---
+
 ## 2026-05-25: Phase 5 packaging (PyPI + Linux autostart + doctor + Web Store checklist)
 
 Phase 5 code-side work done. The remaining items are maintainer-side (PyPI token, Chrome Web Store developer account); the repo is ready for both.
@@ -20,7 +36,7 @@ Phase 5 code-side work done. The remaining items are maintainer-side (PyPI token
 
 **README quickstart restructure.**
 
-Option A (recommended): `uvx memex-mcp` / `pipx install memex-mcp`, then `memex ingest <export.zip>`, then `memex doctor`. Three commands and the user has a working install.
+Option A (recommended): `uvx --from memex-chats memex --help` / `pipx install memex-chats`, then `memex ingest <export.zip>`, then `memex doctor`. Three commands and the user has a working install.
 
 Option B (from source): the previous `git clone` + `uv sync` path is kept as a secondary option for contributors.
 

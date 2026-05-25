@@ -13,7 +13,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pr
 - `chrome-extension/WEB_STORE_CHECKLIST.md`: full Web Store submission playbook (developer account, privacy policy URL, asset sizes, listing copy, permissions justification, post-approval checklist).
 
 ### Changed
-- Package renamed from `memex` to `memex-mcp` for PyPI publication (`memex` is already taken). The CLI entry point stays `memex`. `Development Status` classifier bumped from `Pre-Alpha` to `Alpha`. Added `Operating System :: OS Independent` classifier. New `[project.urls]` section with Homepage / Repository / Issues / Changelog links.
+- Package renamed from `memex` to `memex-chats` for PyPI publication. Both `memex` and `memex-mcp` are already taken on PyPI by unrelated projects (the latter was claimed the same day we attempted to publish). The CLI entry points stay `memex` and `memex-mcp`, so `.mcp.json` configs do not change. `Development Status` classifier bumped from `Pre-Alpha` to `Alpha`. Added `Operating System :: OS Independent` classifier. New `[project.urls]` section with Homepage / Repository / Issues / Changelog links.
 - README quickstart restructured: "install from PyPI" is now the recommended path (option A), source install is option B. Diagnostics section added linking `memex doctor`. Autostart section unified across Windows + Linux + macOS placeholder.
 - Chrome extension manifest description translated to English (was the last Spanish string in the extension).
 

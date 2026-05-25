@@ -1,5 +1,5 @@
 [project]
-name = "memex-mcp"
+name = "memex-chats"
 version = "0.1.0"
 description = "Local MCP server that indexes your Claude.ai chats and exposes them to Claude Code (and, soon, to Claude.ai via remote MCP)."
 readme = "README.md"

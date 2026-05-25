@@ -1,6 +1,6 @@
 # Privacy policy
 
-This document covers the **Memex MCP server** (Python package `memex-mcp`) and the **Memex Live Capture** Chrome extension.
+This document covers the **Memex MCP server** (Python package `memex-chats`) and the **Memex Live Capture** Chrome extension.
 
 Version: 0.1.0 (alpha). Last updated: 2026-05-25.
 

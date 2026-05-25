@@ -53,9 +53,9 @@ ollama pull nomic-embed-text
 
 ```bash
 # One-time install (zero-config: includes fastembed for local embeddings).
-uvx memex-mcp --help
+uvx --from memex-chats memex --help
 # Or with pipx if you prefer:
-pipx install memex-mcp
+pipx install memex-chats
 ```
 
 Then:
