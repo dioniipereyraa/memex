@@ -6,6 +6,48 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-05-25: Phase 5 packaging (PyPI + Linux autostart + doctor + Web Store checklist)
+
+Phase 5 code-side work done. The remaining items are maintainer-side (PyPI token, Chrome Web Store developer account); the repo is ready for both.
+
+**What landed:**
+
+- **`memex doctor`** diagnostic command. Reports OK / WARN / FAIL across Python version, database, embedder, live-capture server, summarizer config (only if enabled), registered repos count, indexed corpus count. Exits non-zero only on FAIL so it is script-safe. This is the "what is wrong with my setup?" answer for first-time users, the missing piece from previous phases where setup errors were silent. 4 new tests with mocked HTTP probe.
+- **`memex install-service`** cross-platform dispatcher. Single command that detects the host OS and runs the right installer: Windows goes through the existing PowerShell Scheduled Task installer; Linux writes a systemd user unit (`~/.config/systemd/user/memex-serve.service`), enables it, starts it now. macOS not supported in 0.1.0; the command prints manual `nohup` instructions and exits gracefully on `status` (so the dispatcher is well-behaved on every platform). 6 new tests mocking `platform.system` and `subprocess.run`.
+- **`scripts/install-autostart.sh`** for Linux. Subcommands `install`, `uninstall`, `status`. Resolves `uv` lazily at install time (embeds absolute path if `uv` is on PATH, falls back to literal `uv` otherwise so a future install lookup still works). Logs to `${XDG_STATE_HOME:-~/.local/state}/memex/serve.log`. The systemd unit uses `Type=simple` + `Restart=on-failure`, so it survives crashes the same way the Windows Scheduled Task does.
+- **Package rename to `memex-mcp` for PyPI.** `memex` is already taken on PyPI. The CLI entry point stays `memex` (the Python package and the command are decoupled via `[project.scripts]`). Refreshed pyproject metadata: description translated to English, `Operating System :: OS Independent`, `Development Status :: 3 - Alpha`, `[project.urls]` with Homepage / Repository / Issues / Changelog. `uv build` produces a clean `memex_mcp-0.1.0-py3-none-any.whl` (verified locally).
+- **Chrome Web Store checklist** at `chrome-extension/WEB_STORE_CHECKLIST.md`. Full submission playbook so the maintainer has nothing to figure out at submission time: developer account fee, privacy policy requirement, asset sizes (icons 128x128, screenshots 1280x800), submission ZIP build commands, ready-to-paste listing copy (name, summary, long description), permissions justification table per host permission, post-approval checklist. The extension manifest description was the last Spanish string left in the project; translated to English in the same pass.
+
+**README quickstart restructure.**
+
+Option A (recommended): `uvx memex-mcp` / `pipx install memex-mcp`, then `memex ingest <export.zip>`, then `memex doctor`. Three commands and the user has a working install.
+
+Option B (from source): the previous `git clone` + `uv sync` path is kept as a secondary option for contributors.
+
+The autostart section was unified: one block covers Windows (Scheduled Task), Linux (systemd user unit), and macOS placeholder (manual `nohup`). The CLI command `memex install-service` is the single entry point users learn; the OS-specific paths are an implementation detail.
+
+**Bugs caught during the build:**
+
+- First `pyproject.toml` edit put `[project.urls]` above `dependencies`, which made TOML parse `dependencies` as a string-valued URL named "dependencies". `uv build` failed with a confusing `URL dependencies of field project.urls must be a string` error. Re-ordered `[project.urls]` to live after `dependencies` and `[project.scripts]`; build green on retry.
+- Ruff caught a `try/except OSError/pass` pattern in `memex install-service` (chmod best-effort on the Linux script). Switched to `with contextlib.suppress(OSError): ...` per the SIM105 suggestion.
+
+**State:**
+
+- 341 unit tests green (was 331 at the start of the session, +10 between doctor (4) and install-service (6)).
+- `ruff check` + `ruff format --check` + `mypy` clean.
+- Build artifacts: `dist/memex_mcp-0.1.0-py3-none-any.whl`, `dist/memex_mcp-0.1.0.tar.gz`.
+- 9 commits ahead of `origin/main` after this session (still not pushed by design; user decides timing).
+
+**What is left for the actual release:**
+
+1. Push to GitHub (`git push origin main` + `git tag v0.1.0 && git push --tags`).
+2. Publish to PyPI: `uv publish --token <token>` (needs the maintainer's PyPI token). TestPyPI dry-run first is recommended.
+3. Submit Chrome extension via the dashboard (5 to 10 day review).
+4. Post the alpha announcement to the Discord thread.
+5. macOS launchd support → moves to 0.2.0.
+
+---
+
 ## 2026-05-24 (close): Phase 3 close audit + bump 0.1.0
 
 Project rule: every phase close needs an audit (scan for bugs, dead code, vulnerabilities, doc drift). Did the pass and wrote it up here. Phase 3 closes with 0 blockers; 2 small fixes applied during the audit itself.

@@ -49,23 +49,48 @@ ollama pull nomic-embed-text
 
 ## Quickstart
 
-1. Clone the repo and install deps:
+### Option A: install from PyPI (recommended)
+
+```bash
+# One-time install (zero-config: includes fastembed for local embeddings).
+uvx memex-mcp --help
+# Or with pipx if you prefer:
+pipx install memex-mcp
+```
+
+Then:
+
+1. Request your official Claude.ai export (Settings → Privacy → Export data).
+2. Ingest it (the first run downloads the local embedding model, takes ~30s):
    ```bash
-   git clone https://github.com/dioniipereyraa/memex
-   cd memex
-   uv sync
+   memex ingest /path/to/your-export.zip
    ```
-2. Request your official Claude.ai export (Settings → Privacy → Export data), unzip it, and drop the zip into `data/exports/`.
-3. Ingest:
+3. Verify the install:
    ```bash
-   uv run memex ingest data/exports/<your-export>.zip
+   memex doctor
    ```
-   The first run takes a couple of minutes generating embeddings (downloads the fastembed model on first use).
-4. Search:
+4. Search from the CLI or wire it into Claude Code (see [Wiring it into Claude Code](#wiring-it-into-claude-code) below):
    ```bash
-   uv run memex search "your query" -n 5
-   uv run memex stats
+   memex search "your query" -n 5
+   memex stats
    ```
+
+To enable the always-on live capture and the chat ↔ repo features, see the corresponding sections below.
+
+### Option B: from source
+
+```bash
+git clone https://github.com/dioniipereyraa/memex
+cd memex
+uv sync
+uv run memex doctor          # verify setup
+uv run memex ingest data/exports/<your-export>.zip
+uv run memex search "your query" -n 5
+```
+
+### Diagnostics
+
+Run `memex doctor` any time something is not working. It checks Python version, database, embedder, live-capture server, summarizer config, registered repos, and indexed corpus. Reports OK / WARN / FAIL per check.
 
 ## MCP server tools (v1)
 
@@ -182,36 +207,33 @@ So that new Claude.ai chats land in Memex without asking for a manual export:
    ```
    Listens on `127.0.0.1:5777` by default. Keep it running while you browse claude.ai.
 
-2. **Load the Chrome extension** from the `chrome-extension/` folder:
-   - Open `chrome://extensions/`
-   - Enable **Developer mode**
-   - **Load unpacked** → pick `chrome-extension/`
-   - Click the Memex icon and confirm the "Server" chip says **responde** (green).
+2. **Load the Chrome extension**:
+   - Soon: install from the [Chrome Web Store](https://chrome.google.com/webstore/devconsole) (in review for the alpha).
+   - For now (unpacked load):
+     - Open `chrome://extensions/`
+     - Enable **Developer mode**
+     - **Load unpacked** → pick `chrome-extension/` from the repo
+     - Click the Memex icon and confirm the "Server" chip says **responding** (green).
 
 3. **Use claude.ai normally.** Every chat you open or create is ingested automatically. Verify with `memex stats` or by calling `search_chats` from Claude Code.
 
 Details in [chrome-extension/README.md](chrome-extension/README.md).
 
-#### Autostart on Windows (optional)
+#### Autostart (Windows + Linux)
 
-So you don't have to run `memex serve` by hand every time you log in:
+So you do not have to run `memex serve` by hand every time you log in:
 
-```powershell
-.\scripts\install-autostart.ps1 -Install
+```bash
+memex install-service          # default action: install
+memex install-service status   # check current state
+memex install-service uninstall
 ```
 
-This registers a Scheduled Task (`MemexServe`) that runs `uv run memex serve` in the background at every log on, and triggers it immediately so the server is up right now. No admin required, no console window, no dependence on the shell that started it (you can close the terminal or VS Code and the server keeps serving). Auto-restarts up to 3 times if the wrapper dies.
+The CLI dispatches to the right installer for your OS:
 
-Manage it with:
-
-```powershell
-.\scripts\install-autostart.ps1 -Status
-.\scripts\install-autostart.ps1 -Uninstall
-```
-
-Logs go to `%LOCALAPPDATA%\Memex\serve.log`. Tail them with `Get-Content "$env:LOCALAPPDATA\Memex\serve.log" -Wait -Tail 20`.
-
-**For non-technical use without terminals** (Phase 5): the cross-platform equivalent (`memex install-service`, with Linux systemd and macOS launchd backends) is on the ROADMAP. The Windows script above is the preview.
+- **Windows**: registers a Scheduled Task (`MemexServe`) that runs `uv run memex serve` at logon. No admin required, no console window, survives VS Code close. Logs at `%LOCALAPPDATA%\Memex\serve.log`. Auto-restarts up to 3 times if the wrapper dies.
+- **Linux**: writes a systemd user unit at `~/.config/systemd/user/memex-serve.service`, enables it, and starts it now. Logs at `~/.local/state/memex/serve.log`. To keep it running across logout: `loginctl enable-linger $USER`. Status: `systemctl --user status memex-serve`.
+- **macOS**: not implemented yet in 0.1.0. The command prints manual start instructions (`nohup uv run memex serve > ~/memex-serve.log 2>&1 &`). Tracked for 0.2.0.
 
 ### Making Claude use Memex proactively
 

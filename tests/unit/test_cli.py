@@ -51,6 +51,155 @@ class TestSearchCommand:
         assert "no results" in result.output.lower() or "is the db empty" in result.output.lower()
 
 
+class TestDoctorCommand:
+    """Smoke tests for the `memex doctor` diagnostic command.
+
+    Mocks the live HTTP check so we do not depend on a running server.
+    Each test isolates one branch (DB missing, summary enabled w/o key,
+    all green, etc.).
+    """
+
+    def _mock_server_down(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Force the urllib /health probe to fail with a network error."""
+        import urllib.request
+
+        def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise OSError("simulated network down")
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+    def test_missing_db_warns(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._mock_server_down(monkeypatch)
+        result = runner.invoke(app, ["doctor", "--db", str(tmp_path / "no.db")])
+        # WARN-only state: exit 0, but the table mentions the DB warning.
+        assert result.exit_code == 0
+        assert "WARN" in result.output
+        assert "does not exist" in result.output
+
+    def test_existing_empty_db_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from memex.core.storage.db import connect_and_init as _init
+
+        self._mock_server_down(monkeypatch)
+        db = tmp_path / "memex.db"
+        _init(db).close()
+        result = runner.invoke(app, ["doctor", "--db", str(db)])
+        # Empty DB: schema OK, but Corpus / Repos are WARN. Exit 0.
+        assert result.exit_code == 0
+        assert "Database" in result.output
+        assert "schema v1" in result.output
+        assert "Corpus" in result.output
+        assert "Repos" in result.output
+
+    def test_summary_enabled_without_key_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`MEMEX_SUMMARY_ENABLED=true` + missing key = FAIL + exit 1."""
+        from memex.config import settings
+
+        self._mock_server_down(monkeypatch)
+        monkeypatch.setattr(settings, "summary_enabled", True)
+        monkeypatch.setattr(settings, "anthropic_api_key", None)
+
+        result = runner.invoke(app, ["doctor", "--db", str(tmp_path / "no.db")])
+        assert result.exit_code == 1
+        assert "FAIL" in result.output
+        assert "ANTHROPIC_API_KEY missing" in result.output
+
+    def test_summary_disabled_does_not_check_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from memex.config import settings
+
+        self._mock_server_down(monkeypatch)
+        monkeypatch.setattr(settings, "summary_enabled", False)
+        monkeypatch.setattr(settings, "anthropic_api_key", None)
+
+        result = runner.invoke(app, ["doctor", "--db", str(tmp_path / "no.db")])
+        # Summary disabled: OK status, never checks key.
+        assert result.exit_code == 0
+        assert "disabled" in result.output
+
+
+class TestInstallServiceCommand:
+    """Tests for `memex install-service`.
+
+    Mocks subprocess.run and platform.system so the test never actually
+    touches the host's service manager.
+    """
+
+    def test_invalid_action_returns_error(self) -> None:
+        result = runner.invoke(app, ["install-service", "bogus"])
+        assert result.exit_code == 2
+        assert "Invalid action" in result.output
+
+    def test_windows_calls_powershell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import platform
+        import subprocess
+
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, check):  # type: ignore[no-untyped-def]
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = runner.invoke(app, ["install-service", "install"])
+        assert result.exit_code == 0
+        cmd = captured["cmd"]
+        # Last 2 elements are the script path and the flag.
+        assert any("install-autostart.ps1" in part for part in cmd)
+        assert "-Install" in cmd
+
+    def test_linux_calls_bash_script(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import platform
+        import subprocess
+
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, check):  # type: ignore[no-untyped-def]
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = runner.invoke(app, ["install-service", "status"])
+        assert result.exit_code == 0
+        cmd = captured["cmd"]
+        # bash + script path + action.
+        assert any("install-autostart.sh" in part for part in cmd)
+        assert "status" in cmd
+
+    def test_macos_prints_manual_instructions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import platform
+
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        result = runner.invoke(app, ["install-service", "install"])
+        # macOS not supported: exits non-zero for install/uninstall, 0 for status.
+        assert result.exit_code != 0
+        assert "macOS" in result.output
+        assert "memex serve" in result.output
+
+    def test_macos_status_is_clean_exit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import platform
+
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        result = runner.invoke(app, ["install-service", "status"])
+        assert result.exit_code == 0
+
+    def test_unknown_platform(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import platform
+
+        monkeypatch.setattr(platform, "system", lambda: "Solaris")
+        result = runner.invoke(app, ["install-service", "install"])
+        assert result.exit_code == 2
+        assert "Unsupported" in result.output
+
+
 class TestStatsCommand:
     def test_stats_on_empty_db_works(self, tmp_path: Path) -> None:
         """Stats on a freshly created (empty) DB should show zeros without crashing."""

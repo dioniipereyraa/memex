@@ -623,5 +623,289 @@ def session_context(
         print()
 
 
+# ---------- cross-platform autostart ----------
+
+
+@app.command("install-service")
+def install_service(
+    action: Annotated[
+        str,
+        typer.Argument(
+            help="Action: install, uninstall, or status.",
+        ),
+    ] = "install",
+) -> None:
+    """Register Memex live-capture as an OS service so it starts on login.
+
+    Cross-platform dispatcher that calls the right installer for the host
+    OS. Today: Windows (Scheduled Task via PowerShell) and Linux (systemd
+    user unit). macOS is not implemented yet; the command prints manual
+    start instructions on that platform.
+
+    Examples:
+      memex install-service           # default: install
+      memex install-service status    # show current state
+      memex install-service uninstall # remove the service
+    """
+    import platform
+    import shutil
+    import subprocess
+    import sys as _sys
+
+    if action not in ("install", "uninstall", "status"):
+        console.print(f"[red]Invalid action:[/red] {action!r}. Use install, uninstall, or status.")
+        raise typer.Exit(code=2)
+
+    # Repo root is two levels up from this file (src/memex/cli/main.py).
+    repo_root = Path(__file__).resolve().parents[3]
+    scripts_dir = repo_root / "scripts"
+
+    system = platform.system()
+
+    if system == "Windows":
+        ps1 = scripts_dir / "install-autostart.ps1"
+        if not ps1.is_file():
+            console.print(f"[red]Missing installer script:[/red] {ps1}")
+            raise typer.Exit(code=1)
+        flag = {"install": "-Install", "uninstall": "-Uninstall", "status": "-Status"}[action]
+        powershell = shutil.which("powershell") or "powershell.exe"
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(ps1),
+                flag,
+            ],
+            check=False,
+        )
+        raise typer.Exit(code=result.returncode)
+
+    if system == "Linux":
+        sh = scripts_dir / "install-autostart.sh"
+        if not sh.is_file():
+            console.print(f"[red]Missing installer script:[/red] {sh}")
+            raise typer.Exit(code=1)
+        # Make sure the script is executable (matters on fresh clones).
+        # Best effort: if chmod fails (read-only FS, etc.), bash will still
+        # run the script directly via the explicit `bash` invocation below.
+        import contextlib
+
+        with contextlib.suppress(OSError):
+            sh.chmod(sh.stat().st_mode | 0o111)
+        bash = shutil.which("bash") or "/bin/bash"
+        result = subprocess.run([bash, str(sh), action], check=False)
+        raise typer.Exit(code=result.returncode)
+
+    if system == "Darwin":
+        console.print(
+            "[yellow]macOS launchd integration is not implemented in this release.[/yellow]"
+        )
+        console.print("\nFor now, run the server manually:")
+        console.print("  [bold]uv run memex serve[/bold]   (Ctrl+C to stop)")
+        console.print("\nOr keep it alive in the background:")
+        console.print("  [bold]nohup uv run memex serve > ~/memex-serve.log 2>&1 &[/bold]")
+        console.print(
+            "\nTrack: https://github.com/dioniipereyraa/memex/issues "
+            "(macOS launchd support is on the 0.2.0 roadmap)."
+        )
+        raise typer.Exit(code=0 if action == "status" else 2)
+
+    console.print(
+        f"[red]Unsupported platform:[/red] {system!r} ({_sys.platform}). "
+        "Memex install-service supports Windows and Linux."
+    )
+    raise typer.Exit(code=2)
+
+
+# ---------- diagnostics ----------
+
+
+@app.command("doctor")
+def doctor(
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Check Memex setup: DB, embedder, local server, summarizer, repos.
+
+    Run this when something is not working as expected. Each check reports
+    OK / WARN / FAIL with a one-line detail. Exit code is 0 unless at least
+    one check is FAIL (then exit 1), so this is safe to use in scripts.
+    """
+    import sys as _sys
+
+    checks: list[tuple[str, str, str]] = []  # (name, status, detail)
+    has_fail = False
+
+    # 1. Python version.
+    py = _sys.version_info
+    if (py.major, py.minor) >= (3, 12):
+        checks.append(("Python", "OK", f"{py.major}.{py.minor}.{py.micro}"))
+    else:
+        checks.append(
+            (
+                "Python",
+                "FAIL",
+                f"{py.major}.{py.minor} (need 3.12+)",
+            )
+        )
+        has_fail = True
+
+    # 2. Database.
+    target_db = db_path or settings.db_path
+    if not Path(target_db).exists():
+        checks.append(
+            (
+                "Database",
+                "WARN",
+                f"{target_db} does not exist yet. Run `memex ingest <export.zip>` to create.",
+            )
+        )
+    else:
+        try:
+            conn = connect_and_init(db_path)
+            try:
+                version_row = conn.execute(
+                    "SELECT value FROM schema_meta WHERE key = 'version'"
+                ).fetchone()
+                version = version_row[0] if version_row else "unknown"
+                checks.append(("Database", "OK", f"{target_db} (schema v{version})"))
+            finally:
+                conn.close()
+        except Exception as e:
+            checks.append(("Database", "FAIL", f"could not open {target_db}: {e}"))
+            has_fail = True
+
+    # 3. Embedder.
+    try:
+        embedder = get_default_embedder()
+        checks.append(("Embedder", "OK", f"{settings.embed_backend} ({embedder.model_name})"))
+    except EmbedderError as e:
+        checks.append(("Embedder", "FAIL", str(e)))
+        has_fail = True
+    except Exception as e:
+        checks.append(("Embedder", "FAIL", f"{type(e).__name__}: {e}"))
+        has_fail = True
+
+    # 4. Local HTTP server (memex serve).
+    try:
+        import urllib.error
+        import urllib.request
+
+        with urllib.request.urlopen("http://127.0.0.1:5777/health", timeout=1.5) as response:
+            if response.status == 200:
+                checks.append(("Live capture server", "OK", "http://127.0.0.1:5777"))
+            else:
+                checks.append(
+                    (
+                        "Live capture server",
+                        "WARN",
+                        f"unexpected status {response.status}",
+                    )
+                )
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        checks.append(
+            (
+                "Live capture server",
+                "WARN",
+                f"not running. Start with `memex serve` for live capture. ({type(e).__name__})",
+            )
+        )
+
+    # 5. Summarizer config (if enabled).
+    if settings.summary_enabled:
+        if not settings.anthropic_api_key:
+            checks.append(
+                (
+                    "Summarizer",
+                    "FAIL",
+                    "MEMEX_SUMMARY_ENABLED=true but ANTHROPIC_API_KEY missing.",
+                )
+            )
+            has_fail = True
+        else:
+            try:
+                import anthropic  # noqa: F401
+
+                checks.append(("Summarizer", "OK", f"enabled, model={settings.summary_model}"))
+            except ImportError:
+                checks.append(
+                    (
+                        "Summarizer",
+                        "FAIL",
+                        "`anthropic` SDK not installed. Run `uv sync --extra summaries`.",
+                    )
+                )
+                has_fail = True
+    else:
+        checks.append(("Summarizer", "OK", "disabled (MEMEX_SUMMARY_ENABLED=false)"))
+
+    # 6. Repos registered (info, never fails).
+    if Path(target_db).exists():
+        try:
+            conn = connect_and_init(db_path)
+            try:
+                n_repos = _scalar(conn, "SELECT COUNT(*) FROM repos")
+                n_convs = _scalar(conn, "SELECT COUNT(*) FROM conversations")
+            finally:
+                conn.close()
+            if n_repos == 0:
+                checks.append(
+                    (
+                        "Repos",
+                        "WARN",
+                        "0 registered. Run `memex repos add <path>` to enable repo boost.",
+                    )
+                )
+            else:
+                checks.append(("Repos", "OK", f"{n_repos} registered"))
+            if n_convs == 0:
+                checks.append(
+                    (
+                        "Corpus",
+                        "WARN",
+                        "0 conversations indexed. Run `memex ingest <export.zip>`.",
+                    )
+                )
+            else:
+                checks.append(("Corpus", "OK", f"{n_convs} conversations indexed"))
+        except Exception:
+            # DB exists but failed to read; the Database check above already
+            # flagged it.
+            pass
+
+    # Render.
+    table = Table(title="Memex doctor", show_header=True, header_style="bold")
+    table.add_column("Check", style="bold")
+    table.add_column("Status", justify="center")
+    table.add_column("Detail")
+    status_style = {
+        "OK": "[green]OK[/green]",
+        "WARN": "[yellow]WARN[/yellow]",
+        "FAIL": "[red]FAIL[/red]",
+    }
+    for name, status, detail in checks:
+        table.add_row(name, status_style[status], detail)
+    console.print(table)
+
+    if has_fail:
+        console.print(
+            "\n[red]One or more checks failed.[/red] Fix the FAIL items above and re-run."
+        )
+        raise typer.Exit(code=1)
+    n_warns = sum(1 for _, s, _ in checks if s == "WARN")
+    if n_warns:
+        console.print(
+            f"\n[yellow]{n_warns} warning(s).[/yellow] Memex will work, but some "
+            "features may be disabled until you address them."
+        )
+    else:
+        console.print("\n[green]All checks passed.[/green]")
+
+
 if __name__ == "__main__":
     app()

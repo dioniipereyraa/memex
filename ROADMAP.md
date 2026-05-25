@@ -2,7 +2,7 @@
 
 > Last updated: 2026-05-23
 
-**Current state:** Phases 0, 1, 2, and 3 closed (Phase 3 closed 2026-05-24). All Phase 3 sub-tasks shipped: auto-generated summaries on-demand, chat ↔ project/repo association, SessionStart hook, `find_related` tool. Close audit passed with 2 small fixes applied during the pass and 6 minor items deferred. **331 unit tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 3 closed. **Phase 5 in progress:** code-side packaging tasks done (PyPI prep + Linux autostart + `memex doctor` + Chrome Web Store checklist). Remaining: maintainer-side submissions (PyPI publish, Chrome Web Store), screencast, Discord update. **341 unit tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
@@ -108,9 +108,16 @@ The context Claude.ai has should also be available to Claude Code. Every phase h
 **Goal:** other people use it.
 
 **Tasks:**
-- [ ] Polish README, screencast, Reddit/Discord post (SyncChat playbook).
-- [ ] Package for `uvx memex` or installer.
-- [ ] Handle feedback.
+- [x] **Cross-platform service install (`memex install-service`).** Dispatcher CLI command that detects the host OS and runs the right installer: Windows (existing Scheduled Task via PowerShell), Linux (new systemd user unit at `~/.config/systemd/user/memex-serve.service`). macOS prints manual start instructions; launchd support deferred to 0.2.0. (2026-05-25)
+- [x] **`memex doctor` diagnostic command.** Reports OK / WARN / FAIL across Python version, database, embedder, live-capture server, summarizer config, registered repos, and indexed corpus. Exits 1 only on FAIL so it is script-safe. The "what is wrong with my setup?" answer for users. (2026-05-25)
+- [x] **PyPI prep: rename `memex` → `memex-mcp`, refresh pyproject metadata.** Description in English, `Operating System :: OS Independent` classifier, `Development Status :: 3 - Alpha`, `[project.urls]` for Homepage / Repository / Issues / Changelog. CLI entry point stays `memex`. Build smoke (`uv build`) produces a clean `memex_mcp-0.1.0-py3-none-any.whl`. Publication itself to PyPI requires the maintainer's token; commands documented. (2026-05-25)
+- [x] **Chrome Web Store submission checklist.** Manifest description translated to English, version aligned to `0.1.0`. Full submission playbook in `chrome-extension/WEB_STORE_CHECKLIST.md`: developer account fee, privacy policy URL, asset sizes (icons, screenshots, promo tiles), submission ZIP build, listing copy ready to paste, permissions justification table. Actual submission requires the maintainer's developer account. (2026-05-25)
+- [x] README quickstart revised for installable alpha (`pip install memex-mcp` / `uvx memex-mcp` path first, source path second). Autostart section unified across Windows + Linux + macOS placeholder.
+- [ ] Submit Chrome extension to the Web Store (manual, blocked on the maintainer's developer account).
+- [ ] Publish to PyPI (manual, blocked on the maintainer's PyPI token).
+- [ ] Screencast / demo video (nice to have, not blocking).
+- [ ] Update Discord post and gather feedback.
+- [ ] macOS launchd support (deferred to 0.2.0).
 
 ---
 

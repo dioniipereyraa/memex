@@ -1,20 +1,24 @@
 [project]
-name = "memex"
+name = "memex-mcp"
 version = "0.1.0"
-description = "Servidor MCP local que indexa tus chats de Claude.ai y los expone a Claude Code y Claude.ai"
+description = "Local MCP server that indexes your Claude.ai chats and exposes them to Claude Code (and, soon, to Claude.ai via remote MCP)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Dionisio Pereyra" }]
-keywords = ["mcp", "claude", "memory", "rag", "embeddings"]
+authors = [{ name = "Dionisio Pereyra", email = "dionipereyrab@gmail.com" }]
+keywords = ["mcp", "claude", "claude-code", "memory", "rag", "embeddings", "sqlite", "sqlite-vec"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing :: Indexing",
 ]
+
 dependencies = [
     "fastmcp>=0.2.0",
     "sqlite-vec>=0.1.6",
@@ -42,6 +46,12 @@ dev = [
 [project.scripts]
 memex = "memex.cli.main:app"
 memex-mcp = "memex.transports.stdio:main"
+
+[project.urls]
+Homepage = "https://github.com/dioniipereyraa/memex"
+Repository = "https://github.com/dioniipereyraa/memex"
+Issues = "https://github.com/dioniipereyraa/memex/issues"
+Changelog = "https://github.com/dioniipereyraa/memex/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
@@ -81,5 +91,5 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
 markers = [
-    "integration: tests que requieren servicios externos (Ollama, etc.)",
+    "integration: tests that require external services (Ollama, etc.)",
 ]

@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pr
 
 ## [Unreleased]
 
+### Added (Phase 5 packaging, 2026-05-25)
+- `memex doctor` diagnostic command. Checks Python version, database existence + schema version, embedder instantiability, live-capture server reachability, summarizer configuration (only if enabled), registered repos count, and indexed corpus count. Reports OK / WARN / FAIL per check, exits non-zero only on FAIL. 4 new unit tests.
+- `memex install-service` cross-platform autostart dispatcher. Detects host OS and delegates: Windows runs the existing Scheduled Task installer, Linux writes a new systemd user unit (`~/.config/systemd/user/memex-serve.service`) and starts it via `systemctl --user`. macOS prints manual instructions (launchd integration deferred to 0.2.0). 6 new unit tests covering the dispatch logic with mocked `platform.system` and `subprocess.run`.
+- New `scripts/install-autostart.sh` for Linux. Subcommands `install`, `uninstall`, `status`. Resolves `uv` lazily at install time, falls back to PATH lookup if `uv` is not absolute. Auto-creates `~/.local/state/memex/` for logs.
+- `chrome-extension/WEB_STORE_CHECKLIST.md`: full Web Store submission playbook (developer account, privacy policy URL, asset sizes, listing copy, permissions justification, post-approval checklist).
+
+### Changed
+- Package renamed from `memex` to `memex-mcp` for PyPI publication (`memex` is already taken). The CLI entry point stays `memex`. `Development Status` classifier bumped from `Pre-Alpha` to `Alpha`. Added `Operating System :: OS Independent` classifier. New `[project.urls]` section with Homepage / Repository / Issues / Changelog links.
+- README quickstart restructured: "install from PyPI" is now the recommended path (option A), source install is option B. Diagnostics section added linking `memex doctor`. Autostart section unified across Windows + Linux + macOS placeholder.
+- Chrome extension manifest description translated to English (was the last Spanish string in the extension).
+
 ## [0.1.0] - 2026-05-24
 
 Phase 3 closed: quality pass on retrieval. All four feature sub-tasks shipped and audited.
