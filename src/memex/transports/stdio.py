@@ -1,29 +1,31 @@
-"""MCP server stdio entrypoint para Memex.
+"""MCP server stdio entrypoint for Memex.
 
-Levanta un FastMCP que expone las 3 tools (`search_chats`, `get_chat`,
-`list_recent_chats`) sobre stdio. Comunicación JSON-RPC sobre stdin/stdout.
+Spins up a FastMCP that exposes the 4 tools (`search_chats`, `get_chat`,
+`list_recent_chats`, `find_related`) over stdio. JSON-RPC communication
+over stdin/stdout.
 
-Las funciones acá decoradas con `@server.tool(...)` son wrappers thin sobre las
-implementaciones puras de `memex.transports.tools`. La separación permite
-testear la lógica sin spinnear el server.
+The functions here decorated with `@server.tool(...)` are thin wrappers
+around the pure implementations in `memex.transports.tools`. The split
+lets us test the logic without spinning up the server.
 
-La conexión SQLite y el embedder se crean lazy (en la primera llamada) y se
-reutilizan durante toda la sesión del proceso. Cada cliente MCP arranca su
-propio proceso, así que no hay concurrencia compartida.
+The SQLite connection and embedder are created lazily (on the first
+call) and reused for the lifetime of the process. Each MCP client spins
+up its own process, so there is no shared concurrency.
 
-`run_in_thread=False` en cada `@server.tool`: por default FastMCP corre las
-tools sync en un thread pool, pero el módulo `sqlite3` ata cada conexión al
-thread que la creó. Con tools rápidas de I/O conviene correrlas en el event
-loop directamente y mantener una sola conexión por proceso.
+`run_in_thread=False` on each `@server.tool`: by default FastMCP runs
+sync tools in a thread pool, but the `sqlite3` module binds each
+connection to the thread that created it. For fast I/O tools it is
+preferable to run them on the event loop directly and keep a single
+connection per process.
 
-Para conectar desde Claude Code, agregá en tu `.mcp.json`:
+To connect from Claude Code, add to your `.mcp.json`:
 
     {
       "mcpServers": {
         "memex": {
           "command": "uv",
           "args": ["run", "memex-mcp"],
-          "cwd": "/path/al/repo/de/memex"
+          "cwd": "/path/to/the/memex/repo"
         }
       }
     }
@@ -44,7 +46,7 @@ from memex.core.storage.db import connect_and_init
 from memex.core.summaries import Summarizer, get_default_summarizer
 from memex.transports import tools
 
-# Logging a stderr (stdout está reservado para JSON-RPC).
+# Logging to stderr (stdout is reserved for JSON-RPC).
 logging.basicConfig(
     level=logging.INFO,
     stream=sys.stderr,
@@ -64,7 +66,7 @@ def _get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
         _conn = connect_and_init()
-        logger.info("DB abierta: %s", _conn)
+        logger.info("DB opened: %s", _conn)
     return _conn
 
 
@@ -72,23 +74,23 @@ def _get_embedder() -> Embedder:
     global _embedder
     if _embedder is None:
         _embedder = get_default_embedder()
-        logger.info("Embedder inicializado: %s", _embedder.model_name)
+        logger.info("Embedder initialized: %s", _embedder.model_name)
     return _embedder
 
 
 def _get_summarizer() -> Summarizer | None:
-    """Resuelve el summarizer una vez por proceso (cacheado).
+    """Resolve the summarizer once per process (cached).
 
-    Devuelve `None` si `MEMEX_SUMMARY_ENABLED` está en false o si no hay key.
-    El sentinel `_summarizer_resolved` distingue "no resuelto" de "resuelto a
-    None porque la feature está OFF".
+    Returns `None` if `MEMEX_SUMMARY_ENABLED` is false or there is no key.
+    The `_summarizer_resolved` sentinel distinguishes "not yet resolved"
+    from "resolved to None because the feature is OFF".
     """
     global _summarizer, _summarizer_resolved
     if not _summarizer_resolved:
         _summarizer = get_default_summarizer()
         _summarizer_resolved = True
         if _summarizer is not None:
-            logger.info("Summarizer activo: %s", _summarizer.model_name)
+            logger.info("Summarizer active: %s", _summarizer.model_name)
     return _summarizer
 
 
@@ -104,57 +106,57 @@ def search_chats(
     mode: str = "hybrid",
     repo: str | None = None,
 ) -> str:
-    """Acceso a la memoria persistente del usuario: TODOS sus chats pasados de Claude.ai.
+    """Access to the user's persistent memory: ALL their past Claude.ai chats.
 
-    Es la única tool disponible para acceder al historial real del usuario.
-    Tu memoria nativa arranca limpia en cada sesión de Claude Code; lo que
-    el usuario haya hablado en claude.ai vive solo acá.
+    This is the only tool available to access the user's real history.
+    Your native memory starts empty in every Claude Code session; anything
+    the user has discussed on claude.ai lives only here.
 
-    USAR PROACTIVAMENTE (sin que el usuario lo pida explícitamente) cuando:
-    - Mencione conversaciones o decisiones previas: "te acordás de...",
-      "viste que...", "ya hablamos de...", "el otro día charlamos sobre...",
-      "en aquel chat...", "antes te comenté...", "como dijimos...".
-    - Pregunte por un proyecto, persona, decisión o término específico que
-      podría estar en su historial pero no en tu contexto actual.
-    - Pida contexto que parece "perdido" entre sesiones o haga referencia
-      implícita a continuidad ("seguí trabajando en X", "el approach que
-      charlamos").
-    - Necesités background sobre el usuario para responder bien (qué hace,
-      qué proyectos tiene, sus preferencias técnicas).
+    USE PROACTIVELY (without the user asking explicitly) when:
+    - They mention prior conversations or decisions: "remember when...",
+      "we talked about...", "the other day we discussed...", "in that
+      chat...", "I mentioned earlier...", "as we said...".
+    - They ask about a project, person, decision, or specific term that
+      might be in their history but is not in your current context.
+    - They request context that seems "lost" between sessions or make an
+      implicit reference to continuity ("I kept working on X", "the
+      approach we discussed").
+    - You need background on the user to answer well (what they do, their
+      projects, their technical preferences).
 
-    ANTES de responder cosas como "no tengo registro", "no recuerdo",
-    "es la primera vez que oigo de eso", "no aparece en mi memoria" o
-    similares, invocá esta tool y revisá los resultados. La probabilidad
-    de que el dato esté indexado es alta.
+    BEFORE saying things like "I have no record", "I do not remember",
+    "this is the first time I hear about that", "this is not in my
+    memory" or similar, invoke this tool and check the results. The
+    likelihood the data is indexed is high.
 
     Args:
-        query: Texto a buscar (lenguaje natural). El modo `hybrid` (default)
-            combina búsqueda semántica con búsqueda lexical FTS5, así que
-            funciona bien tanto con frases descriptivas como con nombres
-            propios raros (ej. "Amarok").
-        limit: Cantidad de resultados (default 5, max 50).
-        source: Filtro opcional por origen del chat. Valores válidos:
-            'conversations' (chats sueltos), 'design_chat' (chats dentro
-            de un Project de Claude.ai), 'memory' (memoria curada).
-        mode: Estrategia de búsqueda. 'hybrid' (default, recomendado en la
-            mayoría de los casos), 'semantic' (solo vectores, para similitud
-            conceptual pura), 'lexical' (solo FTS5 BM25, ideal para nombres
-            propios exactos o términos técnicos).
-        repo: Opcional. Si estás corriendo en un repo y querés priorizar
-            chats relacionados a ese repo, pasá el path absoluto (ej.
-            "d:/dionisio/memex") o la URL del remote git. Acepta cualquier
-            forma; Memex la canonicaliza. Chats asociados al repo reciben
-            un boost de ranking proporcional al match confidence; chats
-            fuera del repo siguen apareciendo más abajo (no es filtro).
-            Requiere haber registrado el repo con `memex repos add`.
+        query: Text to look up (natural language). The `hybrid` mode
+            (default) combines semantic search with FTS5 lexical search,
+            so it works well both for descriptive phrases and for unusual
+            proper nouns (e.g. "Amarok").
+        limit: Number of results (default 5, max 50).
+        source: Optional filter by chat origin. Valid values:
+            'conversations' (standalone chats), 'design_chat' (chats
+            inside a Claude.ai Project), 'memory' (curated memory).
+        mode: Search strategy. 'hybrid' (default, recommended in most
+            cases), 'semantic' (vectors only, for pure conceptual
+            similarity), 'lexical' (FTS5 BM25 only, ideal for exact
+            proper nouns or technical terms).
+        repo: Optional. If you are running in a repo and want to
+            prioritize chats related to it, pass the absolute path
+            (e.g. "d:/dionisio/memex") or the git remote URL. Any form
+            is accepted; Memex canonicalizes it. Chats associated with
+            the repo get a ranking boost proportional to the match
+            confidence; chats outside the repo still appear lower (not a
+            filter). Requires registering the repo with `memex repos add`.
 
     Returns:
-        JSON con `query`, `mode`, `count`, y `results`: lista ordenada por
-        relevancia (distance, más bajo = más relevante en los tres modos).
-        Cada resultado incluye uuid, título, resumen, snippet, y timestamps.
+        JSON with `query`, `mode`, `count`, and `results`: list sorted by
+        relevance (distance, lower = more relevant in all three modes).
+        Each result includes uuid, title, summary, snippet, and timestamps.
     """
-    # `tools.search_chats` ya atrapa `EmbedderError` y devuelve `{"error": ...}`.
-    # Acá solo nos queda lo inesperado.
+    # `tools.search_chats` already catches `EmbedderError` and returns
+    # `{"error": ...}`. Here we only handle the unexpected.
     try:
         result = tools.search_chats(
             _get_conn(),
@@ -167,91 +169,92 @@ def search_chats(
             repo_arg=repo,
         )
     except Exception as e:
-        logger.exception("Error en search_chats")
-        # Mensaje genérico al cliente para no leakear paths/queries en el error
-        # (el detalle queda en el log via logger.exception arriba).
-        result = {"error": f"Error interno ({type(e).__name__})."}
+        logger.exception("Error in search_chats")
+        # Generic message to the client to avoid leaking paths/queries in
+        # the error (the detail goes to the log via logger.exception above).
+        result = {"error": f"Internal error ({type(e).__name__})."}
     return _serialize(result)
 
 
 @server.tool(run_in_thread=False)
 def get_chat(uuid: str, messages_limit: int = 20, messages_offset: int = 0) -> str:
-    """Trae una conversación específica del historial por uuid (con paginación).
+    """Fetch a specific conversation from history by uuid (with pagination).
 
-    USAR cuando:
-    - Ya identificaste un chat relevante (típicamente con `search_chats`) y
-      necesitás más contexto que el snippet del resultado.
-    - El usuario te dio un uuid puntual y pide revisarlo.
-    - Estás siguiendo el hilo de algo y necesitás el detalle de un chat
-      específico que apareció antes en la conversación.
+    USE when:
+    - You have already identified a relevant chat (usually via
+      `search_chats`) and need more context than the result snippet.
+    - The user gave you a specific uuid and asked you to review it.
+    - You are following a thread and need detail from a specific chat
+      that appeared earlier in the conversation.
 
-    NO usar para descubrir chats nuevos sin haber buscado primero. Para
-    encontrar chats por tema o keyword, usar `search_chats`.
+    DO NOT use to discover new chats without searching first. To find
+    chats by topic or keyword, use `search_chats`.
 
-    Si el chat es largo, llamar de nuevo con `messages_offset` para paginar
-    (response truncado se indica con `truncated: true` y `total_messages`).
+    If the chat is long, call again with `messages_offset` to paginate
+    (truncated response is indicated by `truncated: true` and
+    `total_messages`).
 
     Args:
-        uuid: UUID del chat (normalmente obtenido vía `search_chats` o
+        uuid: Chat UUID (typically obtained via `search_chats` or
             `list_recent_chats`).
-        messages_limit: Cuántos mensajes traer empezando desde el offset
-            (default 10, max 100). Los mensajes individuales se truncan a
-            1500 chars para que la respuesta total quepa en el tope de
-            tokens del cliente MCP (~17k chars worst case con el default).
-            Si necesitás más detalle por mensaje, pedí menos mensajes
-            (ej. messages_limit=5) y vas a poder pedir messages_limit
-            más alto en chats con mensajes cortos.
-        messages_offset: Cuántos mensajes saltear desde el inicio del chat
-            (default 0). Usá esto para paginar en chats largos: primer
-            llamada con offset=0, segunda con offset=10, etc.
+        messages_limit: How many messages to fetch starting from the
+            offset (default 10, max 100). Individual messages are
+            truncated to 1500 chars so the total response fits in the
+            MCP client's token cap (~17k chars worst case with the
+            default). If you need more detail per message, ask for fewer
+            messages (e.g. messages_limit=5) and you can request a
+            higher messages_limit in chats with short messages.
+        messages_offset: How many messages to skip from the start of the
+            chat (default 0). Use this to paginate long chats: first
+            call with offset=0, second with offset=10, etc.
 
     Returns:
-        JSON con metadata del chat (título, summary, source, project si
-        aplica), `total_messages`, `messages_returned`, `truncated` (bool
-        que indica si hay más mensajes después del offset+limit), y la
-        lista `messages` en orden cronológico ascendente.
+        JSON with chat metadata (title, summary, source, project if
+        applicable), `total_messages`, `messages_returned`, `truncated`
+        (bool indicating if there are more messages after offset+limit),
+        and the `messages` list in ascending chronological order.
     """
     try:
         result = tools.get_chat(_get_conn(), uuid, messages_limit, messages_offset)
     except Exception as e:
-        logger.exception("Error en get_chat")
-        # Mensaje genérico al cliente para no leakear paths/queries en el error
-        # (el detalle queda en el log via logger.exception arriba).
-        result = {"error": f"Error interno ({type(e).__name__})."}
+        logger.exception("Error in get_chat")
+        # Generic message to the client to avoid leaking paths/queries in
+        # the error (the detail goes to the log via logger.exception above).
+        result = {"error": f"Internal error ({type(e).__name__})."}
     return _serialize(result)
 
 
 @server.tool(run_in_thread=False)
 def list_recent_chats(limit: int = 10, source: str | None = None) -> str:
-    """Browse cronológico de los chats más recientes del usuario en Claude.ai.
+    """Chronological browse of the user's most recent Claude.ai chats.
 
-    USAR cuando:
-    - El usuario pregunte por actividad reciente sin un keyword puntual
-      ("qué estuve haciendo últimamente", "qué chats tuve esta semana",
-      "ponete al día con lo que vine pensando").
-    - Necesités contexto general sobre los temas que el usuario viene
-      tocando antes de profundizar.
-    - El usuario pida explorar sin saber bien qué buscar.
+    USE when:
+    - The user asks about recent activity without a specific keyword
+      ("what have I been up to", "which chats did I have this week",
+      "catch up on what I have been thinking about").
+    - You need general context on the topics the user has been working on
+      before going deeper.
+    - The user asks to explore without knowing exactly what to look for.
 
-    Para búsquedas dirigidas por tema o keyword usar `search_chats`. Esta
-    tool es para barrer cronológicamente, no para buscar.
+    For targeted topic/keyword searches use `search_chats`. This tool is
+    for chronological scanning, not for searching.
 
     Args:
-        limit: Cantidad a devolver (default 10, max 100).
-        source: Filtro opcional por origen. Mismos valores que en
+        limit: How many to return (default 10, max 100).
+        source: Optional filter by origin. Same values as in
             `search_chats`.
 
     Returns:
-        JSON con `count` y `chats`. Cada chat incluye uuid, título, summary
-        (si tiene), source, project_uuid, y timestamps.
+        JSON with `count` and `chats`. Each chat includes uuid, title,
+        summary (if any), source, project_uuid, and timestamps.
     """
     try:
         result = tools.list_recent_chats(_get_conn(), limit, source)
     except Exception as e:
-        logger.exception("Error en list_recent_chats")
-        # Mensaje genérico al cliente para no leakear paths/queries en el error
-        # (el detalle queda en el log via logger.exception arriba).
-        result = {"error": f"Error interno ({type(e).__name__})."}
+        logger.exception("Error in list_recent_chats")
+        # Generic message to the client to avoid leaking paths/queries in
+        # the error (the detail goes to the log via logger.exception above).
+        result = {"error": f"Internal error ({type(e).__name__})."}
     return _serialize(result)
 
 
@@ -261,33 +264,34 @@ def find_related(
     limit: int = 5,
     repo: str | None = None,
 ) -> str:
-    """Encuentra chats relacionados a un contexto libre (no a una query corta).
+    """Find chats related to a free-form context (not to a short query).
 
-    Distinto de `search_chats`: esta tool acepta input largo (un párrafo, el
-    contenido de un archivo, lo que se está discutiendo ahora) y devuelve
-    chats semánticamente relacionados. Internamente usa búsqueda vectorial
-    pura (sin FTS) porque para inputs largos las palabras exactas pesan
-    menos que la similitud de embedding.
+    Different from `search_chats`: this tool accepts long input (a
+    paragraph, file contents, what is being discussed right now) and
+    returns semantically related chats. Internally uses pure vector
+    search (no FTS) because for long inputs exact words weigh less than
+    embedding similarity.
 
-    USAR cuando:
-    - Querés "más como esto": tenés un texto en mano y querés ver qué chats
-      del historial trataron temas similares.
-    - El usuario está pegando un párrafo / código / log y necesitás contexto
-      previo automáticamente, sin tener que armar una query con keywords.
-    - Querés sugerir chats relevantes proactivamente sin que el usuario los pida.
+    USE when:
+    - You want "more like this": you have text in hand and want to see
+      which history chats covered similar topics.
+    - The user is pasting a paragraph / code / log and you need prior
+      context automatically, without having to craft a keyword query.
+    - You want to proactively suggest relevant chats without the user
+      asking for them.
 
-    Para búsquedas con keywords cortos, usar `search_chats`. Para una lista
-    cronológica reciente, `list_recent_chats`.
+    For short-keyword searches, use `search_chats`. For a recent
+    chronological list, `list_recent_chats`.
 
     Args:
-        context: Texto libre. Se trunca a 4000 chars antes de embebar para
-            acotar latencia.
-        limit: Cantidad de resultados (default 5, max 50).
-        repo: Opcional. Mismo boost por repo que `search_chats`.
+        context: Free-form text. Truncated to 4000 chars before embedding
+            to bound latency.
+        limit: Number of results (default 5, max 50).
+        repo: Optional. Same repo boost as `search_chats`.
 
     Returns:
-        JSON con `count`, `context_chars` (cuántos chars del input se usaron),
-        y `results` (mismo shape que `search_chats`).
+        JSON with `count`, `context_chars` (how many chars of the input
+        were used), and `results` (same shape as `search_chats`).
     """
     try:
         result = tools.find_related(
@@ -298,17 +302,17 @@ def find_related(
             repo_arg=repo,
         )
     except Exception as e:
-        logger.exception("Error en find_related")
-        result = {"error": f"Error interno ({type(e).__name__})."}
+        logger.exception("Error in find_related")
+        result = {"error": f"Internal error ({type(e).__name__})."}
     return _serialize(result)
 
 
 def main() -> None:
-    """Entrypoint que arranca el MCP server sobre stdio.
+    """Entrypoint that starts the MCP server over stdio.
 
-    Configurado en `pyproject.toml` como el script `memex-mcp`.
+    Configured in `pyproject.toml` as the `memex-mcp` script.
     """
-    logger.info("Memex MCP server arrancando (stdio).")
+    logger.info("Memex MCP server starting (stdio).")
     server.run(show_banner=False)
 
 

@@ -1,13 +1,13 @@
-"""Conexión y bootstrap de la base SQLite + sqlite-vec.
+"""SQLite + sqlite-vec connection and bootstrap.
 
-Funciones clave:
-- `get_connection(path)`: abre una conexión con la extensión sqlite-vec cargada,
-  foreign keys habilitadas y journal en WAL.
-- `init_schema(conn)`: aplica `schema.sql` (idempotente, usa IF NOT EXISTS).
-- `connect_and_init(path)`: helper de uso común.
+Key functions:
+- `get_connection(path)`: open a connection with the sqlite-vec extension
+  loaded, foreign keys enabled, and journal in WAL.
+- `init_schema(conn)`: apply `schema.sql` (idempotent, uses IF NOT EXISTS).
+- `connect_and_init(path)`: common-use helper.
 
-`PRAGMA foreign_keys` es per-conexión, así que se setea acá en cada conexión nueva,
-no en el SQL.
+`PRAGMA foreign_keys` is per-connection, so it is set here on every new
+connection, not in the SQL.
 """
 
 from __future__ import annotations
@@ -27,17 +27,18 @@ def get_connection(
     *,
     check_same_thread: bool = True,
 ) -> sqlite3.Connection:
-    """Abre una conexión SQLite con extensiones y PRAGMAs listas.
+    """Open a SQLite connection with extensions and PRAGMAs ready.
 
-    Si `db_path` es None, usa el valor de `settings.db_path`.
-    Crea el directorio padre si no existe.
-    Pasa `:memory:` para una base in-memory (útil en tests).
+    If `db_path` is None, uses the value of `settings.db_path`.
+    Creates the parent directory if it does not exist.
+    Pass `:memory:` for an in-memory DB (useful in tests).
 
-    `check_same_thread=False` deshabilita el check thread-safety de Python para
-    casos como el HTTP server (Starlette corre handlers en thread pool, lo que
-    rompería una conn creada en otro thread). El usuario es responsable de no
-    ejecutar queries concurrentes sobre la misma conn. SQLite mismo es
-    thread-safe a nivel C; el check del cliente Python es lo que se relaja.
+    `check_same_thread=False` disables Python's thread-safety check for
+    cases like the HTTP server (Starlette runs handlers in a thread
+    pool, which would break a conn created in another thread). The user
+    is responsible for not running concurrent queries on the same conn.
+    SQLite itself is thread-safe at the C level; only the Python
+    client's check is relaxed.
     """
     if db_path is None:
         target: Path | str = settings.db_path
@@ -64,7 +65,7 @@ def get_connection(
     finally:
         conn.enable_load_extension(False)
 
-    # PRAGMAs son per-conexión.
+    # PRAGMAs are per-connection.
     conn.execute("PRAGMA foreign_keys = ON")
     if connect_target != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
@@ -74,13 +75,13 @@ def get_connection(
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Aplica `schema.sql` y migraciones aditivas idempotentes.
+    """Apply `schema.sql` and idempotent additive migrations.
 
-    El `schema.sql` cubre fresh installs (todos los DDL usan IF NOT EXISTS).
-    Para bases pre-existentes que se actualizan a un schema nuevo, las
-    migraciones aditivas viven en `_apply_additive_migrations` (corre después
-    del script y suma columnas que el CREATE TABLE no aplicó porque la tabla
-    ya existía).
+    `schema.sql` covers fresh installs (all DDL uses IF NOT EXISTS). For
+    pre-existing DBs being upgraded to a newer schema, additive
+    migrations live in `_apply_additive_migrations` (runs after the
+    script and adds columns that the CREATE TABLE did not apply because
+    the table already existed).
     """
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(schema)
@@ -88,11 +89,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 
 def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
-    """ALTER TABLE ADD COLUMN para columnas opcionales agregadas post-v1.
+    """ALTER TABLE ADD COLUMN for optional columns added post-v1.
 
-    SQLite no soporta `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, así que
-    inspeccionamos `pragma_table_info` antes de cada ADD. Idempotente: re-correr
-    no rompe ni duplica trabajo.
+    SQLite does not support `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`,
+    so we inspect `pragma_table_info` before each ADD. Idempotent:
+    re-running does not break or duplicate work.
     """
     existing = {
         row["name"]
@@ -107,9 +108,9 @@ def connect_and_init(
     *,
     check_same_thread: bool = True,
 ) -> sqlite3.Connection:
-    """Atajo: abre conexión y aplica schema. Devuelve la conexión lista para usar.
+    """Shortcut: open a connection and apply the schema. Returns a ready connection.
 
-    Ver `get_connection` para el detalle de `check_same_thread`.
+    See `get_connection` for `check_same_thread` details.
     """
     conn = get_connection(db_path, check_same_thread=check_same_thread)
     init_schema(conn)
@@ -117,6 +118,6 @@ def connect_and_init(
 
 
 def schema_version(conn: sqlite3.Connection) -> str | None:
-    """Devuelve la versión del schema registrada en `schema_meta`."""
+    """Return the schema version registered in `schema_meta`."""
     row = conn.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()
     return row[0] if row else None

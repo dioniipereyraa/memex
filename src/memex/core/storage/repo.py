@@ -1,12 +1,14 @@
-"""Repositorio: CRUD sobre el schema SQLite.
+"""Repository: CRUD over the SQLite schema.
 
-Diseño:
-- Funciones, no clases. Cada función toma una `sqlite3.Connection` y modelos
-  pydantic. El llamador maneja el ciclo de vida de la conexión y de la transacción.
-- Upserts (`ON CONFLICT DO UPDATE`) para que reingestar el mismo export no falle.
-- Conversión datetime ↔ TEXT (ISO 8601 con sufijo Z) en los bordes.
-- Chunks + vec_chunks se insertan juntos a través de `add_chunk()` para mantenerlos
-  sincronizados. Si querés transacción, envolvé las llamadas en `with conn:`.
+Design:
+- Functions, not classes. Each function takes a `sqlite3.Connection` and
+  pydantic models. The caller manages the connection and transaction
+  lifecycles.
+- Upserts (`ON CONFLICT DO UPDATE`) so re-ingesting the same export does
+  not fail.
+- datetime <-> TEXT conversion (ISO 8601 with Z suffix) at the boundaries.
+- Chunks + vec_chunks are inserted together through `add_chunk()` to
+  keep them in sync. To wrap in a transaction, use `with conn:`.
 """
 
 from __future__ import annotations
@@ -35,11 +37,12 @@ if TYPE_CHECKING:
 
 
 def _to_iso(dt: datetime) -> str:
-    """Serializa datetime a ISO 8601 UTC con sufijo Z.
+    """Serialize datetime to ISO 8601 UTC with a Z suffix.
 
-    Si `dt` no tiene tzinfo, asume UTC. Si tiene otra timezone, convierte a UTC
-    primero. La conversión usa strftime explícito (no `replace("+00:00", "Z")`,
-    que rompe con timezones no-UTC convertidas).
+    If `dt` has no tzinfo, assume UTC. If it has a different timezone,
+    convert to UTC first. The conversion uses explicit strftime (not
+    `replace("+00:00", "Z")`, which breaks for non-UTC timezones after
+    conversion).
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
@@ -48,7 +51,7 @@ def _to_iso(dt: datetime) -> str:
 
 
 def _from_iso(s: str) -> datetime:
-    """Parsea ISO 8601 a datetime. Acepta sufijo Z (lo convierte a +00:00)."""
+    """Parse ISO 8601 to datetime. Accepts Z suffix (converts to +00:00)."""
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
@@ -180,14 +183,15 @@ def update_conversation_summary(
     uuid: str,
     summary: str,
 ) -> bool:
-    """Actualiza solo el campo `summary` de una conversación.
+    """Update only the `summary` field of a conversation.
 
-    Pensado para el lazy summarizer en `tools.search_chats`: una vez generado
-    el summary contra el LLM, lo persistimos sin tocar el resto del row. No
-    altera `content_hash` ni `updated_at` porque la conv no cambió, solo se le
-    agregó un derivado nuevo.
+    Designed for the lazy summarizer in `tools.search_chats`: once the
+    summary is generated against the LLM, we persist it without
+    touching the rest of the row. Does not change `content_hash` or
+    `updated_at` because the conv did not change, only a new derivative
+    was added.
 
-    Devuelve True si actualizó una fila, False si el uuid no existía.
+    Returns True if a row was updated, False if the uuid did not exist.
     """
     cursor = conn.execute(
         "UPDATE conversations SET summary = ? WHERE uuid = ?",
@@ -197,11 +201,11 @@ def update_conversation_summary(
 
 
 def get_conversation_text(conn: sqlite3.Connection, uuid: str) -> str:
-    """Reconstruye el texto canónico de una conversación a partir de sus mensajes.
+    """Rebuild the canonical text of a conversation from its messages.
 
-    Devuelve la misma forma que usa el pipeline al chunkear: cada mensaje
-    precedido por `[sender]\\n`, separados por línea en blanco. Si la
-    conversación no existe o no tiene mensajes con texto, devuelve "".
+    Returns the same shape the pipeline uses when chunking: each message
+    preceded by `[sender]\\n`, separated by a blank line. If the
+    conversation does not exist or has no messages with text, returns "".
 
     Útil para el lazy summarizer en `tools.search_chats`: dado el uuid de un
     chat candidato, reconstruye el texto sin meter pipeline en el call site.
@@ -222,8 +226,8 @@ def get_conversation_text(conn: sqlite3.Connection, uuid: str) -> str:
 
 
 def _row_to_conversation(row: sqlite3.Row) -> Conversation:
-    # `content_hash` puede no estar en bases muy viejas si la migración no
-    # corrió todavía; defensivo por las dudas.
+    # `content_hash` may not be present on very old DBs if the migration
+    # has not run yet; defensive just in case.
     try:
         content_hash = row["content_hash"]
     except (IndexError, KeyError):
@@ -315,9 +319,10 @@ def add_chunk(
     chunk: Chunk,
     embedding: Sequence[float],
 ) -> int:
-    """Inserta un chunk y su embedding en una sola operación lógica.
+    """Insert a chunk and its embedding in a single logical operation.
 
-    Devuelve el `chunks.id` autoasignado, que es también el rowid en `vec_chunks`.
+    Returns the auto-assigned `chunks.id`, which is also the rowid in
+    `vec_chunks`.
     Si el chunk ya tiene id seteado (re-ingest), lo respeta y hace UPSERT.
     """
     if chunk.id is None:
@@ -340,7 +345,7 @@ def add_chunk(
         )
         chunk_id = cursor.lastrowid
         if chunk_id is None:
-            raise RuntimeError("INSERT en chunks no devolvió lastrowid")
+            raise RuntimeError("INSERT into chunks did not return lastrowid")
     else:
         conn.execute(
             """
@@ -366,14 +371,14 @@ def add_chunk(
         )
         chunk_id = chunk.id
 
-    # Reemplazar embedding existente si lo había (DELETE + INSERT, no hay UPSERT en vec0).
+    # Replace any existing embedding (DELETE + INSERT; vec0 does not support UPSERT).
     conn.execute("DELETE FROM vec_chunks WHERE rowid = ?", (chunk_id,))
     conn.execute(
         "INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)",
         (chunk_id, sqlite_vec.serialize_float32(list(embedding))),
     )
 
-    # Sincronizar el índice FTS lexical. fts5 tampoco soporta UPSERT directo.
+    # Sync the lexical FTS index. fts5 does not support direct UPSERT either.
     conn.execute("DELETE FROM fts_chunks WHERE rowid = ?", (chunk_id,))
     conn.execute(
         "INSERT INTO fts_chunks(rowid, text) VALUES (?, ?)",
@@ -393,11 +398,11 @@ def count_chunks(conn: sqlite3.Connection) -> int:
 
 
 def delete_chunks_for_conversation(conn: sqlite3.Connection, conversation_uuid: str) -> int:
-    """Borra todos los chunks (con embeddings y FTS) de una conversación.
+    """Delete all chunks (with embeddings and FTS) of a conversation.
 
-    Necesario antes de re-chunkear una conversación: las inserciones nuevas no
-    reemplazan las viejas (los ids son AUTOINCREMENT en `chunks`), y ni
-    `vec_chunks` ni `fts_chunks` cascadean automáticamente. Devuelve la cantidad
+    Needed before re-chunking a conversation: new inserts do not replace
+    old ones (chunks ids are AUTOINCREMENT), and neither `vec_chunks` nor
+    `fts_chunks` cascade automatically. Returns the count of
     de chunks borrados.
     """
     rows = conn.execute(
@@ -433,23 +438,26 @@ def vector_search(
     limit: int = 10,
     dedupe_by_conversation: bool = True,
 ) -> list[SearchHit]:
-    """Búsqueda K-NN por similitud sobre `vec_chunks`. Une chunks y conversations.
+    """K-NN similarity search over `vec_chunks`. Joins chunks and conversations.
 
-    Devuelve `SearchHit` con el chunk, la conversación y la distancia (L2). Más bajo
-    = más parecido. Para embeddings normalizados (como nomic-embed-text) el orden L2
-    coincide con el orden por coseno.
+    Returns `SearchHit` with the chunk, the conversation, and the L2
+    distance (lower = more similar). For normalized embeddings (like
+    nomic-embed-text), L2 order matches cosine order.
 
-    Si `dedupe_by_conversation` es True (default), devuelve a lo sumo un chunk por
-    conversación: el más cercano. Esto evita que el top-N esté dominado por varios
-    chunks del mismo chat. Para conseguir suficientes conversaciones únicas, se piden
-    `limit * OVERSAMPLE_FACTOR` chunks a vec_chunks y se dedupea en Python.
+    If `dedupe_by_conversation` is True (default), returns at most one
+    chunk per conversation: the closest one. This prevents the top-N
+    from being dominated by several chunks of the same chat. To get
+    enough unique conversations, we request `limit * OVERSAMPLE_FACTOR`
+    chunks from vec_chunks and dedupe in Python.
 
-    Si `dedupe_by_conversation` es False, devuelve los `limit` chunks más cercanos
-    sin importar a qué chat pertenecen. Útil para análisis o debugging.
+    If `dedupe_by_conversation` is False, returns the `limit` closest
+    chunks regardless of which chat they belong to. Useful for analysis
+    or debugging.
 
-    Nota: cuando hay JOINs, sqlite-vec exige restringir `k` en el WHERE en vez de
-    apoyarse en LIMIT (porque el LIMIT se evalúa después del join). Por eso se pasa
-    `k = ?` además de `MATCH ?`.
+    Note: when JOINs are involved, sqlite-vec requires restricting `k`
+    in the WHERE clause instead of relying on LIMIT (because LIMIT is
+    evaluated after the join). That is why `k = ?` is passed in addition
+    to `MATCH ?`.
     """
     serialized = sqlite_vec.serialize_float32(list(query_embedding))
     oversample_factor = 5
@@ -494,18 +502,18 @@ def text_search(
     limit: int = 10,
     dedupe_by_conversation: bool = True,
 ) -> list[SearchHit]:
-    """Búsqueda lexical BM25 sobre `fts_chunks`. Une chunks y conversations.
+    """Lexical BM25 search over `fts_chunks`. Joins chunks and conversations.
 
-    FTS5 devuelve la columna `rank` con el score BM25 (más negativo = mejor
-    match). `SearchHit.distance` se llena con ese rank tal cual para que la
-    semántica "menor = mejor" sea consistente con `vector_search`.
+    FTS5 returns the `rank` column with the BM25 score (more negative =
+    better match). `SearchHit.distance` is set to that rank as-is so the
+    "lower = better" semantics stays consistent with `vector_search`.
 
-    El tokenizer del schema (unicode61, remove_diacritics=2) hace que la query
-    se normalice igual que el texto indexado: "amarok" matchea "Amarók",
+    The schema tokenizer (unicode61, remove_diacritics=2) normalizes the
+    query the same way as the indexed text: "amarok" matches "Amarók",
     "AMAROK", etc.
 
-    Si la query no es válida para FTS5 (caracteres especiales sin escapar,
-    operadores rotos), devuelve lista vacía en vez de propagar el error.
+    If the query is not valid for FTS5 (special unescaped chars, broken
+    operators), returns an empty list instead of propagating the error.
     """
     if not query.strip():
         return []
@@ -538,8 +546,8 @@ def text_search(
             (fts_query, fts_limit),
         ).fetchall()
     except sqlite3.OperationalError:
-        # FTS5 rechaza queries malformadas (operadores raros, paréntesis sueltos).
-        # Preferimos devolver vacío a que el cliente vea un error oscuro.
+        # FTS5 rejects malformed queries (odd operators, unbalanced parens).
+        # We prefer to return empty rather than show the client an obscure error.
         return []
 
     hits: list[SearchHit] = []
@@ -564,18 +572,20 @@ def hybrid_search(
     dedupe_by_conversation: bool = True,
     rrf_k: int = 60,
 ) -> list[SearchHit]:
-    """Combina `vector_search` y `text_search` con Reciprocal Rank Fusion.
+    """Combine `vector_search` and `text_search` with Reciprocal Rank Fusion.
 
-    RRF asigna a cada chunk un score = Σ 1 / (rrf_k + rank_i) sumando sobre
-    los rankings donde aparece. `rrf_k=60` es el default canónico (Cormack
-    2009); valores entre 20 y 100 son razonables. El score combinado es
-    robusto a las distintas escalas de distancia L2 vs rank BM25.
+    RRF assigns each chunk a score = sum of 1 / (rrf_k + rank_i) over
+    the rankings where it appears. `rrf_k=60` is the canonical default
+    (Cormack 2009); values between 20 and 100 are reasonable. The
+    combined score is robust to the different scales of L2 distance vs
+    BM25 rank.
 
-    Pide `limit * 5` candidatos a cada motor para tener buena cobertura antes
-    de fusionar. Después aplica dedup por conversación si corresponde.
+    Requests `limit * 5` candidates from each engine to ensure good
+    coverage before fusing. Then applies per-conversation dedup if
+    applicable.
 
-    El `distance` del `SearchHit` resultante es `-rrf_score` para mantener la
-    convención "menor = mejor" del resto del repo.
+    The resulting `SearchHit.distance` is `-rrf_score` to keep the
+    "lower = better" convention used elsewhere in the repo.
     """
     if limit < 1:
         limit = 1
@@ -586,7 +596,7 @@ def hybrid_search(
     vec_hits = vector_search(conn, query_embedding, limit=fetch_limit, dedupe_by_conversation=False)
     text_hits = text_search(conn, query, limit=fetch_limit, dedupe_by_conversation=False)
 
-    # RRF: cada chunk acumula score por aparecer en cada lista.
+    # RRF: each chunk accumulates score by appearing in each list.
     scores: dict[int, float] = {}
     hits_by_id: dict[int, SearchHit] = {}
     for rank, hit in enumerate(vec_hits, start=1):
@@ -603,7 +613,7 @@ def hybrid_search(
     if not scores:
         return []
 
-    # Ordenar por score descendente, dedupear por conversación si aplica.
+    # Sort by descending score, dedupe by conversation if applicable.
     ordered_ids = sorted(scores, key=lambda cid: -scores[cid])
     result: list[SearchHit] = []
     seen_convs: set[str] = set()
@@ -613,7 +623,7 @@ def hybrid_search(
             if base.conversation.uuid in seen_convs:
                 continue
             seen_convs.add(base.conversation.uuid)
-        # Reemplazamos el distance original por -score para que "menor = mejor".
+        # Replace the original distance with -score so "lower = better".
         merged = base.model_copy(update={"distance": -scores[cid]})
         result.append(merged)
         if len(result) >= limit:
@@ -622,17 +632,18 @@ def hybrid_search(
 
 
 def rebuild_fts_index(conn: sqlite3.Connection) -> int:
-    """Repuebla `fts_chunks` desde `chunks`. Útil para bases pre-existentes
-    que se actualizaron al schema con FTS5 sin re-ingestar.
+    """Repopulate `fts_chunks` from `chunks`. Useful for pre-existing DBs
+    upgraded to the FTS5 schema without re-ingesting.
 
-    Borra el contenido actual del índice FTS y vuelve a insertar todos los
-    chunks. Devuelve la cantidad de filas indexadas. No toca `chunks` ni
+    Deletes the current FTS index content and re-inserts all chunks.
+    Returns the number of rows indexed. Does not touch `chunks` or
     `vec_chunks`.
 
-    Es una operación de mantenimiento auto-contenida, así que commitea al final
-    (a diferencia de las funciones tipo `insert_*` que dejan el commit al
-    llamador). Si vas a hacer más escrituras en la misma transacción, llamala
-    explícitamente con `conn.in_transaction` apropiado y commit/rollback vos.
+    Self-contained maintenance operation, so it commits at the end
+    (unlike `insert_*` functions which leave the commit to the caller).
+    If you plan more writes in the same transaction, call it explicitly
+    with the appropriate `conn.in_transaction` handling and commit or
+    rollback yourself.
     """
     conn.execute("DELETE FROM fts_chunks")
     cursor = conn.execute("INSERT INTO fts_chunks(rowid, text) SELECT id, text FROM chunks")
@@ -642,20 +653,20 @@ def rebuild_fts_index(conn: sqlite3.Connection) -> int:
 
 
 def _sanitize_fts_query(query: str) -> str:
-    """Convierte una query libre en una válida para FTS5.
+    """Convert a free-form query into one valid for FTS5.
 
-    FTS5 acepta una mini-lenguaje (AND, OR, NOT, NEAR, comillas, etc.) que se
-    rompe si el usuario tipea cosas con paréntesis, comillas sueltas, etc.
-    Para una búsqueda casual lo más seguro es quedarse con las palabras
-    alfanuméricas y citarlas como frase implícita: "palabra1 palabra2 ..."
+    FTS5 accepts a mini-language (AND, OR, NOT, NEAR, quotes, etc.) that
+    breaks if the user types things with parens, stray quotes, etc. For
+    casual search the safest path is to keep alphanumeric words and
+    quote them as an implicit phrase: "word1 word2 ..."
 
-    Si todas las palabras se filtran, devuelve "".
+    If all words are filtered out, returns "".
     """
     tokens = re.findall(r"\w+", query, flags=re.UNICODE)
     if not tokens:
         return ""
-    # Cada palabra entre comillas dobles para que FTS5 no las interprete como
-    # operadores. Las quotes hacen match exacto sobre tokens.
+    # Each word in double quotes so FTS5 does not interpret them as
+    # operators. The quotes force exact-token matching.
     return " ".join(f'"{t}"' for t in tokens)
 
 
@@ -684,7 +695,7 @@ def _row_to_search_hit(row: sqlite3.Row) -> SearchHit:
     return SearchHit(chunk=chunk, conversation=conv, distance=row["distance"], snippet=snippet)
 
 
-# ---------- Repos and chat ↔ repo associations ----------
+# ---------- Repos and chat-to-repo associations ----------
 
 
 def insert_repo(conn: sqlite3.Connection, info: RepoInfo) -> None:

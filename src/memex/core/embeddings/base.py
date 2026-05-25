@@ -1,19 +1,18 @@
-"""Interfaz Embedder abstracta + excepción común.
+"""Abstract Embedder interface + shared exception.
 
-Todo lo que entre al pipeline de retrieval pasa por un `Embedder`. Esta
-interfaz permite cambiar de modelo (Ollama local, API remota, fake en tests)
-sin tocar el resto del core.
+Everything that goes through the retrieval pipeline passes through an
+`Embedder`. This interface lets us swap models (local Ollama, remote
+API, fake in tests) without touching the rest of core.
 
-Cualquier implementación nueva debe:
-- Exponer `dim` (dimensión del vector que produce; debe coincidir con el de
-  la tabla `vec_chunks`).
-- Exponer `model_name` (string informativo para logging y schema_meta).
-- Implementar `embed(texts)` que devuelva una lista paralela de vectores.
+Any new implementation must:
+- Expose `dim` (vector dimension; must match the `vec_chunks` table).
+- Expose `model_name` (informational string for logging and schema_meta).
+- Implement `embed(texts)` to return a parallel list of vectors.
 
-Convención: los vectores se devuelven L2-normalizados cuando es posible,
-para que la distancia L2 de sqlite-vec coincida con el ranking por similitud
-coseno. Las implementaciones pueden saltearse la normalización si su modelo
-ya devuelve unit vectors (raro), o si el llamador la desactiva explícitamente.
+Convention: vectors are returned L2-normalized when possible, so that
+sqlite-vec L2 distance matches cosine-similarity ranking. Implementations
+may skip normalization if their model already returns unit vectors (rare)
+or if the caller explicitly disables it.
 """
 
 from __future__ import annotations
@@ -24,46 +23,46 @@ from collections.abc import Sequence
 
 
 class EmbedderError(Exception):
-    """Error operativo de un Embedder.
+    """Operational error of an Embedder.
 
-    Las implementaciones la levantan con un mensaje claro al usuario en lugar
-    de propagar excepciones de bajo nivel (errores de conexión, timeouts,
-    modelos no instalados). Pensada para que el CLI y el MCP server la atrapen
-    y devuelvan un mensaje accionable.
+    Implementations raise this with a clear user-facing message instead
+    of propagating low-level exceptions (connection errors, timeouts,
+    missing models). Designed so the CLI and the MCP server catch it
+    and return an actionable message.
     """
 
 
 class Embedder(ABC):
-    """Convierte textos a vectores de dimensión fija."""
+    """Converts texts to fixed-dimension vectors."""
 
     @property
     @abstractmethod
     def dim(self) -> int:
-        """Dimensión del vector. Constante para una instancia dada."""
+        """Vector dimension. Constant for a given instance."""
 
     @property
     @abstractmethod
     def model_name(self) -> str:
-        """Identificador del modelo. Usado en logging y stats."""
+        """Model identifier. Used in logging and stats."""
 
     @abstractmethod
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        """Embebe una secuencia de textos. Devuelve una lista paralela.
+        """Embed a sequence of texts. Returns a parallel list.
 
-        - Para `texts = []` debe devolver `[]`.
-        - El largo de la lista resultante debe ser igual al de `texts`.
-        - Cada vector debe tener largo `self.dim`.
+        - For `texts = []` must return `[]`.
+        - The length of the result must equal that of `texts`.
+        - Each vector must have length `self.dim`.
         """
 
     def embed_one(self, text: str) -> list[float]:
-        """Atajo: embebe un solo texto."""
+        """Shortcut: embed a single text."""
         return self.embed([text])[0]
 
 
 def l2_normalize(vec: Sequence[float]) -> list[float]:
-    """Devuelve el vector escalado para que su norma L2 sea 1.
+    """Return the vector scaled so its L2 norm is 1.
 
-    Si el vector es todo ceros (norma 0), lo devuelve tal cual.
+    If the vector is all zeros (norm 0), returns it as-is.
     """
     norm = math.sqrt(sum(x * x for x in vec))
     if norm == 0:

@@ -1,18 +1,18 @@
-"""Renderiza el `content[]` de un mensaje de Claude.ai a texto plano.
+"""Render a Claude.ai message `content[]` to plain text.
 
-Tipos de bloque soportados (vistos en el export real):
-- `type=text`: texto directo.
-- `type=tool_use`: marker `[tool_use: <name>] <input>`. Input se serializa a JSON,
-  truncado a `MAX_TOOL_INPUT_CHARS`.
-- `type=tool_result`: marker `[result] <texto>` (o `[result error]` si is_error=true).
-  Texto truncado a `MAX_TOOL_RESULT_CHARS`.
+Supported block types (seen in the real export):
+- `type=text`: direct text.
+- `type=tool_use`: marker `[tool_use: <name>] <input>`. Input is
+  serialized to JSON, truncated to `MAX_TOOL_INPUT_CHARS`.
+- `type=tool_result`: marker `[result] <text>` (or `[result error]` if
+  `is_error=true`). Text truncated to `MAX_TOOL_RESULT_CHARS`.
 
-Bloques con `type` desconocido se ignoran silenciosamente. Esto deja la puerta
-abierta a tipos nuevos en futuros exports sin romper el ingest.
+Blocks with an unknown `type` are silently ignored. This leaves the door
+open for new types in future exports without breaking ingest.
 
-El texto resultante es lo que va a `messages.text` y a los chunks para retrieval.
-El `content[]` original se conserva en `messages.raw_content` por si después se
-quiere parsing más fino sobre tool_use / tool_result.
+The resulting text is what goes to `messages.text` and to the chunks
+for retrieval. The original `content[]` is kept in `messages.raw_content`
+in case finer parsing on tool_use / tool_result is needed later.
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ MAX_TOOL_RESULT_CHARS = 1000
 
 
 def render_content(blocks: Iterable[Any]) -> str:
-    """Convierte una lista de content blocks a un solo string.
+    """Convert a list of content blocks into a single string.
 
-    Une los bloques renderizados con `\\n`. Bloques inválidos o desconocidos
-    se ignoran (devuelven cadena vacía).
+    Joins rendered blocks with `\\n`. Invalid or unknown blocks are
+    ignored (they return an empty string).
     """
     parts: list[str] = []
     for block in blocks:
@@ -40,7 +40,7 @@ def render_content(blocks: Iterable[Any]) -> str:
 
 
 def has_tool_use(blocks: Iterable[Any]) -> bool:
-    """True si la lista contiene algún bloque tool_use o tool_result."""
+    """True if the list contains any tool_use or tool_result block."""
     return any(isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result") for b in blocks)
 
 
@@ -81,7 +81,7 @@ def _render_tool_result(block: dict[str, Any]) -> str:
 
 
 def _extract_result_text(content: Any) -> str:
-    """tool_result.content puede ser str o list de blocks con campo `text`."""
+    """tool_result.content may be a str or a list of blocks with a `text` field."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):

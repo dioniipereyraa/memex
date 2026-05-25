@@ -1,17 +1,17 @@
-// Popup de Memex Live Capture. Muestra stats y permite configurar el servidor.
+// Memex Live Capture popup. Shows stats and lets the user configure the server.
 
 const $ = (id) => document.getElementById(id);
 
 const fmtAgo = (ts) => {
   if (!ts) return "-";
   const seconds = Math.floor((Date.now() - ts) / 1000);
-  if (seconds < 60) return `${seconds}s atrás`;
+  if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m atrás`;
+  if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h atrás`;
+  if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
-  return `${days}d atrás`;
+  return `${days}d ago`;
 };
 
 const renderChip = (state) => {
@@ -19,13 +19,13 @@ const renderChip = (state) => {
   chip.className = "chip";
   if (state === true) {
     chip.classList.add("ok");
-    chip.textContent = "responde";
+    chip.textContent = "responding";
   } else if (state === false) {
     chip.classList.add("bad");
-    chip.textContent = "no responde";
+    chip.textContent = "no response";
   } else {
     chip.classList.add("unknown");
-    chip.textContent = "desconocido";
+    chip.textContent = "unknown";
   }
 };
 
@@ -41,7 +41,7 @@ const render = ({ stats, config }) => {
   const last = stats?.lastIngest;
   if (last && last.uuid) {
     $("last-ingest").hidden = false;
-    $("last-title").textContent = last.title || "(sin título)";
+    $("last-title").textContent = last.title || "(no title)";
     $("last-when").textContent = fmtAgo(last.at);
   } else {
     $("last-ingest").hidden = true;
@@ -81,7 +81,7 @@ $("save-url").addEventListener("click", async () => {
 
 $("ping").addEventListener("click", async () => {
   renderChip(null);
-  $("server-chip").textContent = "probando…";
+  $("server-chip").textContent = "testing...";
   await chrome.runtime.sendMessage({ type: "ping-server" });
   refresh();
 });
@@ -91,5 +91,5 @@ $("reset").addEventListener("click", async () => {
   refresh();
 });
 
-// Refresh inicial + ping al abrir.
+// Initial refresh + ping when the popup opens.
 chrome.runtime.sendMessage({ type: "ping-server" }).finally(refresh);

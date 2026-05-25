@@ -1,19 +1,19 @@
-"""Interfaz Summarizer abstracta + excepción común.
+"""Abstract Summarizer interface + shared exception.
 
-Un `Summarizer` recibe el texto canónico de una conversación (mensajes
-concatenados con headers `[sender]\n`) y devuelve un resumen corto en
-lenguaje natural. Mismo patrón que `Embedder`: el core depende de la
-interfaz, las implementaciones concretas (Anthropic, fake) viven en
-módulos hermanos. El factory en `__init__.py` elige según config.
+A `Summarizer` takes the canonical text of a conversation (concatenated
+messages with `[sender]\n` headers) and returns a short natural-language
+summary. Same pattern as `Embedder`: core depends on the interface;
+concrete implementations (Anthropic, fake) live in sibling modules. The
+factory in `__init__.py` picks one based on config.
 
-Convenciones:
-- Si el modelo subyacente falla (sin API key, rate limit, red caída),
-  la implementación levanta `SummarizerError` con un mensaje accionable.
-  El pipeline atrapa eso y sigue sin resumen (silent fail), no aborta el
-  ingest del chat.
-- El texto del summary no incluye comillas externas, prefijos tipo
-  "Resumen:" ni markdown. Es texto plano listo para usar en
-  `list_recent_chats` o como contexto extra de retrieval.
+Conventions:
+- If the underlying model fails (missing API key, rate limit, network
+  down), the implementation raises `SummarizerError` with an actionable
+  message. The pipeline catches it and continues without a summary
+  (silent fail), it does not abort the chat ingest.
+- The summary text does not include external quotes, prefixes like
+  "Summary:" or markdown. Plain text ready to use in `list_recent_chats`
+  or as extra retrieval context.
 """
 
 from __future__ import annotations
@@ -22,32 +22,32 @@ from abc import ABC, abstractmethod
 
 
 class SummarizerError(Exception):
-    """Error operativo de un Summarizer.
+    """Operational error of a Summarizer.
 
-    Las implementaciones la levantan con un mensaje claro al usuario en
-    lugar de propagar excepciones de bajo nivel (HTTPError, AuthError,
-    timeouts). El pipeline la atrapa, logea un warning, y persiste el
-    chat sin summary.
+    Implementations raise this with a clear user-facing message instead
+    of propagating low-level exceptions (HTTPError, AuthError, timeouts).
+    The pipeline catches it, logs a warning, and persists the chat
+    without a summary.
     """
 
 
 class Summarizer(ABC):
-    """Convierte el texto de una conversación en un resumen corto."""
+    """Turns the text of a conversation into a short summary."""
 
     @property
     @abstractmethod
     def model_name(self) -> str:
-        """Identificador del modelo. Usado en logging y, eventualmente, en
-        metadata de la conversación para detectar cambios de modelo."""
+        """Model identifier. Used in logging and, eventually, in
+        conversation metadata to detect model changes."""
 
     @abstractmethod
     def summarize(self, text: str, *, title: str | None = None) -> str:
-        """Genera un resumen del texto de la conversación.
+        """Generate a summary of the conversation text.
 
-        - `text`: texto canónico de la conversación (mensajes concatenados).
-        - `title`: título del chat (opcional, ayuda al modelo a anclar el tema).
+        - `text`: canonical text of the conversation (messages concatenated).
+        - `title`: chat title (optional, helps the model anchor the topic).
 
-        Devuelve el resumen como string. Si la implementación no puede
-        producir un resumen (rate limit, sin key, error de red), levanta
-        `SummarizerError` con un mensaje accionable.
+        Returns the summary as a string. If the implementation cannot
+        produce a summary (rate limit, missing key, network error), it
+        raises `SummarizerError` with an actionable message.
         """

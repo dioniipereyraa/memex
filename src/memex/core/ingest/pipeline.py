@@ -1,20 +1,21 @@
-"""Orquestador end-to-end del ingest.
+"""End-to-end ingest orchestrator.
 
-Toma un zip del export oficial de Claude.ai, una conexión SQLite (ya con schema)
-y un `Embedder`. Hace parse → render → chunk → embed → store en orden correcto:
+Takes a zip of the official Claude.ai export, a SQLite connection (with
+schema already applied) and an `Embedder`. Runs parse -> render -> chunk
+-> embed -> store in the right order:
 
-1. Projects primero (son FK target de conversations).
-2. Design chats (referencian projects).
-3. Conversations sueltas.
-4. Memoria curada (memories.json) como conversación sintética.
+1. Projects first (they are the FK target of conversations).
+2. Design chats (they reference projects).
+3. Standalone conversations.
+4. Curated memory (memories.json) as a synthetic conversation.
 
-Para cada conversación: inserta conv, inserta sus mensajes, junta el texto
-renderizado en una sola string (con headers `[sender]\\n`), chunkea, embebe en
-batches, guarda chunks + vectores. Antes de chunkear, borra los chunks viejos
-de esa conversación para que el re-ingest sea idempotente.
+For each conversation: insert conv, insert its messages, join the
+rendered text into a single string (with `[sender]\\n` headers), chunk,
+embed in batches, store chunks + vectors. Before chunking we delete the
+old chunks for that conversation so re-ingest is idempotent.
 
-Las inserciones se hacen dentro de una transacción por conversación, así un
-error en una no rompe el progreso del resto.
+Inserts happen inside a per-conversation transaction, so an error in one
+does not break the progress of the rest.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 
 class IngestSummary(BaseModel):
-    """Counts del ingest. Útil para mostrarle al usuario qué se cargó."""
+    """Ingest counts. Useful to report to the user what was loaded."""
 
     projects: int = 0
     conversations: int = 0
@@ -67,18 +68,20 @@ def ingest_export(
     chunk_overlap: int | None = None,
     batch_size: int = 32,
 ) -> IngestSummary:
-    """Pipeline completo. Devuelve un `IngestSummary` con counts y errores.
+    """Full pipeline. Returns an `IngestSummary` with counts and errors.
 
-    `chunk_size` y `chunk_overlap` se expresan en tokens. Si no se pasan, se
-    toman del config.
+    `chunk_size` and `chunk_overlap` are expressed in tokens. If not
+    provided, taken from config.
 
-    `batch_size` controla cuántos chunks se embeben por llamada a Ollama. 32
-    suele dar buen balance latencia/throughput sin meter mucha presión al servicio.
+    `batch_size` controls how many chunks are embedded per Ollama call.
+    32 tends to give a good latency/throughput balance without putting
+    too much pressure on the service.
 
-    Nota sobre summaries: el pipeline NO genera summaries por LLM (Fase 3 los
-    movió a generación on-demand en `tools.search_chats`). El `content_hash`
-    se persiste igual, porque el lazy summarizer lo usa para detectar si una
-    conv cambió y forzar regen aunque ya haya un summary guardado.
+    Note on summaries: the pipeline does NOT generate LLM summaries
+    (Phase 3 moved them to on-demand generation in
+    `tools.search_chats`). The `content_hash` is still persisted because
+    the lazy summarizer uses it to detect if a conv changed and force
+    regeneration even when a summary is already cached.
     """
     cs = chunk_size if chunk_size is not None else settings.chunk_size
     co = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
@@ -88,7 +91,7 @@ def ingest_export(
     with zipfile.ZipFile(zp) as zf:
         names = zf.namelist()
 
-        # 1) Projects primero (FK target).
+        # 1) Projects first (FK target).
         for name in names:
             if name.startswith("projects/") and name.endswith(".json"):
                 try:
@@ -98,11 +101,11 @@ def ingest_export(
                     summary.projects += 1
                     conn.commit()
                 except Exception as e:
-                    logger.exception("Error parseando %s", name)
+                    logger.exception("Error parsing %s", name)
                     summary.errors.append(f"{name}: {e}")
                     conn.rollback()
 
-        # 2) Design chats (linkean a projects).
+        # 2) Design chats (linked to projects).
         for name in names:
             if name.startswith("design_chats/") and name.endswith(".json"):
                 try:
@@ -113,11 +116,11 @@ def ingest_export(
                     )
                     conn.commit()
                 except Exception as e:
-                    logger.exception("Error en %s", name)
+                    logger.exception("Error in %s", name)
                     summary.errors.append(f"{name}: {e}")
                     conn.rollback()
 
-        # 3) Conversations sueltas.
+        # 3) Standalone conversations.
         if "conversations.json" in names:
             try:
                 with zf.open("conversations.json") as f:
@@ -136,15 +139,15 @@ def ingest_export(
                         )
                         conn.commit()
                     except Exception as e:
-                        logger.exception("Error en conv %s", conv.uuid)
+                        logger.exception("Error in conv %s", conv.uuid)
                         summary.errors.append(f"conversations.json/{conv.uuid}: {e}")
                         conn.rollback()
             except Exception as e:
-                logger.exception("Error parseando conversations.json")
+                logger.exception("Error parsing conversations.json")
                 summary.errors.append(f"conversations.json: {e}")
                 conn.rollback()
 
-        # 4) Memoria curada como conversación sintética.
+        # 4) Curated memory as a synthetic conversation.
         if "memories.json" in names:
             try:
                 with zf.open("memories.json") as f:
@@ -154,7 +157,7 @@ def ingest_export(
                     _ingest_conversation(conn, embedder, conv, [msg], summary, cs, co, batch_size)
                     conn.commit()
             except Exception as e:
-                logger.exception("Error parseando memories.json")
+                logger.exception("Error parsing memories.json")
                 summary.errors.append(f"memories.json: {e}")
                 conn.rollback()
 
@@ -170,23 +173,25 @@ def ingest_single_conversation(
     chunk_overlap: int | None = None,
     batch_size: int = 32,
 ) -> IngestSummary:
-    """Pipeline para UN solo chat (parsing + chunks + embeddings + storage).
+    """Pipeline for ONE chat (parsing + chunks + embeddings + storage).
 
-    Útil para la captura en vivo: la Chrome ext captura el payload del API
-    de Claude.ai (mismo shape que un item de `conversations.json`) y lo manda
-    al endpoint HTTP local. Este endpoint llama a esta función con el dict ya
-    parseado.
+    Useful for live capture: the Chrome ext captures the Claude.ai API
+    payload (same shape as an item in `conversations.json`) and posts it
+    to the local HTTP endpoint. That endpoint calls this function with
+    the already-parsed dict.
 
-    Si `source` es `DESIGN_CHAT`, el payload tiene que tener `project` y
-    `messages`. Si es `CONVERSATIONS`, tiene `name` y `chat_messages`. Si el
-    `project_uuid` referenciado no existe en la base, se ingesta orphan
-    (project_uuid=None) sin romper.
+    If `source` is `DESIGN_CHAT`, the payload must have `project` and
+    `messages`. If it is `CONVERSATIONS`, it has `name` and
+    `chat_messages`. If the referenced `project_uuid` is not in the DB,
+    the conversation is ingested orphan (project_uuid=None) without
+    failing.
 
-    Devuelve un `IngestSummary` con counts. Para una sola conv esperás
-    `conversations=1` y `messages` + `chunks` segun el tamaño.
+    Returns an `IngestSummary` with counts. For a single conv expect
+    `conversations=1` plus `messages` and `chunks` depending on size.
 
-    Hace `conn.commit()` al final si todo salió bien; `conn.rollback()` si
-    hubo error en el camino (mantiene la base consistente).
+    Calls `conn.commit()` at the end if everything went well;
+    `conn.rollback()` if there was an error along the way (keeps the DB
+    consistent).
     """
     cs = chunk_size if chunk_size is not None else settings.chunk_size
     co = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
@@ -202,7 +207,7 @@ def ingest_single_conversation(
     return summary
 
 
-# ---------- helpers privados ----------
+# ---------- private helpers ----------
 
 
 def _ingest_conversation(
@@ -215,19 +220,21 @@ def _ingest_conversation(
     chunk_overlap_tokens: int,
     batch_size: int,
 ) -> None:
-    """Inserta una conversación con sus mensajes y chunks/embeddings.
+    """Insert a conversation with its messages and chunks/embeddings.
 
-    Idempotente: re-ingestar la misma conversación reemplaza sus chunks viejos
-    (upsert del conv y mensajes vía `ON CONFLICT`, delete + reinsert de chunks).
+    Idempotent: re-ingesting the same conversation replaces its old
+    chunks (upsert of conv and messages via `ON CONFLICT`, delete +
+    reinsert of chunks).
 
-    Si `conv.project_uuid` referencia un project que no está en la base (sucede
-    en el export real: design_chats apuntan a projects que el usuario tiene pero
-    que no fueron exportados), se setea a None para no violar el FK.
+    If `conv.project_uuid` references a project not in the DB (happens
+    in real exports: design_chats point to projects the user has but
+    that were not exported), it is set to None to avoid FK violations.
 
-    El `content_hash` (SHA-256 del texto canónico) se calcula y persiste acá
-    aunque no se genere summary: lo consume el lazy summarizer en
-    `tools.search_chats` para detectar si una conv cambió desde la última
-    generación y forzar regen aunque ya haya un summary cacheado.
+    The `content_hash` (SHA-256 of the canonical text) is computed and
+    persisted here even when no summary is generated: the lazy
+    summarizer in `tools.search_chats` consumes it to detect whether a
+    conv has changed since the last generation and force regen even
+    when a summary is already cached.
     """
     if conv.project_uuid is not None:
         exists = conn.execute(
@@ -235,23 +242,24 @@ def _ingest_conversation(
         ).fetchone()
         if exists is None:
             logger.info(
-                "Conversación %s referencia project %s que no está en el export; "
-                "se ingesta sin asociar a project.",
+                "Conversation %s references project %s which is not in the export; "
+                "ingesting without project association.",
                 conv.uuid,
                 conv.project_uuid,
             )
             conv = conv.model_copy(update={"project_uuid": None})
 
-    # `_join_messages` no toca DB, solo procesa los objetos en memoria.
-    # Lo llamamos temprano para tener el hash listo antes del upsert.
+    # `_join_messages` does not touch the DB, only processes the objects
+    # in memory. We call it early to have the hash ready before the upsert.
     full_text, msg_map = _join_messages(messages, summary)
     content_hash = _hash_content(full_text) if full_text else None
 
-    # Preservar el summary cacheado si la conv ya existía y el contenido NO
-    # cambió. Importante: el upsert pisa `summary` con `excluded.summary`,
-    # así que si dejamos el `conv.summary` del parser (típicamente None o el
-    # summary del export oficial), perdemos el summary lazy que pudo haberse
-    # generado en queries previas. Acá lo restauramos si aplica.
+    # Preserve the cached summary if the conv already existed and the
+    # content did NOT change. Important: the upsert overwrites `summary`
+    # with `excluded.summary`, so if we leave the parser's `conv.summary`
+    # (typically None or the official export summary), we lose the lazy
+    # summary that may have been generated by previous queries. Restore
+    # it here if applicable.
     if content_hash is not None:
         existing = repo.get_conversation(conn, conv.uuid)
         if existing is not None and existing.summary and existing.content_hash == content_hash:
@@ -266,7 +274,7 @@ def _ingest_conversation(
         repo.insert_message(conn, msg)
         summary.messages += 1
 
-    # Limpiar chunks viejos para que la re-ingesta sea idempotente.
+    # Clean up old chunks so re-ingest is idempotent.
     repo.delete_chunks_for_conversation(conn, conv.uuid)
 
     if not full_text:
@@ -304,8 +312,8 @@ def _ingest_conversation(
 
 
 def _hash_content(text: str) -> str:
-    """SHA-256 hex del texto canónico. Estable, suficiente para detectar
-    cambios. No es cripto: solo un fingerprint para comparar."""
+    """SHA-256 hex of the canonical text. Stable, enough to detect changes.
+    Not cryptographic: just a fingerprint to compare."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -341,11 +349,11 @@ def _scan_repos(conn: sqlite3.Connection, conversation_uuid: str, text: str) -> 
 def _join_messages(
     messages: list[Message], summary: IngestSummary
 ) -> tuple[str, list[tuple[int, int, str, str]]]:
-    """Concatena el texto de los mensajes con headers `[sender]\\n`.
+    """Concatenate message text with `[sender]\\n` headers.
 
-    Devuelve `(full_text, msg_map)` donde `msg_map` es una lista de
-    `(body_start, body_end, msg_uuid, sender)` para poder mapear cada offset
-    de chunk de vuelta a su mensaje.
+    Returns `(full_text, msg_map)` where `msg_map` is a list of
+    `(body_start, body_end, msg_uuid, sender)` so each chunk offset can
+    be mapped back to its message.
     """
     parts: list[str] = []
     msg_map: list[tuple[int, int, str, str]] = []
@@ -367,7 +375,7 @@ def _join_messages(
 def _lookup_msg(
     msg_map: list[tuple[int, int, str, str]], pos: int
 ) -> tuple[str | None, str | None]:
-    """Encuentra el mensaje cuyo body cubre `pos`. Si cae entre, usa el último anterior."""
+    """Find the message whose body covers `pos`. If `pos` falls between bodies, use the last prior one."""
     fallback: tuple[str, str] | None = None
     for start, end, uuid, sender in msg_map:
         if start <= pos < end:
@@ -378,7 +386,7 @@ def _lookup_msg(
 
 
 def _batched(items: Iterable[ChunkSpan], n: int) -> Iterator[list[ChunkSpan]]:
-    """Agrupa items en batches de tamaño hasta `n`. (Equivalente a itertools.batched.)"""
+    """Group items into batches of size up to `n`. (Equivalent to itertools.batched.)"""
     batch: list[ChunkSpan] = []
     for item in items:
         batch.append(item)

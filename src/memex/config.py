@@ -1,7 +1,7 @@
-"""Configuración de Memex.
+"""Memex configuration.
 
-Lee de variables de entorno y opcionalmente de un archivo `.env`.
-Valores por default seguros para desarrollo local.
+Reads from environment variables and optionally from a `.env` file.
+Default values are safe for local development.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Settings unificados del proyecto.
+    """Unified project settings.
 
-    Los nombres de las env vars siguen los del `.env.example`. Algunas usan
-    prefijo `MEMEX_` para evitar colisiones, otras (como OLLAMA_HOST) son
-    nombres estándar de la dependencia y se respetan tal cual.
+    Env var names follow `.env.example`. Some use the `MEMEX_` prefix to
+    avoid collisions, others (like OLLAMA_HOST) are the dependency's
+    standard names and are respected as-is.
     """
 
     model_config = SettingsConfigDict(
@@ -27,19 +27,19 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
-    # Backend de embeddings. Por default `fastembed` (zero-config, modelo se baja
-    # automáticamente la primera vez). Cambiar a `ollama` si preferís coordinar
-    # el modelo con tu instancia local de Ollama.
+    # Embeddings backend. Defaults to `fastembed` (zero-config, model is
+    # downloaded automatically the first time). Switch to `ollama` if
+    # you prefer to coordinate the model with your local Ollama instance.
     embed_backend: str = Field(default="fastembed", alias="MEMEX_EMBED_BACKEND")
 
-    # Nombre del modelo. Si `None`, cada backend usa su default:
-    # - fastembed: `nomic-ai/nomic-embed-text-v1.5-Q` (~130 MB, cuantizado).
+    # Model name. If `None`, each backend uses its default:
+    # - fastembed: `nomic-ai/nomic-embed-text-v1.5-Q` (~130 MB, quantized).
     # - ollama: `nomic-embed-text`.
-    # Si lo seteás, tiene que ser un modelo válido para el backend elegido.
+    # If set, it must be a valid model for the chosen backend.
     embed_model: str | None = Field(default=None, alias="MEMEX_EMBED_MODEL")
     embed_dim: int = Field(default=768, alias="MEMEX_EMBED_DIM")
 
-    # Config específica de Ollama (solo se usa si embed_backend == "ollama").
+    # Ollama-specific config (only used if embed_backend == "ollama").
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
 
     db_path: Path = Field(default=Path("./data/memex.db"), alias="MEMEX_DB_PATH")
@@ -50,21 +50,21 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO", alias="MEMEX_LOG_LEVEL")
 
-    # Auto-summaries con Claude Haiku. Opt-in: por default OFF para evitar
-    # llamadas a la API durante ingest masivo. Activar con
-    # MEMEX_SUMMARY_ENABLED=true + ANTHROPIC_API_KEY seteada.
+    # Auto-summaries with Claude Haiku. Opt-in: OFF by default to avoid
+    # API calls during bulk ingest. Enable with MEMEX_SUMMARY_ENABLED=true
+    # plus a set ANTHROPIC_API_KEY.
     summary_enabled: bool = Field(default=False, alias="MEMEX_SUMMARY_ENABLED")
     summary_model: str = Field(default="claude-haiku-4-5-20251001", alias="MEMEX_SUMMARY_MODEL")
     summary_max_tokens: int = Field(default=200, alias="MEMEX_SUMMARY_MAX_TOKENS", ge=32, le=2048)
-    # API key se respeta como nombre estándar de Anthropic (no MEMEX_-prefixed)
-    # para reutilizar la key que ya tengas en el shell.
+    # API key uses the standard Anthropic name (no MEMEX_ prefix) so the
+    # key already exported in the shell can be reused.
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
 
 def get_settings() -> Settings:
-    """Factory para Settings.
+    """Settings factory.
 
-    Usar en tests para inyectar overrides sin tocar el singleton global.
+    Use in tests to inject overrides without touching the global singleton.
     """
     return Settings()
 

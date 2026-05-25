@@ -242,7 +242,7 @@ By default, LLMs are conservative with tools: they prefer to ask before invoking
 The docstrings of the 3 tools already include "USE PROACTIVELY" instructions, but you can reinforce it by adding this snippet to your `CLAUDE.md` (global at `~/.claude/CLAUDE.md` for every session, or local at `<project>/CLAUDE.md` for a specific one):
 
 ```markdown
-## Memex — persistent memory of Claude.ai chats
+## Memex: persistent memory of Claude.ai chats
 
 There is an MCP server `memex` with 3 tools: `search_chats`, `get_chat`, `list_recent_chats`.
 They index ALL of the user's Claude.ai history, reachable via hybrid search

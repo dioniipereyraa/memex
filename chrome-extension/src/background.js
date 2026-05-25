@@ -45,7 +45,7 @@ const recordIngestSuccess = async (uuid, title, chunks) => {
   stats.serverReachable = true;
   stats.lastIngest = {
     uuid: uuid || null,
-    title: title || "(sin título)",
+    title: title || "(no title)",
     chunks: typeof chunks === "number" ? chunks : null,
     at: Date.now(),
   };
@@ -167,7 +167,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "set-server-url") {
     const newUrl = typeof msg.serverUrl === "string" ? msg.serverUrl.trim() : "";
     if (!newUrl) {
-      sendResponse({ ok: false, error: "URL vacía" });
+      sendResponse({ ok: false, error: "Empty URL" });
       return false;
     }
     chrome.storage.local.set({ serverUrl: newUrl }, () => sendResponse({ ok: true }));
@@ -190,4 +190,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return false;
 });
 
-console.log("[Memex:bg] service worker arrancó");
+console.log("[Memex:bg] service worker started");

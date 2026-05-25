@@ -42,7 +42,7 @@ class TestOllamaEmbedderErrorHandling:
                 embedder.embed(["hola"])
             msg = str(exc_info.value)
             assert "localhost:11435" in msg
-            assert "conectar" in msg.lower() or "corriendo" in msg.lower()
+            assert "connect" in msg.lower() or "running" in msg.lower()
 
     def test_timeout_raises_friendly_error(self) -> None:
         embedder = OllamaEmbedder()

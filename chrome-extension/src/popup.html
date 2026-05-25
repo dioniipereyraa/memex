@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <title>Memex Live Capture</title>
@@ -112,36 +112,36 @@
   <h1>Memex Live Capture</h1>
 
   <div class="row">
-    <span class="label">Servidor:</span>
-    <span id="server-chip" class="chip unknown">desconocido</span>
+    <span class="label">Server:</span>
+    <span id="server-chip" class="chip unknown">unknown</span>
   </div>
 
   <div class="field">
     <input id="server-url" type="text" placeholder="http://127.0.0.1:5777" />
-    <button id="save-url">Guardar</button>
+    <button id="save-url">Save</button>
   </div>
 
   <div class="row">
-    <span class="label">Chats ingestados:</span>
+    <span class="label">Chats ingested:</span>
     <span id="ingested-count"><code>0</code></span>
   </div>
 
   <div class="row">
-    <span class="label">Fallidos:</span>
+    <span class="label">Failed:</span>
     <span id="failed-count"><code>0</code></span>
   </div>
 
   <div id="last-ingest" class="last" hidden>
-    Último: <strong id="last-title">—</strong> (<span id="last-when">—</span>)
+    Last: <strong id="last-title">-</strong> (<span id="last-when">-</span>)
   </div>
 
   <div id="errors-block" hidden>
-    <div class="label" style="margin-top:10px;">Errores recientes:</div>
+    <div class="label" style="margin-top:10px;">Recent errors:</div>
     <div id="errors" class="errors"></div>
   </div>
 
   <div class="actions">
-    <button id="ping">Probar servidor</button>
+    <button id="ping">Test server</button>
     <button id="reset">Reset stats</button>
   </div>
 

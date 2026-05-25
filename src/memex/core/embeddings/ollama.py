@@ -1,12 +1,12 @@
-"""Embedder con Ollama local.
+"""Embedder backed by a local Ollama.
 
-Usa el cliente Python oficial de Ollama. El modelo se elige por env var
-`MEMEX_EMBED_MODEL` (default `nomic-embed-text`). El host por `OLLAMA_HOST`
-(default `http://localhost:11434`).
+Uses the official Ollama Python client. The model is picked via the
+`MEMEX_EMBED_MODEL` env var (default `nomic-embed-text`). The host via
+`OLLAMA_HOST` (default `http://localhost:11434`).
 
-Convención: los vectores se L2-normalizan antes de devolverse para que la
-distancia L2 de sqlite-vec coincida con el ranking por coseno. Se puede
-desactivar pasando `normalize=False` al constructor.
+Convention: vectors are L2-normalized before being returned so that
+sqlite-vec L2 distance matches cosine ranking. Can be disabled by
+passing `normalize=False` to the constructor.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ import ollama
 from memex.config import settings
 from memex.core.embeddings.base import Embedder, EmbedderError, l2_normalize
 
-# Errores de red de httpx que el cliente ollama propaga sin envolver.
-# Catch explícito antes del fallback por substring; menos frágil que adivinar
-# por wording (que cambia entre versiones y locales).
+# httpx network errors that the ollama client propagates unwrapped. Explicit
+# catch before the substring fallback; less fragile than guessing by wording
+# (which changes between versions and locales).
 _HTTPX_CONNECT_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -29,14 +29,14 @@ _HTTPX_CONNECT_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.RemoteProtocolError,
 )
 
-# Fallback por substring si llega un error que no es ningún httpx.* conocido.
+# Substring fallback if we get an error that is not a known httpx.* type.
 _CONNECTION_HINT_KEYWORDS = ("connect", "refused", "timeout", "resolve", "unreachable")
 
 DEFAULT_MODEL = "nomic-embed-text"
 
 
 class OllamaEmbedder(Embedder):
-    """Embedder que habla con un Ollama corriendo local (o remoto via host)."""
+    """Embedder that talks to a local Ollama (or remote via host)."""
 
     def __init__(
         self,
@@ -49,8 +49,8 @@ class OllamaEmbedder(Embedder):
         self._host = host or settings.ollama_host
         self._client = ollama.Client(host=self._host, timeout=timeout)
         self._normalize = normalize
-        # `dim` real se detecta al primer embed. Si nadie llamó embed todavía,
-        # devolvemos el valor configurado.
+        # Real `dim` is detected on the first embed call. If nobody has
+        # called embed yet, we return the configured value.
         self._dim: int | None = None
 
     @property
@@ -70,28 +70,29 @@ class OllamaEmbedder(Embedder):
             status = getattr(e, "status_code", None)
             if status == 404:
                 raise EmbedderError(
-                    f"Modelo '{self._model_name}' no encontrado en Ollama. "
-                    f"Corré `ollama pull {self._model_name}` y reintentá."
+                    f"Model '{self._model_name}' not found in Ollama. "
+                    f"Run `ollama pull {self._model_name}` and try again."
                 ) from e
-            raise EmbedderError(f"Ollama devolvió error: {e}") from e
+            raise EmbedderError(f"Ollama returned an error: {e}") from e
         except _HTTPX_CONNECT_EXCEPTIONS as e:
             raise EmbedderError(
-                f"No se pudo conectar a Ollama en {self._host}. ¿Está corriendo el servicio?"
+                f"Could not connect to Ollama at {self._host}. Is the service running?"
             ) from e
         except Exception as e:
-            # Fallback: cualquier otra excepción cuyo mensaje sugiera conexión
-            # / timeout (algún wrapper que no esté en _HTTPX_CONNECT_EXCEPTIONS).
+            # Fallback: any other exception whose message hints at a
+            # connection / timeout problem (some wrapper not in
+            # _HTTPX_CONNECT_EXCEPTIONS).
             msg = str(e).lower()
             if any(k in msg for k in _CONNECTION_HINT_KEYWORDS):
                 raise EmbedderError(
-                    f"No se pudo conectar a Ollama en {self._host}. ¿Está corriendo el servicio?"
+                    f"Could not connect to Ollama at {self._host}. Is the service running?"
                 ) from e
             raise
 
         embeddings: list[list[float]] = [list(v) for v in response.embeddings]
         if self._normalize:
             embeddings = [l2_normalize(v) for v in embeddings]
-        # Guardar dim real para futuras llamadas a self.dim.
+        # Cache real dim for future self.dim calls.
         if embeddings and self._dim is None:
             self._dim = len(embeddings[0])
         return embeddings

@@ -1,21 +1,20 @@
-"""Embedder con `fastembed` (modelo ONNX embebido, sin daemon externo).
+"""Embedder backed by `fastembed` (embedded ONNX model, no external daemon).
 
-Es el backend default desde la opción 4 (zero-config). El modelo se baja
-automáticamente la primera vez que se invoca embed (a `~/.cache/fastembed/`).
-Para correr completamente offline después de la primera ejecución, no
-necesita Internet.
+Default backend (zero-config). The model is downloaded automatically the
+first time `embed` is called (to `~/.cache/fastembed/`). To run fully
+offline after the first run, no Internet is required.
 
 Trade-off vs `OllamaEmbedder`:
-- + No requiere instalar Ollama ni mantener un daemon corriendo.
-- + Un único proceso Python.
-- + Modelo cuantizado por default (130 MB vs 520 MB del full).
-- - El modelo se baja la primera vez (~30s con buena conexión).
-- - Embeddings no son bit-exactos a los de Ollama. Si cambiás de backend
-    sobre una base ya indexada, conviene re-ingestar para que todos los
-    vectores sean del mismo modelo.
+- + Does not require installing Ollama or keeping a daemon running.
+- + Single Python process.
+- + Quantized model by default (130 MB vs 520 MB for the full one).
+- - Model is downloaded on the first run (~30s with a good connection).
+- - Embeddings are not bit-exact with Ollama's. If you switch backends
+    over an already-indexed DB, it is worth re-ingesting so every vector
+    comes from the same model.
 
-Convención: vectores L2-normalizados antes de devolverse (alineado con
-`OllamaEmbedder` y la convención del repo).
+Convention: vectors are L2-normalized before being returned (aligned
+with `OllamaEmbedder` and the repo-wide convention).
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5-Q"
 
 
 class FastEmbedEmbedder(Embedder):
-    """Embedder embebido vía `fastembed` (ONNX en proceso). Zero-config."""
+    """Embedder embedded via `fastembed` (ONNX in-process). Zero-config."""
 
     def __init__(
         self,
@@ -40,8 +39,8 @@ class FastEmbedEmbedder(Embedder):
         self._model_name = model_name or settings.embed_model or DEFAULT_MODEL
         self._normalize = normalize
         self._dim: int | None = None
-        # Lazy import: fastembed arrastra numpy + onnxruntime (~30 MB), no
-        # queremos pagar ese costo de import si el usuario eligió Ollama.
+        # Lazy import: fastembed pulls in numpy + onnxruntime (~30 MB); we
+        # do not want to pay that import cost if the user picked Ollama.
         self._model: Any | None = None
 
     def _ensure_model(self) -> Any:
@@ -50,16 +49,16 @@ class FastEmbedEmbedder(Embedder):
                 from fastembed import TextEmbedding
             except ImportError as e:
                 raise EmbedderError(
-                    "fastembed no está instalado. Corré `uv sync` o cambiá "
-                    "MEMEX_EMBED_BACKEND a 'ollama'."
+                    "fastembed is not installed. Run `uv sync` or switch "
+                    "MEMEX_EMBED_BACKEND to 'ollama'."
                 ) from e
             try:
                 self._model = TextEmbedding(model_name=self._model_name)
             except Exception as e:
                 raise EmbedderError(
-                    f"No se pudo cargar el modelo {self._model_name!r}. "
-                    "Verificá el nombre o tu conexión (la primera vez se baja). "
-                    f"Detalle: {e}"
+                    f"Could not load model {self._model_name!r}. "
+                    "Check the name or your connection (first run downloads it). "
+                    f"Detail: {e}"
                 ) from e
         return self._model
 
@@ -75,11 +74,11 @@ class FastEmbedEmbedder(Embedder):
         if not texts:
             return []
         model = self._ensure_model()
-        # fastembed devuelve un generator de numpy arrays; los convertimos a list.
+        # fastembed returns a generator of numpy arrays; convert to lists.
         try:
             results = list(model.embed(list(texts)))
         except Exception as e:
-            raise EmbedderError(f"fastembed falló al embedear: {e}") from e
+            raise EmbedderError(f"fastembed failed to embed: {e}") from e
 
         embeddings: list[list[float]] = [vec.tolist() for vec in results]
         if self._normalize:

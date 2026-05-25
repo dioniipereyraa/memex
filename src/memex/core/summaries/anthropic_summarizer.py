@@ -1,13 +1,13 @@
-"""Summarizer real usando Claude Haiku via Anthropic API.
+"""Real Summarizer using Claude Haiku via the Anthropic API.
 
-Import lazy del SDK (extra opcional `summaries`). Si el SDK no está
-instalado, o falta `ANTHROPIC_API_KEY`, o la API falla, levanta
-`SummarizerError` con un mensaje accionable. El pipeline lo atrapa y
-sigue sin summary (silent fail).
+Lazy import of the SDK (optional `summaries` extra). If the SDK is not
+installed, `ANTHROPIC_API_KEY` is missing, or the API fails, raises
+`SummarizerError` with an actionable message. The pipeline catches it
+and continues without a summary (silent fail).
 
-El nombre del archivo es `anthropic_summarizer.py` (no `anthropic.py`)
-para evitar el shadowing del paquete `anthropic` del SDK al hacer
-`from anthropic import Anthropic` desde adentro.
+The file is named `anthropic_summarizer.py` (not `anthropic.py`) to
+avoid shadowing the `anthropic` package from the SDK when doing
+`from anthropic import Anthropic` inside.
 """
 
 from __future__ import annotations
@@ -18,32 +18,33 @@ from memex.config import settings
 from memex.core.summaries.base import Summarizer, SummarizerError
 
 SYSTEM_PROMPT = (
-    "Sos un asistente que genera resúmenes muy cortos de conversaciones técnicas. "
-    "Tu salida es texto plano, una a tres oraciones, sin markdown ni listas, "
-    "sin prefijos como 'Resumen:'. El objetivo es que un buscador pueda decidir "
-    "rápido si el chat es relevante. Foco en: qué problema o tema concreto se "
-    "trata, qué decisiones o conclusiones aparecen. Sin alabanzas ni meta-"
-    "comentarios."
+    "You are an assistant that generates very short summaries of technical "
+    "conversations. Your output is plain text, one to three sentences, no "
+    "markdown, no lists, no prefixes like 'Summary:'. Reply in the same "
+    "language as the input. The goal is to let a search tool quickly decide "
+    "whether the chat is relevant. Focus on: which concrete problem or topic "
+    "is discussed, which decisions or conclusions appear. No praise, no "
+    "meta-commentary."
 )
 
 USER_TEMPLATE_WITH_TITLE = (
-    "Título del chat: {title}\n\nContenido (mensajes concatenados):\n{body}\n\nGenerá el resumen."
+    "Chat title: {title}\n\nContent (messages concatenated):\n{body}\n\nWrite the summary."
 )
 
-USER_TEMPLATE_NO_TITLE = "Contenido del chat (mensajes concatenados):\n{body}\n\nGenerá el resumen."
+USER_TEMPLATE_NO_TITLE = "Chat content (messages concatenated):\n{body}\n\nWrite the summary."
 
-# Tope conservador para el input. El modelo soporta mucho más, pero queremos
-# acotar costo en chats largos: los primeros ~12k chars suelen tener la idea
-# central, y el resumen no necesita el cierre exacto.
+# Conservative input cap. The model supports much more, but we want to
+# bound cost on long chats: the first ~12k chars usually contain the
+# central idea, and the summary does not need the exact closing.
 MAX_INPUT_CHARS = 12_000
 
 
 class AnthropicSummarizer(Summarizer):
-    """Cliente del SDK oficial de Anthropic para generar resúmenes.
+    """Anthropic official SDK client used to generate summaries.
 
-    Levantamos `SummarizerError` en lugar de propagar errores del SDK
-    (auth, rate limit, red) para que el pipeline tenga un solo punto de
-    fallo manejado.
+    Raises `SummarizerError` instead of propagating SDK errors (auth,
+    rate limit, network) so the pipeline has a single handled failure
+    point.
     """
 
     def __init__(
@@ -66,25 +67,24 @@ class AnthropicSummarizer(Summarizer):
             return self._client
         if not self._api_key:
             raise SummarizerError(
-                "ANTHROPIC_API_KEY no está seteada. Exportá la key o "
-                "desactivá MEMEX_SUMMARY_ENABLED."
+                "ANTHROPIC_API_KEY is not set. Export the key or disable MEMEX_SUMMARY_ENABLED."
             )
         try:
             from anthropic import Anthropic
         except ImportError as e:
             raise SummarizerError(
-                "El SDK `anthropic` no está instalado. Instalá el extra: "
+                "The `anthropic` SDK is not installed. Install the extra: "
                 "`uv sync --extra summaries`."
             ) from e
         try:
             self._client = Anthropic(api_key=self._api_key)
         except Exception as e:
-            raise SummarizerError(f"No se pudo crear el cliente Anthropic: {e}") from e
+            raise SummarizerError(f"Could not create the Anthropic client: {e}") from e
         return self._client
 
     def summarize(self, text: str, *, title: str | None = None) -> str:
         if not text or not text.strip():
-            raise SummarizerError("Texto vacío, no hay nada que resumir.")
+            raise SummarizerError("Empty text, nothing to summarize.")
         client = self._ensure_client()
         body = text[:MAX_INPUT_CHARS]
         if title:
@@ -100,10 +100,10 @@ class AnthropicSummarizer(Summarizer):
                 messages=[{"role": "user", "content": user_msg}],
             )
         except Exception as e:
-            raise SummarizerError(f"Anthropic API falló: {e}") from e
+            raise SummarizerError(f"Anthropic API failed: {e}") from e
 
-        # `response.content` es una lista de bloques. Para summary esperamos
-        # un único bloque de texto; concatenamos por las dudas (defensive).
+        # `response.content` is a list of blocks. For a summary we expect a
+        # single text block; concatenate just in case (defensive).
         parts: list[str] = []
         for block in getattr(response, "content", []) or []:
             text_attr = getattr(block, "text", None)
@@ -111,5 +111,5 @@ class AnthropicSummarizer(Summarizer):
                 parts.append(text_attr)
         result = "".join(parts).strip()
         if not result:
-            raise SummarizerError("Anthropic devolvió respuesta sin texto.")
+            raise SummarizerError("Anthropic returned a response with no text.")
         return result

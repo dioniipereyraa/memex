@@ -1,13 +1,13 @@
-"""Factory + interfaces de summarization.
+"""Factory + interfaces for summarization.
 
-Punto único de entrada para obtener el summarizer default según config.
-Los call sites NO instancian `AnthropicSummarizer` o `FakeSummarizer`
-directamente; usan `get_default_summarizer()` que respeta el feature flag
-y devuelve `None` cuando los summaries están desactivados.
+Single entry point to get the default summarizer based on config. Call
+sites do NOT instantiate `AnthropicSummarizer` or `FakeSummarizer`
+directly; they use `get_default_summarizer()` which respects the
+feature flag and returns `None` when summaries are disabled.
 
-Convención: si la feature está OFF, devuelve `None` (el pipeline lo
-chequea y simplemente no genera resumen). Esto evita errores ruidosos
-cuando el usuario no quiere la feature.
+Convention: if the feature is OFF, return `None` (the pipeline checks
+this and simply skips summary generation). This avoids noisy errors
+when the user does not want the feature.
 """
 
 from __future__ import annotations
@@ -23,13 +23,14 @@ __all__ = [
 
 
 def get_default_summarizer() -> Summarizer | None:
-    """Devuelve el summarizer configurado, o `None` si la feature está OFF.
+    """Return the configured summarizer, or `None` if the feature is OFF.
 
-    Hoy soporta un único backend (Anthropic). El factory está pensado por
-    si en el futuro hay alternativas (Ollama local, OpenAI, fake-via-env).
+    Today only one backend is supported (Anthropic). The factory exists
+    in case future alternatives appear (local Ollama, OpenAI, env-driven
+    fake).
 
-    No valida la API key acá: la validación ocurre al primer `summarize()`
-    para que el factory sea barato y libre de side effects.
+    Does not validate the API key here: validation happens on the first
+    `summarize()` call so the factory stays cheap and side-effect free.
     """
     if not settings.summary_enabled:
         return None

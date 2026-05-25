@@ -1,28 +1,28 @@
-"""HTTP server local que recibe payloads de la Chrome ext y los ingesta.
+"""Local HTTP server that receives payloads from the Chrome ext and ingests them.
 
-Levanta un Starlette en `127.0.0.1:PORT` (default 5777). Solo acepta requests
-desde una extensión de browser (Origin `chrome-extension://...` o
-`moz-extension://...`). El payload esperado es el JSON tal cual lo devuelve el
-API de Claude.ai en `chat_conversations/{id}?tree=True`, que tiene el mismo
-shape que un item de `conversations.json` del export oficial.
+Boots a Starlette app on `127.0.0.1:PORT` (default 5777). Accepts requests
+only from a browser extension (Origin `chrome-extension://...` or
+`moz-extension://...`). Expected payload is the JSON returned by the
+Claude.ai API at `chat_conversations/{id}?tree=True`, which has the same
+shape as an item in `conversations.json` from the official export.
 
 Endpoints:
-- `GET /health`: ping. Devuelve `{"status": "ok"}`.
-- `POST /ingest/conversation`: recibe el JSON, lo parsea con
-  `parse_conversation_dict`, lo ingesta vía `ingest_single_conversation`,
-  devuelve counts.
+- `GET /health`: ping. Returns `{"status": "ok"}`.
+- `POST /ingest/conversation`: receives the JSON, parses it with
+  `parse_conversation_dict`, ingests via `ingest_single_conversation`,
+  returns counts.
 
 Lifecycle:
-- Las conexiones SQLite y el embedder se crean lazy (un solo proceso para todo
-  el server, una sola conn y un solo embedder).
-- SQLite + WAL mode permite que otro proceso (el MCP server) lea de la misma
-  base concurrentemente.
+- SQLite connections and the embedder are created lazily (one process for
+  the whole server, one connection, one embedder).
+- SQLite + WAL mode lets another process (the MCP server) read the same DB
+  concurrently.
 
-Seguridad:
-- Listen solo en 127.0.0.1 por default (no accesible de la red).
-- Origin check: rechaza requests que no vengan de una extensión.
-- Validación de shape: si falta `uuid`/`created_at`/`updated_at`, devuelve 400.
-- Sin telemetría, sin logging del contenido del payload.
+Security:
+- Listens on 127.0.0.1 by default (not network-accessible).
+- Origin check: rejects requests that do not come from an extension.
+- Shape validation: if `uuid`/`created_at`/`updated_at` is missing, returns 400.
+- No telemetry, no logging of payload contents.
 """
 
 from __future__ import annotations
@@ -43,25 +43,25 @@ from memex.core.storage.db import connect_and_init
 
 logger = logging.getLogger("memex.http_ingest")
 
-# Globals lazy. Tests sobrescriben estos para inyectar mocks o DB in-memory.
+# Lazy globals. Tests overwrite these to inject mocks or an in-memory DB.
 _conn: sqlite3.Connection | None = None
 _embedder: Embedder | None = None
 
-# Solo aceptamos requests originadas en una extensión de browser. Evita que
-# cualquier página web visitada pueda hablarle al endpoint local.
+# Only accept requests originating from a browser extension. Prevents any
+# visited web page from talking to the local endpoint.
 _ALLOWED_ORIGIN_PREFIXES = ("chrome-extension://", "moz-extension://")
 
 
 def _get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        # check_same_thread=False porque uvicorn maneja sync code en threadpool.
-        # Los handlers async actuales corren en el event loop y las queries
-        # SQLite inline también, así una sola conn ve un solo thread. Si en algún
-        # momento se agregan background tasks que toquen `conn`, hay que
-        # serializarlas explícitamente (mutex o cola).
+        # check_same_thread=False because uvicorn runs sync code in a threadpool.
+        # Today's async handlers run on the event loop and their SQLite queries
+        # run inline, so a single conn sees a single thread. If background
+        # tasks ever touch `conn`, we must serialize them explicitly (mutex or
+        # queue).
         _conn = connect_and_init(check_same_thread=False)
-        logger.info("DB abierta para http_ingest")
+        logger.info("DB opened for http_ingest")
     return _conn
 
 
@@ -69,7 +69,7 @@ def _get_embedder() -> Embedder:
     global _embedder
     if _embedder is None:
         _embedder = get_default_embedder()
-        logger.info("Embedder inicializado: %s", _embedder.model_name)
+        logger.info("Embedder initialized: %s", _embedder.model_name)
     return _embedder
 
 
@@ -79,43 +79,43 @@ def _origin_allowed(request: Request) -> bool:
 
 
 async def health(request: Request) -> JSONResponse:
-    """Ping endpoint. La Chrome ext lo usa para detectar si el server está vivo."""
+    """Ping endpoint. The Chrome ext uses it to detect if the server is alive."""
     return JSONResponse({"status": "ok", "service": "memex-ingest"})
 
 
 async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
-    """Recibe un payload de conversación de la Chrome ext, lo ingesta."""
+    """Receive a conversation payload from the Chrome ext and ingest it."""
     if not _origin_allowed(request):
         logger.warning(
-            "Request rechazada: Origin '%s' no permitido",
+            "Request rejected: Origin '%s' not allowed",
             request.headers.get("origin", "<missing>"),
         )
-        return JSONResponse({"error": "Origin no permitido"}, status_code=403)
+        return JSONResponse({"error": "Origin not allowed"}, status_code=403)
 
     try:
         payload: Any = await request.json()
     except ValueError:
-        return JSONResponse({"error": "Body no es JSON válido"}, status_code=400)
+        return JSONResponse({"error": "Body is not valid JSON"}, status_code=400)
 
     if not isinstance(payload, dict):
         return JSONResponse(
-            {"error": "El payload tiene que ser un objeto JSON con un chat"},
+            {"error": "Payload must be a JSON object containing one chat"},
             status_code=400,
         )
 
-    # `source` opcional en query string para forzar 'design_chat'. Por defecto
-    # asumimos 'conversations' (chat suelto del usuario).
+    # `source` is optional in the query string to force 'design_chat'. Default
+    # is 'conversations' (a standalone user chat).
     source_param = request.query_params.get("source", "conversations")
     try:
         source = Source(source_param)
     except ValueError:
         return JSONResponse(
-            {"error": f"source inválido: {source_param!r}"},
+            {"error": f"Invalid source: {source_param!r}"},
             status_code=400,
         )
     if source is Source.MEMORY:
         return JSONResponse(
-            {"error": "source=memory no soportado en captura en vivo"},
+            {"error": "source=memory is not supported via live capture"},
             status_code=400,
         )
 
@@ -130,15 +130,15 @@ async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=503)
     except KeyError as e:
         return JSONResponse(
-            {"error": f"Falta campo obligatorio en el payload: {e}"},
+            {"error": f"Missing required field in payload: {e}"},
             status_code=400,
         )
     except (TypeError, ValueError) as e:
-        return JSONResponse({"error": f"Payload mal formado: {e}"}, status_code=400)
+        return JSONResponse({"error": f"Malformed payload: {e}"}, status_code=400)
     except Exception as e:
-        logger.exception("Error inesperado en ingest_conversation")
+        logger.exception("Unexpected error in ingest_conversation")
         return JSONResponse(
-            {"error": f"Error interno: {type(e).__name__}"},
+            {"error": f"Internal error: {type(e).__name__}"},
             status_code=500,
         )
 
@@ -155,7 +155,7 @@ async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
 
 
 def build_app() -> Starlette:
-    """Factory de la app Starlette. Tests la usan para reusar la instancia."""
+    """Factory for the Starlette app. Tests use it to reuse the instance."""
     return Starlette(
         debug=False,
         routes=[

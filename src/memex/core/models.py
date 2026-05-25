@@ -1,9 +1,9 @@
-"""Modelos de dominio de Memex.
+"""Memex domain models.
 
-Pydantic v2. Reflejan el schema relacional (`storage/schema.sql`) pero son la
-representación canónica usada por core. Los parsers de `ingest/` producen estos
-modelos. El repo (`storage/repo.py`) los serializa a SQLite y los reconstruye al
-leer.
+Pydantic v2. They mirror the relational schema (`storage/schema.sql`) but
+are the canonical representation used by core. The `ingest/` parsers
+produce these models. The repo (`storage/repo.py`) serializes them to
+SQLite and reconstructs them on read.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Source(StrEnum):
-    """Origen de una conversación dentro del export de Claude.ai."""
+    """Origin of a conversation inside the Claude.ai export."""
 
     CONVERSATIONS = "conversations"
     DESIGN_CHAT = "design_chat"
@@ -24,7 +24,7 @@ class Source(StrEnum):
 
 
 class Sender(StrEnum):
-    """Quién emitió un mensaje."""
+    """Who emitted a message."""
 
     HUMAN = "human"
     ASSISTANT = "assistant"
@@ -57,18 +57,20 @@ class Conversation(BaseModel):
     account_uuid: str | None = None
     created_at: datetime
     updated_at: datetime
-    # Hash SHA-256 (hex) del texto canónico de la conversación al momento del
-    # último ingest. Lo usa el pipeline para decidir si re-generar derivados
-    # caros (ej. summary con LLM) cuando se re-ingesta el mismo chat.
+    # SHA-256 hash (hex) of the conversation's canonical text at the
+    # last ingest. The pipeline uses it to decide whether to regenerate
+    # expensive derivatives (e.g. LLM summary) when the same chat is
+    # re-ingested.
     content_hash: str | None = None
 
 
 class Message(BaseModel):
-    """Mensaje individual dentro de una conversación.
+    """A single message inside a conversation.
 
-    `text` es el texto canónico ya renderizado (incluye tool markers cuando aplica).
-    `raw_content` conserva el `content[]` original (lista de bloques) por si algún
-    día queremos hacer análisis más fino sobre tool_use / tool_result.
+    `text` is the canonical already-rendered text (includes tool markers
+    when applicable). `raw_content` keeps the original `content[]` (list
+    of blocks) in case we want finer analysis of tool_use / tool_result
+    one day.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -86,10 +88,11 @@ class Message(BaseModel):
 
 
 class Chunk(BaseModel):
-    """Unidad de retrieval. Cubre ~500 tokens del texto de una conversación.
+    """Retrieval unit. Covers ~500 tokens of a conversation's text.
 
-    `id` es nullable antes del INSERT (lo asigna el AUTOINCREMENT). El embedder
-    no necesita el id, pero el repo lo necesita para asociar el vector.
+    `id` is nullable before the INSERT (assigned by AUTOINCREMENT). The
+    embedder does not need the id, but the repo needs it to associate
+    the vector.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -105,7 +108,7 @@ class Chunk(BaseModel):
 
 
 class SearchHit(BaseModel):
-    """Resultado de búsqueda enriquecido (chunk + datos del chat + score)."""
+    """Enriched search result (chunk + chat metadata + score)."""
 
     model_config = ConfigDict(extra="forbid")
 

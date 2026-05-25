@@ -1,15 +1,16 @@
-"""Embedder determinístico para tests.
+"""Deterministic embedder for tests.
 
-`FakeEmbedder` produce vectores derivados del hash del texto. Mismo texto siempre
-devuelve el mismo vector. No tiene relación semántica con el contenido (textos
-parecidos NO producen vectores parecidos), pero es suficiente para:
+`FakeEmbedder` produces vectors derived from the text hash. The same
+text always returns the same vector. There is NO semantic relationship
+to the content (similar texts do NOT produce similar vectors), but it
+is enough for:
 
-- Tests que prueban el pipeline de ingest sin hablar con Ollama.
-- Tests del repo que necesitan embeddings válidos pero no realistas.
-- Smoke tests rápidos sin depender de un servicio externo.
+- Tests that exercise the ingest pipeline without talking to Ollama.
+- Repo tests that need valid but unrealistic embeddings.
+- Fast smoke tests without depending on an external service.
 
-NO usar en producción. La distancia L2 entre vectores generados acá no tiene
-significado semántico, así que el retrieval va a ser basura.
+DO NOT use in production. L2 distance between vectors generated here
+has no semantic meaning, so retrieval will be garbage.
 """
 
 from __future__ import annotations
@@ -22,15 +23,15 @@ from memex.core.embeddings.base import Embedder, l2_normalize
 
 
 class FakeEmbedder(Embedder):
-    """Embedder determinístico basado en hash SHA-256 del texto.
+    """Deterministic embedder based on SHA-256 hash of the text.
 
-    Cada texto se hashea, los bytes se interpretan como floats, y el vector
-    se recorta o rellena hasta `dim`. Después se L2-normaliza.
+    Each text is hashed, the bytes are interpreted as floats, and the
+    vector is sliced or padded to `dim`. Then L2-normalized.
     """
 
     def __init__(self, dim: int = 768, model_name: str = "fake") -> None:
         if dim <= 0:
-            raise ValueError("dim debe ser > 0")
+            raise ValueError("dim must be > 0")
         self._dim = dim
         self._model_name = model_name
 
@@ -46,8 +47,9 @@ class FakeEmbedder(Embedder):
         return [self._fake_vector(t) for t in texts]
 
     def _fake_vector(self, text: str) -> list[float]:
-        # Generar suficientes bytes: cada float ocupa 4 bytes, necesitamos `dim` floats.
-        # SHA-256 da 32 bytes. Iteramos hashes con sufijos numéricos hasta llenar.
+        # Generate enough bytes: each float takes 4 bytes, we need `dim`
+        # floats. SHA-256 gives 32 bytes. Iterate hashes with numeric
+        # suffixes until we fill the buffer.
         needed_bytes = self._dim * 4
         buf = bytearray()
         counter = 0
@@ -55,10 +57,10 @@ class FakeEmbedder(Embedder):
             h = hashlib.sha256(f"{text}|{counter}".encode()).digest()
             buf.extend(h)
             counter += 1
-        # Convertir bytes a floats en [-1, 1].
+        # Convert bytes to floats in [-1, 1].
         floats: list[float] = []
         for i in range(self._dim):
-            # struct.unpack devuelve int32; lo normalizamos al rango [-1, 1].
+            # struct.unpack returns int32; we normalize to [-1, 1].
             (raw,) = struct.unpack_from(">i", buf, i * 4)
             floats.append(raw / 2_147_483_647.0)
         return l2_normalize(floats)

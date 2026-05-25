@@ -1,8 +1,8 @@
-"""Summarizer determinístico para tests.
+"""Deterministic Summarizer for tests.
 
-Genera un "resumen" de las primeras palabras del texto + el título. No tiene
-ningún valor semántico, pero es estable y rápido. Usado por la suite de tests
-para ejercer el pipeline de summary sin llamar a Anthropic.
+Generates a "summary" from the first words of the text plus the title.
+No semantic value, but stable and fast. Used by the test suite to
+exercise the summary pipeline without calling Anthropic.
 """
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ from memex.core.summaries.base import Summarizer, SummarizerError
 
 
 class FakeSummarizer(Summarizer):
-    """Devuelve las primeras N palabras del texto como pseudo-resumen.
+    """Returns the first N words of the text as a pseudo-summary.
 
-    Si se construye con `fail=True`, levanta `SummarizerError` al primer
-    `summarize`. Útil para tests que cubren el camino de fallo silencioso
-    del pipeline.
+    If constructed with `fail=True`, raises `SummarizerError` on the
+    first `summarize` call. Useful for tests covering the pipeline's
+    silent-fail path.
     """
 
     def __init__(
@@ -36,7 +36,7 @@ class FakeSummarizer(Summarizer):
     def summarize(self, text: str, *, title: str | None = None) -> str:
         self.calls += 1
         if self._fail:
-            raise SummarizerError("FakeSummarizer configurado para fallar")
+            raise SummarizerError("FakeSummarizer configured to fail")
         words = text.split()[: self._max_words]
         head = " ".join(words)
         if title:

@@ -63,7 +63,7 @@ class TestSearchChats:
     def test_empty_query_returns_error(self, populated_db: sqlite3.Connection) -> None:
         result = tools.search_chats(populated_db, FakeEmbedder(), query="   ", limit=5)
         assert "error" in result
-        assert "vac" in result["error"].lower()
+        assert "empty" in result["error"].lower()
 
     def test_invalid_source_returns_error(self, populated_db: sqlite3.Connection) -> None:
         result = tools.search_chats(populated_db, FakeEmbedder(), query="x", source="inventado")
@@ -514,7 +514,7 @@ class TestFindRelated:
     def test_empty_context_returns_error(self, db: sqlite3.Connection) -> None:
         result = tools.find_related(db, FakeEmbedder(dim=768), context="   ")
         assert "error" in result
-        assert "vac" in result["error"].lower()
+        assert "empty" in result["error"].lower()
 
     def test_returns_results_with_expected_shape(self, db: sqlite3.Connection) -> None:
         self._populate(db, 3)

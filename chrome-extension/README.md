@@ -26,7 +26,7 @@ It is not published on the Chrome Web Store yet (it is local). Manual load:
 ## Testing it works
 
 1. Click the Memex icon to open the popup.
-2. The "Server" chip should say **responde** (green). If it says **no responde**, verify that `memex serve` is running.
+2. The "Server" chip should say **responding** (green). If it says **no response**, verify that `memex serve` is running.
 3. Open `claude.ai`, open any existing chat or create a new one.
 4. After a few seconds (once Claude.ai finishes rendering the chat), go back to the popup. The "Chats ingested" counter should have incremented.
 5. In a terminal: `uv run memex search "<something from the chat>"` should find it.

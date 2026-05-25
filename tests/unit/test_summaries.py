@@ -1,12 +1,12 @@
-"""Tests del módulo `core/summaries/`.
+"""Tests for the `core/summaries/` module.
 
-Cubre:
-- `FakeSummarizer`: determinístico, modo fail.
-- Factory `get_default_summarizer()`: respeta `MEMEX_SUMMARY_ENABLED`.
-- `AnthropicSummarizer`: errores accionables sin API key, sin SDK (import lazy).
+Covers:
+- `FakeSummarizer`: deterministic, fail mode.
+- Factory `get_default_summarizer()`: respects `MEMEX_SUMMARY_ENABLED`.
+- `AnthropicSummarizer`: actionable errors without API key, without SDK (lazy import).
 
-NO testea la API real de Anthropic (eso sería integration test). El client se
-ejerce vía monkeypatch o vía verificación de error paths.
+Does NOT test the real Anthropic API (that would be an integration test). The
+client is exercised via monkeypatch or via error-path verification.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class TestFakeSummarizer:
 
 class TestFactory:
     def test_returns_none_when_flag_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Forzar OFF aunque el .env del repo tenga otro valor.
+        # Force OFF even if the repo's .env has another value.
         from memex.config import settings
 
         monkeypatch.setattr(settings, "summary_enabled", False)
@@ -72,22 +72,22 @@ class TestFactory:
 class TestAnthropicSummarizer:
     def test_empty_text_raises(self) -> None:
         s = AnthropicSummarizer(api_key="sk-fake")
-        with pytest.raises(SummarizerError, match="vacío"):
+        with pytest.raises(SummarizerError, match="Empty text"):
             s.summarize("")
 
     def test_missing_api_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Si no se pasa api_key y settings tampoco la tiene, debería avisar.
+        # If no api_key is passed and settings has none, it should warn.
         from memex.config import settings
 
         monkeypatch.setattr(settings, "anthropic_api_key", None)
         s = AnthropicSummarizer(api_key=None)
         with pytest.raises(SummarizerError, match="ANTHROPIC_API_KEY"):
-            s.summarize("hay texto")
+            s.summarize("some text")
 
     def test_truncates_long_input(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verifica que el user_msg incluye texto truncado al límite, sin enviar
-        chats gigantes a la API. Reemplaza el cliente con un stub que captura el
-        body del mensaje y lo expone para inspección.
+        """Verify that user_msg includes text truncated to the limit, without
+        sending giant chats to the API. Replaces the client with a stub that
+        captures the message body and exposes it for inspection.
         """
         from memex.core.summaries import anthropic_summarizer as mod
 
@@ -96,11 +96,11 @@ class TestAnthropicSummarizer:
         class _StubMessages:
             def create(self, **kwargs: object) -> object:
                 captured.update(kwargs)
-                # Respuesta mínima válida.
+                # Minimum valid response.
                 return type(
                     "R",
                     (),
-                    {"content": [type("B", (), {"text": "resumen falso"})()]},
+                    {"content": [type("B", (), {"text": "fake summary"})()]},
                 )()
 
         class _StubClient:
@@ -108,16 +108,16 @@ class TestAnthropicSummarizer:
                 self.messages = _StubMessages()
 
         s = AnthropicSummarizer(api_key="sk-fake")
-        # Inyectar el stub saltándonos _ensure_client.
+        # Inject the stub bypassing _ensure_client.
         s._client = _StubClient()
 
-        # Usamos un caracter que no aparece en el template (`SYSTEM_PROMPT`,
-        # `USER_TEMPLATE_WITH_TITLE`) ni en el title de abajo, para contar
-        # solo cuántos chars del body llegan al payload final.
+        # Use a character that does not appear in the template (`SYSTEM_PROMPT`,
+        # `USER_TEMPLATE_WITH_TITLE`) nor in the title below, so we count only
+        # how many body chars reach the final payload.
         marker = "Ω"
         long_text = marker * (mod.MAX_INPUT_CHARS + 5_000)
         out = s.summarize(long_text, title="Test")
-        assert out == "resumen falso"
+        assert out == "fake summary"
         sent_messages = captured["messages"]
         assert isinstance(sent_messages, list)
         user_content = sent_messages[0]["content"]
@@ -125,7 +125,7 @@ class TestAnthropicSummarizer:
         assert body_chars == mod.MAX_INPUT_CHARS
 
     def test_empty_response_raises(self) -> None:
-        """Si la API devuelve content vacío, levantamos error explícito."""
+        """If the API returns empty content, raise an explicit error."""
 
         class _EmptyMessages:
             def create(self, **kwargs: object) -> object:
@@ -137,8 +137,8 @@ class TestAnthropicSummarizer:
 
         s = AnthropicSummarizer(api_key="sk-fake")
         s._client = _EmptyClient()
-        with pytest.raises(SummarizerError, match="sin texto"):
-            s.summarize("hay texto", title="T")
+        with pytest.raises(SummarizerError, match="no text"):
+            s.summarize("some text", title="T")
 
     def test_model_name_uses_setting(self, monkeypatch: pytest.MonkeyPatch) -> None:
         s = AnthropicSummarizer(api_key="sk-fake", model="claude-test-model")

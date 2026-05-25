@@ -1,13 +1,13 @@
-"""Chunker simple: corta texto en chunks parejos con overlap.
+"""Simple chunker: splits text into even chunks with overlap.
 
-Estrategia char-based con factor `chars_per_token` configurable. No respeta bordes
-de mensajes, oraciones ni párrafos. Para Fase 0 es suficiente; si los resultados
-de retrieval son pobres podemos hacer un chunker smart después (respetar `\\n\\n`,
-o partir por mensajes cuando se pueda).
+Char-based strategy with a configurable `chars_per_token` factor. Does
+not respect message, sentence, or paragraph boundaries. Enough for Phase
+0; if retrieval results are poor we can build a smarter chunker later
+(respect `\\n\\n`, or split by messages when possible).
 
-El config (`MEMEX_CHUNK_SIZE`, `MEMEX_CHUNK_OVERLAP`) se expresa en tokens. La
-conversión usa `chars_per_token=4` por default (razonable para mezcla ES/EN con
-un tokenizer BPE típico).
+Config (`MEMEX_CHUNK_SIZE`, `MEMEX_CHUNK_OVERLAP`) is expressed in
+tokens. Conversion uses `chars_per_token=4` by default (reasonable for
+mixed ES/EN with a typical BPE tokenizer).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import NamedTuple
 
 
 class ChunkSpan(NamedTuple):
-    """Tramo de texto identificado por sus offsets dentro del texto fuente."""
+    """A text span identified by its offsets in the source text."""
 
     text: str
     char_start: int
@@ -29,23 +29,23 @@ def chunk_text(
     overlap_tokens: int = 50,
     chars_per_token: float = 4.0,
 ) -> list[ChunkSpan]:
-    """Corta `text` en chunks de ~max_tokens con overlap_tokens entre vecinos.
+    """Split `text` into chunks of ~max_tokens with overlap_tokens between neighbors.
 
-    - Retorna `[]` si `text` es vacío.
-    - Retorna `[ChunkSpan(text, 0, len(text))]` si todo cabe en un solo chunk.
-    - Cada chunk garantiza `text[span.char_start:span.char_end] == span.text`.
-    - Chunks consecutivos se solapan en `overlap_tokens * chars_per_token` chars.
+    - Returns `[]` if `text` is empty.
+    - Returns `[ChunkSpan(text, 0, len(text))]` if everything fits in one chunk.
+    - Each chunk guarantees `text[span.char_start:span.char_end] == span.text`.
+    - Consecutive chunks overlap by `overlap_tokens * chars_per_token` chars.
 
-    Lanza `ValueError` si los parámetros son inválidos.
+    Raises `ValueError` if parameters are invalid.
     """
     if max_tokens <= 0:
-        raise ValueError("max_tokens debe ser > 0")
+        raise ValueError("max_tokens must be > 0")
     if overlap_tokens < 0:
-        raise ValueError("overlap_tokens no puede ser negativo")
+        raise ValueError("overlap_tokens cannot be negative")
     if chars_per_token <= 0:
-        raise ValueError("chars_per_token debe ser > 0")
+        raise ValueError("chars_per_token must be > 0")
     if overlap_tokens >= max_tokens:
-        raise ValueError("overlap_tokens debe ser menor que max_tokens")
+        raise ValueError("overlap_tokens must be less than max_tokens")
 
     if not text:
         return []

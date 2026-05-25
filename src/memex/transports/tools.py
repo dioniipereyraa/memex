@@ -1,12 +1,12 @@
-"""Implementaciones puras de las tools de Memex.
+"""Pure implementations of Memex tools.
 
-Cada función toma una conexión SQLite y/o un Embedder, hace el trabajo, y
-devuelve un dict serializable. Estas funciones NO saben nada de MCP; son
-testables directamente con DB in-memory y FakeEmbedder.
+Each function takes a SQLite connection and/or an Embedder, does the work,
+and returns a serializable dict. These functions know NOTHING about MCP;
+they are testable directly with an in-memory DB and FakeEmbedder.
 
-La capa MCP (`transports/stdio.py`) las envuelve, las decora con
-`@server.tool`, y serializa el dict a JSON antes de devolverlo al cliente
-del MCP.
+The MCP layer (`transports/stdio.py`) wraps them, decorates them with
+`@server.tool`, and serializes the dict to JSON before returning to the
+MCP client.
 """
 
 from __future__ import annotations
@@ -23,25 +23,25 @@ from memex.core.summaries.base import Summarizer, SummarizerError
 
 logger = logging.getLogger(__name__)
 
-# Límites duros para evitar payloads desproporcionados. Los clientes MCP
-# (incluido Claude Code) suelen tener un tope de ~25-30k tokens por respuesta;
-# pasarse devuelve el resultado a un archivo aparte y rompe la experiencia.
+# Hard limits to avoid disproportionate payloads. MCP clients (including
+# Claude Code) tend to cap responses at ~25-30k tokens; exceeding it spills
+# the result to a separate file and breaks the experience.
 SEARCH_LIMIT_MAX = 50
-SEARCH_SUMMARY_MAX_CHARS = 500  # Algunos summaries pesan 2-3k chars, los recortamos.
-# Tope de summaries generados lazy por call a `search_chats`. Acota latencia
-# (más de 3 calls paralelas a la API agrega percepción de "lento") y costo
-# por query. Los demás results vienen sin summary (Claude puede decidir
-# llamar `get_chat` para profundizar en alguno específico).
+SEARCH_SUMMARY_MAX_CHARS = 500  # Some summaries weigh 2-3k chars; truncate them.
+# Cap of summaries generated lazily per `search_chats` call. Bounds latency
+# (more than 3 parallel API calls feels "slow") and cost per query. The
+# remaining results come without a summary (Claude can decide to call
+# `get_chat` to go deeper on a specific one).
 SEARCH_SUMMARY_LAZY_CAP = 3
 LIST_LIMIT_MAX = 100
-# Default conservador: 10 mensajes x 1500 chars + overhead = ~17k chars de
-# response, lejos del límite del cliente MCP (~25-30k tokens). Antes era
-# 20 x 3000 -> ~62k chars, lo que ocasionalmente excedía el tope de Claude
-# Code y derivaba el resultado a un archivo aparte (UX rota). Si Claude
-# necesita más, pagina con messages_offset o pide messages_limit explícito.
+# Conservative default: 10 messages x 1500 chars + overhead = ~17k chars of
+# response, well under the MCP client limit (~25-30k tokens). It used to be
+# 20 x 3000 -> ~62k chars, which occasionally exceeded the Claude Code cap
+# and spilled the result to a separate file (broken UX). If Claude needs
+# more, paginate with messages_offset or pass an explicit messages_limit.
 GET_CHAT_MESSAGES_LIMIT_DEFAULT = 10
 GET_CHAT_MESSAGES_LIMIT_MAX = 100
-GET_CHAT_MESSAGE_TEXT_MAX_CHARS = 1500  # Code dumps largos explotan solos sin esto.
+GET_CHAT_MESSAGE_TEXT_MAX_CHARS = 1500  # Long code dumps blow up without this.
 
 VALID_SEARCH_MODES = ("hybrid", "semantic", "lexical")
 
@@ -71,46 +71,45 @@ def search_chats(
     summarizer: Summarizer | None = None,
     repo_arg: str | None = None,
 ) -> dict[str, Any]:
-    """Búsqueda sobre todos los chats indexados.
+    """Search across all indexed chats.
 
-    Modos:
-    - `hybrid` (default): combina vector search + FTS5 lexical con Reciprocal
-      Rank Fusion. Mejor por default; atrapa tanto significado como palabras
-      exactas (resuelve el caso "Amarok").
-    - `semantic`: solo vector search. Útil cuando importa la similitud
-      conceptual y no las palabras literales.
-    - `lexical`: solo FTS5 BM25. Útil para buscar nombres propios o términos
-      técnicos exactos.
+    Modes:
+    - `hybrid` (default): combines vector search + FTS5 lexical via Reciprocal
+      Rank Fusion. Best default; catches both meaning and exact words (solves
+      the "Amarok" case).
+    - `semantic`: vector search only. Useful when conceptual similarity
+      matters more than literal words.
+    - `lexical`: FTS5 BM25 only. Useful to look up proper nouns or exact
+      technical terms.
 
-    Devuelve dict con `query`, `mode`, `count`, `results`. Cada resultado tiene
+    Returns a dict with `query`, `mode`, `count`, `results`. Each result has
     rank, conversation_uuid, title, summary, source, project_uuid, distance
-    (semántica menor = mejor en los tres modos), snippet y timestamps.
+    (lower = better in all three modes), snippet, and timestamps.
 
-    Si `summarizer` es no-None, las conversaciones del top-N que no tengan
-    `summary` cacheado en DB se enriquecen lazy: hasta `SEARCH_SUMMARY_LAZY_CAP`
-    en paralelo, con silent fail si la API falla (el result queda sin summary,
-    no aborta). Los summaries generados se persisten para que la próxima query
-    pegue cache.
+    If `summarizer` is non-None, top-N conversations without a cached `summary`
+    get lazily enriched: up to `SEARCH_SUMMARY_LAZY_CAP` in parallel, silent
+    fail if the API fails (the result stays without summary, no abort).
+    Generated summaries are persisted so the next query hits cache.
 
-    Si `repo_arg` es no-None, los chats asociados a ese repo reciben un boost
-    de ranking proporcional a su `confidence` de asociación. Chats fuera del
-    repo siguen apareciendo. `repo_arg` puede ser un key canónico, una URL
-    remote git, o un path absoluto; resolvemos cualquiera de los tres.
+    If `repo_arg` is non-None, chats associated with that repo get a ranking
+    boost proportional to their association `confidence`. Chats outside the
+    repo still appear. `repo_arg` can be a canonical key, a git remote URL,
+    or an absolute path; we resolve any of the three.
 
-    Errores como dict con clave `error`:
-    - source inválido
-    - mode inválido
-    - query vacía
-    - embedder falla (Ollama caído / modelo faltante) en modos hybrid/semantic
-    - `repo_arg` no corresponde a ningún repo registrado
+    Errors as dict with `error` key:
+    - invalid source
+    - invalid mode
+    - empty query
+    - embedder failure (Ollama down / missing model) in hybrid/semantic modes
+    - `repo_arg` does not match any registered repo
     """
     q = query.strip()
     if not q:
-        return {"error": "La query no puede estar vacía."}
+        return {"error": "Query cannot be empty."}
 
     if mode not in VALID_SEARCH_MODES:
         return {
-            "error": f"Mode inválido: {mode!r}. Válidos: {', '.join(VALID_SEARCH_MODES)}.",
+            "error": f"Invalid mode: {mode!r}. Valid: {', '.join(VALID_SEARCH_MODES)}.",
         }
 
     limit = max(1, min(limit, SEARCH_LIMIT_MAX))
@@ -148,17 +147,17 @@ def search_chats(
         fetch_limit = max(fetch_limit, limit * REPO_BOOST_OVERSAMPLE)
 
     if mode == "lexical":
-        # En lexical puro, si la query se sanitiza a vacío (solo símbolos, CJK
-        # sin tokens latinos, etc.) el repo devuelve [] silenciosamente.
-        # Avisamos al cliente para que sepa que no es "no hay matches", es
-        # "tu query no produjo tokens válidos para FTS5".
+        # In pure lexical mode, if the query sanitizes to empty (only symbols,
+        # CJK without latin tokens, etc.) the repo silently returns []. Tell
+        # the client this is not "no matches", it is "your query produced no
+        # tokens FTS5 can use".
         from memex.core.storage.repo import _sanitize_fts_query
 
         if not _sanitize_fts_query(q):
             return {
                 "error": (
-                    f"La query {q!r} no produjo tokens utilizables para "
-                    "búsqueda lexical (probá con palabras o cambiá a mode='hybrid')."
+                    f"Query {q!r} produced no tokens usable for lexical "
+                    "search (try words, or switch to mode='hybrid')."
                 ),
             }
         hits = repo.text_search(conn, q, limit=fetch_limit)
@@ -182,9 +181,9 @@ def search_chats(
 
     hits = hits[:limit]
 
-    # Enriquecer lazy con summaries si hay summarizer activo. Esto persiste
-    # los summaries en DB para próximas queries y muta `hits` in-place con
-    # las conversaciones actualizadas.
+    # Lazily enrich with summaries if a summarizer is active. This persists
+    # summaries to the DB for future queries and replaces `hits` with updated
+    # conversations.
     if summarizer is not None and hits:
         hits = _generate_lazy_summaries(conn, hits, summarizer)
 
@@ -215,23 +214,23 @@ def _generate_lazy_summaries(
     hits: list[SearchHit],
     summarizer: Summarizer,
 ) -> list[SearchHit]:
-    """Genera summaries on-demand para las conversaciones de `hits` sin uno.
+    """Generate summaries on-demand for `hits` conversations without one.
 
-    Cap a `SEARCH_SUMMARY_LAZY_CAP` por call: si hay más conversaciones
-    candidatas (sin summary), las que no entran al cap quedan sin summary en
-    esta respuesta. La idea es acotar latencia y costo por query; con cap=3
-    y Haiku ~2s/call en paralelo, la latencia agregada es ~2-3s para 3
-    summaries (no 6-9s secuenciales).
+    Capped at `SEARCH_SUMMARY_LAZY_CAP` per call: if there are more candidate
+    conversations (without summary), the ones that do not fit the cap stay
+    without summary in this response. The point is to bound latency and cost
+    per query; with cap=3 and Haiku ~2s/call in parallel, aggregate latency
+    is ~2-3s for 3 summaries (not 6-9s sequentially).
 
-    Persiste cada summary nuevo en DB (`UPDATE conversations SET summary=...`)
-    así la siguiente query pega cache. Silent fail por chat: si la API tira
-    error para uno, ese result queda sin summary y los demás siguen.
+    Persists each new summary to DB (`UPDATE conversations SET summary=...`)
+    so the next query hits cache. Silent fail per chat: if the API errors
+    for one, that result stays without summary and the others continue.
 
-    Devuelve una lista nueva de `SearchHit` con las conversations enriquecidas
-    (los pydantic models son inmutables, así que reemplazamos via `model_copy`).
+    Returns a new list of `SearchHit` with enriched conversations (pydantic
+    models are immutable, so we swap via `model_copy`).
     """
-    # Identificar candidatos: conversaciones únicas sin summary, manteniendo
-    # el orden de ranking (más relevante primero).
+    # Identify candidates: unique conversations without summary, preserving
+    # ranking order (most relevant first).
     candidates: list[str] = []
     seen: set[str] = set()
     title_by_uuid: dict[str, str] = {}
@@ -247,9 +246,9 @@ def _generate_lazy_summaries(
     if not candidates:
         return hits
 
-    # Pre-cargar el texto de cada candidato en el thread main. SQLite ata
-    # la conexión a su thread de creación, así que no podemos hacer queries
-    # desde el ThreadPool. El pool solo se usa para el call slow al LLM.
+    # Pre-load text for each candidate on the main thread. SQLite binds the
+    # connection to its creation thread, so we cannot run queries from the
+    # ThreadPool. The pool is only used for the slow LLM call.
     payloads: list[tuple[str, str, str]] = []
     for uuid in candidates:
         text = repo.get_conversation_text(conn, uuid)
@@ -269,10 +268,9 @@ def _generate_lazy_summaries(
             return uuid, None
 
     new_summaries: dict[str, str] = {}
-    # ThreadPool: cada call al SDK de Anthropic libera el GIL durante la
-    # request HTTP, así varios threads progresan en paralelo aunque Python
-    # tenga GIL. max_workers = cantidad de candidatos para no crear threads
-    # de más.
+    # ThreadPool: each Anthropic SDK call releases the GIL during the HTTP
+    # request, so multiple threads progress in parallel despite the GIL.
+    # max_workers = number of candidates so we do not spawn extra threads.
     with ThreadPoolExecutor(max_workers=len(payloads)) as ex:
         for uuid, gen_result in ex.map(_gen_one, payloads):
             if gen_result is not None:
@@ -281,14 +279,14 @@ def _generate_lazy_summaries(
     if not new_summaries:
         return hits
 
-    # Persistir. Importante: no usamos `repo.insert_conversation` (que
-    # haría upsert y podría pisar otros campos), solo el UPDATE del summary.
+    # Persist. Important: do not use `repo.insert_conversation` (which would
+    # upsert and could clobber other fields), only the summary UPDATE.
     for uuid, summary_text in new_summaries.items():
         repo.update_conversation_summary(conn, uuid, summary_text)
     conn.commit()
 
-    # Construir lista nueva de hits con conversations actualizadas. No mutamos
-    # la lista original por convención pydantic (modelos inmutables).
+    # Build a new list of hits with updated conversations. We do not mutate
+    # the original list (pydantic models are immutable by convention).
     enriched: list[SearchHit] = []
     for hit in hits:
         new_summary = new_summaries.get(hit.conversation.uuid)
@@ -340,34 +338,34 @@ def get_chat(
     messages_limit: int = GET_CHAT_MESSAGES_LIMIT_DEFAULT,
     messages_offset: int = 0,
 ) -> dict[str, Any]:
-    """Trae una conversación con sus mensajes en orden cronológico.
+    """Fetch a conversation with its messages in chronological order.
 
-    Por defecto devuelve los primeros 10 mensajes desde el inicio del chat
-    (`GET_CHAT_MESSAGES_LIMIT_DEFAULT`). Cada mensaje se trunca a
-    `GET_CHAT_MESSAGE_TEXT_MAX_CHARS` (1500 chars) para que el response total
-    quepa en el tope de tokens del cliente MCP. Worst case: ~17k chars.
-    Para chats largos, paginar con `messages_offset` o pedir
-    `messages_limit` explícito (max 100).
+    By default returns the first 10 messages from the start of the chat
+    (`GET_CHAT_MESSAGES_LIMIT_DEFAULT`). Each message is truncated to
+    `GET_CHAT_MESSAGE_TEXT_MAX_CHARS` (1500 chars) so the total response
+    fits inside the MCP client's token cap. Worst case: ~17k chars. For
+    long chats, paginate with `messages_offset` or pass an explicit
+    `messages_limit` (max 100).
 
-    Si el chat referencia un project, se incluyen sus metadatos
-    (uuid, name, description, prompt_template).
+    If the chat references a project, its metadata is included (uuid, name,
+    description, prompt_template).
 
-    El campo `raw_content` de los mensajes (JSON original con bloques tool_use
-    y tool_result) se omite siempre: pesa mucho y solo es útil para análisis
-    especializado. Si en el futuro hace falta, se agrega via parámetro
-    `include_raw_content=True`.
+    The `raw_content` field of messages (original JSON with tool_use and
+    tool_result blocks) is always omitted: it weighs a lot and is only
+    useful for specialized analysis. If needed later, add an
+    `include_raw_content=True` parameter.
 
-    Devuelve `{"error": ...}` si el uuid no existe o está vacío.
+    Returns `{"error": ...}` if the uuid does not exist or is empty.
     """
     if not uuid.strip():
-        return {"error": "El uuid no puede estar vacío."}
+        return {"error": "uuid cannot be empty."}
 
     messages_limit = max(1, min(messages_limit, GET_CHAT_MESSAGES_LIMIT_MAX))
     messages_offset = max(0, messages_offset)
 
     conv = repo.get_conversation(conn, uuid)
     if conv is None:
-        return {"error": f"No se encontró conversación con uuid='{uuid}'."}
+        return {"error": f"No conversation found with uuid='{uuid}'."}
 
     all_messages = repo.get_messages_for_conversation(conn, uuid)
     total = len(all_messages)
@@ -433,7 +431,7 @@ def find_related(
     """
     ctx = context.strip()
     if not ctx:
-        return {"error": "El contexto no puede estar vacío."}
+        return {"error": "Context cannot be empty."}
 
     if len(ctx) > FIND_RELATED_MAX_INPUT_CHARS:
         ctx = ctx[:FIND_RELATED_MAX_INPUT_CHARS]
@@ -493,7 +491,7 @@ def list_recent_chats(
     limit: int = 10,
     source: str | None = None,
 ) -> dict[str, Any]:
-    """Lista los chats más recientes ordenados por updated_at descendente."""
+    """List the most recent chats sorted by updated_at descending."""
     limit = max(1, min(limit, LIST_LIMIT_MAX))
 
     src_filter: Source | None = None
@@ -521,13 +519,13 @@ def list_recent_chats(
     }
 
 
-# ---------- helpers privados ----------
+# ---------- private helpers ----------
 
 
 def _invalid_source_error(value: str | None) -> dict[str, Any]:
     valid = ", ".join(s.value for s in Source)
     return {
-        "error": f"Source inválido: {value!r}. Válidos: {valid}.",
+        "error": f"Invalid source: {value!r}. Valid: {valid}.",
     }
 
 
@@ -541,10 +539,10 @@ def _project_dict(p: Project) -> dict[str, Any]:
 
 
 def _truncate(s: str | None, max_chars: int) -> str | None:
-    """Recorta el string a `max_chars` y agrega `…[truncated]` si se pasó.
+    """Truncate the string to `max_chars` and append `…[truncated]` if exceeded.
 
-    Devuelve `None` tal cual. Útil para summaries y mensajes largos que
-    explotan el límite de tokens del cliente MCP.
+    Returns `None` as-is. Useful for summaries and long messages that blow
+    past the MCP client's token cap.
     """
     if s is None:
         return None
