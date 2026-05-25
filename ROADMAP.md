@@ -1,8 +1,8 @@
 # Roadmap
 
-> Last updated: 2026-05-23
+> Last updated: 2026-05-25
 
-**Current state:** Phases 0 to 3 closed. **Phase 5 in progress:** code-side packaging tasks done (PyPI prep + Linux autostart + `memex doctor` + Chrome Web Store checklist). Remaining: maintainer-side submissions (PyPI publish, Chrome Web Store), screencast, Discord update. **341 unit tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 3 closed. **Phase 5 essentially done:** `memex-chats 0.1.0` published to PyPI; Chrome extension `memex-live-capture 0.1.0` submitted to the Web Store (in review). Remaining Phase 5 items are non-blocking (screencast, Discord post after Web Store approval, macOS launchd in 0.2.0). **Next:** Phase 4 (remote transport). **341 unit tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
@@ -113,10 +113,10 @@ The context Claude.ai has should also be available to Claude Code. Every phase h
 - [x] **PyPI prep: rename `memex` → `memex-mcp`, refresh pyproject metadata.** Description in English, `Operating System :: OS Independent` classifier, `Development Status :: 3 - Alpha`, `[project.urls]` for Homepage / Repository / Issues / Changelog. CLI entry point stays `memex`. Build smoke (`uv build`) produces a clean `memex_mcp-0.1.0-py3-none-any.whl`. Publication itself to PyPI requires the maintainer's token; commands documented. (2026-05-25)
 - [x] **Chrome Web Store submission checklist.** Manifest description translated to English, version aligned to `0.1.0`. Full submission playbook in `chrome-extension/WEB_STORE_CHECKLIST.md`: developer account fee, privacy policy URL, asset sizes (icons, screenshots, promo tiles), submission ZIP build, listing copy ready to paste, permissions justification table. Actual submission requires the maintainer's developer account. (2026-05-25)
 - [x] README quickstart revised for installable alpha (`pip install memex-chats` / `uvx --from memex-chats memex` path first, source path second). Autostart section unified across Windows + Linux + macOS placeholder. (Distribution renamed to `memex-chats` after `memex-mcp` turned out to be claimed on PyPI by an unrelated project; CLI commands `memex` and `memex-mcp` are unchanged.)
-- [ ] Submit Chrome extension to the Web Store (manual, blocked on the maintainer's developer account).
-- [ ] Publish to PyPI (manual, blocked on the maintainer's PyPI token).
+- [x] **PyPI publish.** `memex-chats 0.1.0` live at https://pypi.org/project/memex-chats/ (2026-05-25). First publish attempt under `memex-mcp` failed with HTTP 403 because that name had been claimed earlier the same day by an unrelated MCP project; renamed the distribution to `memex-chats` (CLI commands unchanged, no breaking change for existing `.mcp.json` configs). Wheel + sdist uploaded with an explicit file list to `uv publish` after a stray Chrome ext ZIP in `dist/` confused the tool the first time; layout fixed afterwards by moving Web Store artifacts to `chrome-extension/dist/`.
+- [x] **Chrome Web Store submission.** `memex-live-capture 0.1.0` submitted on 2026-05-25 with `Unlisted` visibility for alpha. Listing copy, screenshots, permissions justifications, and the `PRIVACY.md` URL provided per the checklist. In review (typical first-pass: 5 to 10 business days).
 - [ ] Screencast / demo video (nice to have, not blocking).
-- [ ] Update Discord post and gather feedback.
+- [ ] Update Discord post and gather feedback (planned after the Web Store approval, so the install link is in the post).
 - [ ] macOS launchd support (deferred to 0.2.0).
 
 ---

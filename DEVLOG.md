@@ -18,7 +18,21 @@ Touched: `pyproject.toml` (`name`), `PRIVACY.md`, `README.md` install commands, 
 
 **Security note.** While testing publish I asked the user to paste a PyPI token; they pasted it into the chat. Treated as compromised and asked them to revoke + reissue on the spot. Lesson learned: keep tokens out of the chat input field entirely.
 
-**Next:** rebuild wheel, commit, push, then publish to PyPI with a fresh token.
+**Followup (same day):** rebuild + commit + push landed in `0df7ee4`. `v0.1.0` tag moved from the prior commit to `0df7ee4` (force-tag-push, branch not touched) so the tag points at the publishable code. Fresh PyPI token (account-scoped, then revoked the leaked one); first `uv publish` failed because `dist/` had the Chrome ext ZIP and uv tried to upload it (`Only files ending in .tar.gz are valid source distributions`). Worked around by passing an explicit file list to `uv publish`, then moved the Chrome ZIP to `chrome-extension/dist/` and updated the WEB_STORE_CHECKLIST in `0023cd9` so the trap does not bite again. `memex-chats 0.1.0` confirmed live at https://pypi.org/project/memex-chats/.
+
+**Chrome Web Store submission (same day).** Dashboard form filled in English: store listing (name, summary, long description, category Productivity, support URL), privacy practices (single-purpose statement, per-permission justifications, "Website content" as the only data-usage category, the 3 program-policy certifications), and `Unlisted` visibility for the alpha. Privacy policy URL pointed at `PRIVACY.md` on GitHub (added earlier in this session). Submitted, in review.
+
+**Cumulative session output (2026-05-25):**
+
+- Phase 5 code-side packaging closed (`memex doctor`, `memex install-service`, Linux systemd unit, PyPI prep, Web Store checklist).
+- Final English/em-dash audit across `src/`, tests, and remaining docs (CLAUDE.md, chrome-extension README, popup, background).
+- `memex-chats 0.1.0` live on PyPI.
+- `memex-live-capture 0.1.0` submitted to Chrome Web Store (in review).
+- `PRIVACY.md` added at repo root.
+- `v0.1.0` tag points to the publishable commit.
+- 341 unit tests green, `ruff` + `mypy` clean.
+
+**Next:** Phase 4 (remote transport). Open design questions to settle before coding: how Claude.ai reaches the user's machine (tunnel via cloudflared/ngrok vs port-forward), auth scheme (local token in header), and the boundary between the local stdio MCP and a remote SSE/HTTP MCP (one binary serving both modes vs separate processes).
 
 ---
 
