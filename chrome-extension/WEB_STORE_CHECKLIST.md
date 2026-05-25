@@ -45,32 +45,37 @@ submit for review.
 ## Build the submission ZIP
 
 The store wants a single ZIP of the extension folder (NOT the whole
-repo). From the repo root:
+repo). The output goes to `chrome-extension/dist/`, NOT to the top-level
+`dist/` (which is reserved for the Python `uv build` artifacts that go
+to PyPI).
+
+From the repo root, cross-platform:
 
 ```bash
-cd chrome-extension
-# Exclude README/checklist and anything not shipped to users.
-zip -r ../dist/memex-live-capture-0.1.0.zip . \
-  -x "*.md" -x ".*" -x "*.DS_Store"
-cd ..
-ls -la dist/memex-live-capture-0.1.0.zip
-```
-
-On Windows PowerShell:
-
-```powershell
-Compress-Archive `
-  -Path chrome-extension\* `
-  -DestinationPath dist\memex-live-capture-0.1.0.zip `
-  -Force
-# Then manually remove README.md / WEB_STORE_CHECKLIST.md from the zip
-# (PowerShell does not have a built-in exclusion flag).
+python -c "
+import os, zipfile
+src = 'chrome-extension'
+dst = 'chrome-extension/dist/memex-live-capture-0.1.0.zip'
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+keep_dirs = ('icons', 'src')
+keep_files = ('manifest.json',)
+with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for f in keep_files:
+        zf.write(os.path.join(src, f), arcname=f)
+    for d in keep_dirs:
+        for root, _, files in os.walk(os.path.join(src, d)):
+            for name in files:
+                full = os.path.join(root, name)
+                rel = os.path.relpath(full, src).replace(os.sep, '/')
+                zf.write(full, arcname=rel)
+print('built', dst)
+"
 ```
 
 Verify the zip:
 
 ```bash
-unzip -l dist/memex-live-capture-0.1.0.zip
+unzip -l chrome-extension/dist/memex-live-capture-0.1.0.zip
 # Expected entries (no .md files, no hidden files):
 #   manifest.json
 #   icons/
