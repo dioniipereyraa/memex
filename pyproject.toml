@@ -1,6 +1,6 @@
 [project]
 name = "memex-chats"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local MCP server that indexes your Claude.ai chats and exposes them to Claude Code (and, soon, to Claude.ai via remote MCP)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -20,10 +20,13 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastmcp>=0.2.0",
+    # Lower bounds raised to exclude known-vulnerable releases for PyPI installs
+    # (pip/pipx/uvx do not consult the committed uv.lock). fastmcp 2.x and
+    # starlette < 0.47.2 (CVE-2025-54121, multipart DoS) are excluded.
+    "fastmcp>=3.2.0",
     "sqlite-vec>=0.1.6",
     "fastembed>=0.4.0",
-    "starlette>=0.40",
+    "starlette>=0.47.2",
     "uvicorn>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",

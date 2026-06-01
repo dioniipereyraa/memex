@@ -8,6 +8,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pr
 
 (nothing yet — Phase 4 work starts after this line)
 
+## [0.1.1] - 2026-06-01
+
+Security hardening release following a full multi-agent audit (no critical/high findings; the data layer audited clean). Local single-user threat model.
+
+### Security
+- **Live-capture access token.** `POST /ingest/conversation` now requires an `X-Memex-Token` header in addition to the extension Origin check; the Origin header alone is forgeable by any non-browser local process. The token is generated on first use, stored user-only (0600) next to the database, printed by `memex serve`, and available via the new `memex token` command. **Breaking: the Chrome extension must be re-paired once** (paste the token into the popup's new token field).
+- **DNS-rebinding defense.** The ingest server pins the Host header to a loopback allow-list via `TrustedHostMiddleware` (`MEMEX_INGEST_ALLOWED_HOSTS`). `GET /health` no longer returns the service name, so it is not a presence-fingerprint oracle.
+- **Request/resource caps.** Ingest request bodies are capped (`MEMEX_INGEST_MAX_BODY_BYTES`, default 16 MB) and rejected with `413` before buffering. Chunking is bounded per conversation (`MEMEX_MAX_CHUNKS_PER_CONVERSATION`, default 5000).
+- **Database confidentiality.** The SQLite DB is created `0600` and its directory `0700` (so the plaintext WAL/SHM sidecars are not world-readable on shared hosts). `PRAGMA busy_timeout` is now set explicitly.
+- **Indirect prompt-injection mitigation.** MCP tool results include a `_meta.untrusted_content` envelope marking retrieved chat content as data (not instructions); the Anthropic summarizer fences the chat body and is told never to follow instructions inside it.
+- **Supply chain.** Raised dependency floors for PyPI installs: `starlette>=0.47.2` (CVE-2025-54121) and `fastmcp>=3.2.0`.
+
+### Changed
+- WAL write lock is held only during the DB write phase: embeddings are computed before the transaction opens, reducing cross-process `SQLITE_BUSY` between `memex serve` and `memex-mcp`. Lazy-summary persistence is best-effort and no longer fails a search on transient lock contention.
+- `OLLAMA_HOST` is validated and warns when it points off-box; `fastembed` warns when a non-default (unpinned) embedding model is selected; the extension validates the server URL against the CSP allow-list.
+
 ## [0.1.0] - 2026-05-25
 
 First public alpha. Published to PyPI as `memex-chats`; Chrome extension `memex-live-capture` submitted to the Chrome Web Store. Bundles Phase 3 (quality pass) and Phase 5 (release packaging) work.

@@ -33,6 +33,9 @@ const render = ({ stats, config }) => {
   if (config && config.serverUrl) {
     $("server-url").value = config.serverUrl;
   }
+  if (config && typeof config.token === "string") {
+    $("token").value = config.token;
+  }
   renderChip(stats?.serverReachable ?? null);
 
   $("ingested-count").innerHTML = `<code>${stats?.ingested ?? 0}</code>`;
@@ -75,6 +78,13 @@ $("save-url").addEventListener("click", async () => {
   const url = $("server-url").value.trim();
   if (!url) return;
   await chrome.runtime.sendMessage({ type: "set-server-url", serverUrl: url });
+  await chrome.runtime.sendMessage({ type: "ping-server" });
+  refresh();
+});
+
+$("save-token").addEventListener("click", async () => {
+  const token = $("token").value.trim();
+  await chrome.runtime.sendMessage({ type: "set-token", token });
   await chrome.runtime.sendMessage({ type: "ping-server" });
   refresh();
 });

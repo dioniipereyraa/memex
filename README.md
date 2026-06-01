@@ -205,7 +205,7 @@ So that new Claude.ai chats land in Memex without asking for a manual export:
    ```powershell
    uv run memex serve
    ```
-   Listens on `127.0.0.1:5777` by default. Keep it running while you browse claude.ai.
+   Listens on `127.0.0.1:5777` by default. Keep it running while you browse claude.ai. On start it prints an **access token**; the extension must send it (the loopback Origin check alone does not authenticate other local processes). Reprint it any time with `uv run memex token`.
 
 2. **Load the Chrome extension**:
    - Soon: install from the [Chrome Web Store](https://chrome.google.com/webstore/devconsole) (in review for the alpha).
@@ -215,7 +215,9 @@ So that new Claude.ai chats land in Memex without asking for a manual export:
      - **Load unpacked** → pick `chrome-extension/` from the repo
      - Click the Memex icon and confirm the "Server" chip says **responding** (green).
 
-3. **Use claude.ai normally.** Every chat you open or create is ingested automatically. Verify with `memex stats` or by calling `search_chats` from Claude Code.
+3. **Pair the extension with the access token.** Run `uv run memex token`, copy the value, paste it into the extension popup's token field, and click **Save token**. This is a one-time step per machine (the token lives user-only next to your DB). Without it, ingest requests are rejected with `401`.
+
+4. **Use claude.ai normally.** Every chat you open or create is ingested automatically. Verify with `memex stats` or by calling `search_chats` from Claude Code.
 
 Details in [chrome-extension/README.md](chrome-extension/README.md).
 

@@ -28,6 +28,7 @@ def chunk_text(
     max_tokens: int = 500,
     overlap_tokens: int = 50,
     chars_per_token: float = 4.0,
+    max_chunks: int | None = None,
 ) -> list[ChunkSpan]:
     """Split `text` into chunks of ~max_tokens with overlap_tokens between neighbors.
 
@@ -35,6 +36,10 @@ def chunk_text(
     - Returns `[ChunkSpan(text, 0, len(text))]` if everything fits in one chunk.
     - Each chunk guarantees `text[span.char_start:span.char_end] == span.text`.
     - Consecutive chunks overlap by `overlap_tokens * chars_per_token` chars.
+    - If `max_chunks` is set, stops after that many chunks (the tail of the
+      text is dropped). Callers can detect truncation because the last span's
+      `char_end` is then `< len(text)`. Use it to bound the chunk/embed/store
+      amplification of a single oversized input.
 
     Raises `ValueError` if parameters are invalid.
     """
@@ -46,6 +51,8 @@ def chunk_text(
         raise ValueError("chars_per_token must be > 0")
     if overlap_tokens >= max_tokens:
         raise ValueError("overlap_tokens must be less than max_tokens")
+    if max_chunks is not None and max_chunks <= 0:
+        raise ValueError("max_chunks must be > 0 when provided")
 
     if not text:
         return []
@@ -63,6 +70,8 @@ def chunk_text(
         end = min(pos + max_chars, len(text))
         chunks.append(ChunkSpan(text=text[pos:end], char_start=pos, char_end=end))
         if end >= len(text):
+            break
+        if max_chunks is not None and len(chunks) >= max_chunks:
             break
         pos += step
     return chunks

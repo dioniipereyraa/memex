@@ -230,10 +230,37 @@ def serve(
     if db_path is not None:
         http_ingest._conn = connect_and_init(db_path, check_same_thread=False)
 
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        console.print(
+            f"[yellow]Warning:[/yellow] binding to [bold]{host}[/bold] exposes live "
+            "capture beyond loopback. The access token is required, but treat the "
+            "port as reachable by other machines on your network."
+        )
+
+    # Per-install access token. Required on /ingest; paste it into the Chrome
+    # extension popup once to pair. Stored user-only next to the DB.
+    token = http_ingest.load_or_create_ingest_token()
+    http_ingest._token = token
+
     console.print(f"[bold]Memex serve[/bold] listening on [cyan]http://{host}:{port}[/cyan]")
     console.print("Connect the Memex Chrome ext and start using claude.ai.")
+    console.print("Pair the extension with this access token (paste it in the popup):")
+    console.print(f"  [bold cyan]{token}[/bold cyan]")
     console.print("[dim]Ctrl+C to stop.[/dim]\n")
     uvicorn.run(http_ingest.app, host=host, port=port, log_level="info")
+
+
+@app.command("token")
+def show_token() -> None:
+    """Print the live-capture access token (paste it into the Chrome extension).
+
+    The token authenticates the extension to the local `memex serve` endpoint.
+    It is generated on first use and stored user-only next to the database
+    (see `MEMEX_DB_PATH`). Re-run this any time you need to re-pair.
+    """
+    from memex.transports import http_ingest
+
+    console.print(http_ingest.load_or_create_ingest_token())
 
 
 @app.command("reindex-fts")

@@ -15,11 +15,19 @@ const RETRY_DELAYS_MS = [2000, 8000]; // entre intento 1-2 y 2-3
 
 // ---------- helpers ----------
 
+// Origins the server URL is allowed to point at. Kept in sync with the
+// manifest `connect-src` CSP, which already blocks any other destination.
+const ALLOWED_ORIGINS = ["http://127.0.0.1:5777", "http://localhost:5777"];
+
 const getConfig = async () => {
-  const { serverUrl } = await chrome.storage.local.get({
+  const { serverUrl, token } = await chrome.storage.local.get({
     serverUrl: DEFAULT_SERVER_URL,
+    token: "",
   });
-  return { serverUrl: typeof serverUrl === "string" && serverUrl ? serverUrl : DEFAULT_SERVER_URL };
+  return {
+    serverUrl: typeof serverUrl === "string" && serverUrl ? serverUrl : DEFAULT_SERVER_URL,
+    token: typeof token === "string" ? token : "",
+  };
 };
 
 const getStats = async () => {
@@ -82,7 +90,15 @@ const handleCapture = async (payload) => {
     return;
   }
 
-  const { serverUrl } = await getConfig();
+  const { serverUrl, token } = await getConfig();
+
+  if (!token) {
+    await recordIngestFailure(
+      "no-token",
+      "No access token set. Run `memex token` and paste it in the popup.",
+    );
+    return;
+  }
 
   // Retry: si el server está bajando el modelo de fastembed la primera vez,
   // o si hubo un network glitch, reintentamos con backoff antes de marcar fail.
@@ -92,7 +108,7 @@ const handleCapture = async (payload) => {
     try {
       response = await fetch(`${serverUrl}${INGEST_PATH}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Memex-Token": token },
         body: JSON.stringify(body),
       });
       lastNetworkErr = null;
@@ -170,7 +186,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ ok: false, error: "Empty URL" });
       return false;
     }
+    let parsed;
+    try {
+      parsed = new URL(newUrl);
+    } catch (_) {
+      sendResponse({ ok: false, error: "Invalid URL" });
+      return false;
+    }
+    if (!ALLOWED_ORIGINS.includes(parsed.origin)) {
+      sendResponse({
+        ok: false,
+        error: "URL must be http://127.0.0.1:5777 or http://localhost:5777",
+      });
+      return false;
+    }
     chrome.storage.local.set({ serverUrl: newUrl }, () => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === "set-token") {
+    const token = typeof msg.token === "string" ? msg.token.trim() : "";
+    chrome.storage.local.set({ token }, () => sendResponse({ ok: true }));
     return true;
   }
 

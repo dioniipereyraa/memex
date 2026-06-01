@@ -12,6 +12,8 @@ connection, not in the SQL.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import sqlite3
 from pathlib import Path
 
@@ -20,6 +22,13 @@ import sqlite_vec
 from memex.config import settings
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+# The DB (and its -wal/-shm sidecars) hold the user's full chat history in
+# plaintext. Create it user-only so other local accounts cannot read it on a
+# shared host. SQLite gives the sidecars the same mode as the main file, so
+# restricting the main file on creation is enough.
+_DB_FILE_MODE = 0o600
+_DB_DIR_MODE = 0o700
 
 
 def get_connection(
@@ -45,9 +54,17 @@ def get_connection(
     else:
         target = db_path
 
+    file_is_new = False
     if isinstance(target, Path) or (isinstance(target, str) and target != ":memory:"):
         path = Path(target)
+        parent_existed = path.parent.exists()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Lock down the directory only if WE just created it, so we do not
+        # fight an admin who deliberately widened a pre-existing data dir.
+        if not parent_existed:
+            with contextlib.suppress(OSError):
+                os.chmod(path.parent, _DB_DIR_MODE)
+        file_is_new = not path.exists()
         connect_target: str = str(path)
     else:
         connect_target = ":memory:"
@@ -58,6 +75,13 @@ def get_connection(
         check_same_thread=check_same_thread,
     )
     conn.row_factory = sqlite3.Row
+
+    # Restrict the freshly-created DB file before any data is written (so the
+    # WAL/SHM sidecars inherit 0600 too). No-op on Windows where chmod is
+    # advisory. Guarded so a read-only FS or odd ownership never breaks open.
+    if connect_target != ":memory:" and file_is_new:
+        with contextlib.suppress(OSError):
+            os.chmod(connect_target, _DB_FILE_MODE)
 
     conn.enable_load_extension(True)
     try:
@@ -70,6 +94,12 @@ def get_connection(
     if connect_target != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    # Explicit busy timeout: under WAL only one writer holds the DB at a time.
+    # `memex serve` (ingest) and `memex-mcp` (lazy-summary write) are separate
+    # processes, so a write can briefly contend. Wait instead of failing fast.
+    # CPython's sqlite3 default happens to be 5000ms; set it explicitly so it
+    # does not silently change and so the value is intentional and documented.
+    conn.execute("PRAGMA busy_timeout = 15000")
 
     return conn
 

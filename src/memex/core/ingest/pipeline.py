@@ -57,6 +57,9 @@ class IngestSummary(BaseModel):
     messages: int = 0
     chunks: int = 0
     skipped_empty_messages: int = 0
+    # Conversations whose text exceeded `max_chunks_per_conversation` and were
+    # truncated (tail dropped) to bound resource use.
+    truncated_conversations: int = 0
     errors: list[str] = Field(default_factory=list)
 
 
@@ -267,6 +270,46 @@ def _ingest_conversation(
 
     conv = conv.model_copy(update={"content_hash": content_hash})
 
+    # ---- Read + compute phase (NO writes, so the WAL write lock is not held) ----
+    # All embedding work and repo matching happen BEFORE the first write
+    # statement. Under WAL the write lock is acquired on the first DML and held
+    # until commit; embedding a long chat can take seconds, so doing it here
+    # keeps the lock window down to the fast write phase below. This matters
+    # because `memex serve` and `memex-mcp` write to the same DB from two
+    # processes (audit: cross-process SQLITE_BUSY).
+    repo_matches = _match_repos(conn, full_text) if full_text else []
+    prepared_chunks: list[tuple[Chunk, list[float]]] = []
+    if full_text:
+        spans = chunk_text(
+            full_text,
+            max_tokens=chunk_size_tokens,
+            overlap_tokens=chunk_overlap_tokens,
+            max_chunks=settings.max_chunks_per_conversation,
+        )
+        if spans and spans[-1].char_end < len(full_text):
+            summary.truncated_conversations += 1
+            logger.warning(
+                "Conversation %s exceeded max_chunks_per_conversation (%d); truncating the tail.",
+                conv.uuid,
+                settings.max_chunks_per_conversation,
+            )
+        for batch in _batched(spans, batch_size):
+            texts = [s.text for s in batch]
+            vectors = embedder.embed(texts)
+            for span, vec in zip(batch, vectors, strict=True):
+                msg_uuid, sender = _lookup_msg(msg_map, span.char_start)
+                chunk = Chunk(
+                    conversation_uuid=conv.uuid,
+                    message_uuid=msg_uuid,
+                    sender=sender,
+                    text=span.text,
+                    char_start=span.char_start,
+                    char_end=span.char_end,
+                    created_at=conv.updated_at,
+                )
+                prepared_chunks.append((chunk, vec))
+
+    # ---- Write phase (holds the WAL write lock; kept tight, no embedding) ----
     repo.insert_conversation(conn, conv)
     summary.conversations += 1
 
@@ -280,35 +323,21 @@ def _ingest_conversation(
     if not full_text:
         return
 
-    # Auto-detect repo associations. No-op if no repos are registered.
-    # Manual ('manual' source) associations are preserved by
-    # `repo.associate_chat_repo` (it refuses to overwrite a manual tag).
-    _scan_repos(conn, conv.uuid, full_text)
+    # Persist auto-detected repo associations. Manual ('manual' source)
+    # associations are preserved by `repo.associate_chat_repo` (it refuses to
+    # overwrite a manual tag).
+    for match in repo_matches:
+        repo.associate_chat_repo(
+            conn,
+            conv.uuid,
+            match.repo_key,
+            source="auto",
+            confidence=match.confidence,
+        )
 
-    spans = chunk_text(
-        full_text,
-        max_tokens=chunk_size_tokens,
-        overlap_tokens=chunk_overlap_tokens,
-    )
-    if not spans:
-        return
-
-    for batch in _batched(spans, batch_size):
-        texts = [s.text for s in batch]
-        vectors = embedder.embed(texts)
-        for span, vec in zip(batch, vectors, strict=True):
-            msg_uuid, sender = _lookup_msg(msg_map, span.char_start)
-            chunk = Chunk(
-                conversation_uuid=conv.uuid,
-                message_uuid=msg_uuid,
-                sender=sender,
-                text=span.text,
-                char_start=span.char_start,
-                char_end=span.char_end,
-                created_at=conv.updated_at,
-            )
-            repo.add_chunk(conn, chunk, vec)
-            summary.chunks += 1
+    for chunk, vec in prepared_chunks:
+        repo.add_chunk(conn, chunk, vec)
+        summary.chunks += 1
 
 
 def _hash_content(text: str) -> str:
@@ -317,33 +346,26 @@ def _hash_content(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _scan_repos(conn: sqlite3.Connection, conversation_uuid: str, text: str) -> None:
-    """Run the repo matcher and persist auto-associations.
+def _match_repos(conn: sqlite3.Connection, text: str) -> list[Any]:
+    """Read registered repos and run the matcher (READ-only, no writes).
 
-    Called from `_ingest_conversation` after the conv + messages are
-    persisted. Reads the registered repos from DB, runs the matcher, and
-    upserts each match as a `source='auto'` association.
+    Returns the list of matches (each with `.repo_key` and `.confidence`).
+    The caller persists them as `source='auto'` associations inside the write
+    phase. Splitting the read (here) from the write (caller) keeps the WAL
+    write lock held only during the fast write phase.
 
-    Idempotent: re-ingesting unchanged content re-asserts the same set of
-    associations. Manual tags survive because `associate_chat_repo`
+    Idempotent downstream: re-ingesting unchanged content re-asserts the same
+    set of associations. Manual tags survive because `associate_chat_repo`
     refuses to overwrite a `manual` with `auto`.
 
-    No-op when there are no repos registered yet (very common: a fresh
-    user has not run `memex repos add` yet). Errors from the matcher are
-    not caught here; they would indicate a bug, not a runtime condition.
+    Returns `[]` when there are no repos registered yet (very common: a fresh
+    user has not run `memex repos add`). Matcher errors are not caught here;
+    they would indicate a bug, not a runtime condition.
     """
     repos = repo.list_repos(conn)
     if not repos:
-        return
-    matches = match_text(text, repos)
-    for match in matches:
-        repo.associate_chat_repo(
-            conn,
-            conversation_uuid,
-            match.repo_key,
-            source="auto",
-            confidence=match.confidence,
-        )
+        return []
+    return list(match_text(text, repos))
 
 
 def _join_messages(

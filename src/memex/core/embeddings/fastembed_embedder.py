@@ -19,11 +19,14 @@ with `OllamaEmbedder` and the repo-wide convention).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Any
 
 from memex.config import settings
 from memex.core.embeddings.base import Embedder, EmbedderError, l2_normalize
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5-Q"
 
@@ -37,6 +40,13 @@ class FastEmbedEmbedder(Embedder):
         normalize: bool = True,
     ) -> None:
         self._model_name = model_name or settings.embed_model or DEFAULT_MODEL
+        if self._model_name != DEFAULT_MODEL:
+            logger.warning(
+                "Using a non-default embedding model %r. It is downloaded from the "
+                "model hub on first use without a pinned revision or integrity check; "
+                "only set MEMEX_EMBED_MODEL to a source you trust.",
+                self._model_name,
+            )
         self._normalize = normalize
         self._dim: int | None = None
         # Lazy import: fastembed pulls in numpy + onnxruntime (~30 MB); we
