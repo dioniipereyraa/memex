@@ -6,6 +6,29 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-01: full security audit + hardening pass (0.1.1)
+
+Ran a multi-agent security audit across 10 trust boundaries (HTTP ingest server, SQL/data layer, Chrome extension, untrusted-input parsing, secrets, filesystem, MCP tools / indirect prompt injection, CLI + autostart, external egress, dependencies), each finding adversarially verified before being accepted. Result: **no critical/high**, 2 medium, ~23 low, ~6 info. The data layer came back clean (every query parameterized, FTS5 input sanitized, no zip-slip, no `shell=True`, API key never logged). Threat model is a local single-user tool, so severity was calibrated accordingly (a bug needing local code-exec as the user is low).
+
+The interesting class is what this kind of tool inherently exposes: **weak ingest auth + indirect prompt injection**. Attacker-influenceable chat text can enter the store and is later fed verbatim to Claude Code.
+
+**Fixes applied this session (all green: 347 unit tests, ruff, mypy core):**
+
+- **Ingest auth token (was: forgeable Origin only).** `/ingest` now requires `X-Memex-Token` compared with `hmac.compare_digest`, on top of the Origin check. Token generated on first use via `secrets.token_urlsafe(32)`, stored 0600 next to the DB (`settings.ingest_token_path`), surfaced by `memex serve` and a new `memex token` command. Chrome extension paired via a token field in the popup; `background.js` sends the header and refuses to POST without it. **Breaking for live capture: users must re-pair once.**
+- **DNS-rebinding defense.** Added `TrustedHostMiddleware` pinning the Host header to a loopback allow-list (`MEMEX_INGEST_ALLOWED_HOSTS`). `/health` trimmed to `{"status":"ok"}` so it no longer fingerprints the product.
+- **Body + chunk caps (DoS).** Ingest body capped (`MEMEX_INGEST_MAX_BODY_BYTES`, default 16 MB) and rejected with 413 before buffering, via a streaming reader with a running byte counter. `chunk_text` gained `max_chunks`; the pipeline enforces `MEMEX_MAX_CHUNKS_PER_CONVERSATION` (default 5000) and records truncation in `IngestSummary.truncated_conversations`.
+- **DB file confidentiality.** `get_connection` now creates the DB 0600 and the dir 0700 (best-effort, only when we create them) before WAL is enabled, so the plaintext `-wal`/`-shm` sidecars inherit 0600. Set `PRAGMA busy_timeout = 15000` explicitly.
+- **WAL cross-process contention.** `_ingest_conversation` now computes all embeddings and repo matches BEFORE the first write, so the WAL write lock is held only for the tight write phase (not across multi-second embedding). Lazy-summary persistence in `tools.py` is best-effort: a transient `SQLITE_BUSY` from the other process no longer fails the whole search.
+- **Indirect prompt injection (medium).** Every MCP tool result carries a `_meta.untrusted_content` envelope telling the agent the chat content is data, not instructions, and that `[role]`/`[tool_use]`/`[result]` markers inside it are stored text, not real structure. The Anthropic summarizer wraps the chat body in `<content>` tags and its system prompt now says to never follow instructions inside it.
+- **Supply chain.** Raised PyPI dependency floors to exclude known-vulnerable releases for fresh installs: `starlette>=0.47.2` (CVE-2025-54121 multipart DoS), `fastmcp>=3.2.0` (2.x has unpatched CVEs). The lock already resolved healthy versions; this protects `pipx`/`uvx` users who do not consult `uv.lock`.
+- **Misc.** `OLLAMA_HOST` validated + warns when non-loopback (SSRF-shaped egress footgun). `fastembed` warns when a non-default (unpinned) model is requested. `set-server-url` in the extension validates the URL against the CSP allow-list.
+
+**Deliberately deferred (documented, not security-critical):** provenance column distinguishing live-captured from exported chats (#25); render-time neutralization of `[role]`/`[tool_use]` markers in stored text (needs re-ingest to fully apply; the MCP-boundary envelope covers the live read path); packaging `scripts/` into the wheel so `install-service` works for PyPI users (#12, no real exploit). Tracked in ROADMAP.
+
+**Next:** commit on a branch; if publishing 0.1.1, rebuild the Chrome ext ZIP and note the re-pair step in the store update.
+
+---
+
 ## 2026-05-25 (evening): PyPI name collision, rename to `memex-chats`
 
 First publish attempt failed. The name `memex-mcp` was already claimed on PyPI by an unrelated MCP project (Hill Patel / STiFLeR7) and version 0.3.9 had been pushed earlier the same day. So both `memex` (Caleb McCarthy, long-standing) and `memex-mcp` (claimed today) are taken.

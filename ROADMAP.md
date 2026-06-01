@@ -121,6 +121,24 @@ The context Claude.ai has should also be available to Claude Code. Every phase h
 
 ---
 
+## Security hardening (0.1.1, 2026-06-01)
+
+Full multi-agent audit across 10 trust boundaries; no critical/high, data layer clean. Fixes shipped in 0.1.1 (see CHANGELOG / DEVLOG):
+- [x] Per-install access token on `/ingest` (`X-Memex-Token`) + extension pairing; `memex token` command.
+- [x] `TrustedHostMiddleware` (DNS-rebinding) + non-fingerprinting `/health`.
+- [x] Request body cap (413) + per-conversation chunk cap.
+- [x] DB created `0600` / dir `0700`; explicit `busy_timeout`; shorter WAL write-lock hold; best-effort lazy-summary persist.
+- [x] Indirect-prompt-injection envelope on MCP results + summarizer body fencing.
+- [x] Dependency floors raised (`starlette>=0.47.2`, `fastmcp>=3.2.0`); `OLLAMA_HOST` / embed-model / extension-URL validation.
+
+Deferred follow-ups (low severity, tracked here):
+- [ ] Provenance column to distinguish live-captured from exported chats, surfaced through the MCP tools as an `unverified` flag.
+- [ ] Render-time neutralization of `[role]`/`[tool_use]`/`[result]` markers inside stored text (needs a re-ingest to fully apply; the MCP-boundary envelope already covers the read path).
+- [ ] Package `scripts/` into the wheel (or use `importlib.resources`) so `install-service` works for PyPI installs; revisit `-ExecutionPolicy Bypass`.
+- [ ] Pin the fastembed model revision / verify the cached artifact hash.
+
+---
+
 ## Out of scope
 
 - Multi-user or cross-account sharing.
