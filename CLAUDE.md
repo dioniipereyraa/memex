@@ -110,6 +110,17 @@ The `MEMEX.md` file is also in `.gitignore` because it is an internal context do
 - No `Co-Authored-By: Claude...`. No AI footers. No `Generated with Claude Code`.
 - One commit per logical unit of change.
 
+## Mistakes, bugs, and security findings (do not repeat)
+
+Running log of things that broke, were found in audits, or were non-obvious design constraints. Read before touching the related area.
+
+### Remote transport / claude.ai connectors (Phase 4, 2026-06-11)
+- **claude.ai connectors cannot use a pasted token or custom header.** The only auth schemes its UI accepts are *authless* or *full OAuth 2.0 with dynamic client registration* (PKCE S256). The ROADMAP's original "local token in header" idea was impossible for this client. If you ever re-touch remote auth, do not reach for a bearer/header scheme: it will not connect.
+- **The connection originates from Anthropic's cloud, never from the user's device.** So the server MUST be on a public HTTPS URL with a public IPv4 `A` record; `localhost`/private IPs are rejected at DNS validation. A tunnel (Tailscale Funnel) is mandatory, not optional. The user's machine must be on and the tunnel up for the connector to respond.
+- **Allow-list must be enforced on every request and fail closed.** `AllowlistGitHubProvider.verify_token` (`transports/http.py`) re-checks the GitHub identity on each call (token-result caching is disabled by default in fastmcp's `GitHubTokenVerifier`, so revocation is immediate). `build_remote_app` refuses to start with an empty allow-list. Never add a code path that builds the remote server with `auth=None`; the only legitimately authless server is local stdio.
+- **Match the immutable numeric id (`sub`), not just the username (`login`).** GitHub usernames are reusable after an account is deleted/renamed, so a username-only allow-list means a renamed/reused handle could grant access to the whole corpus. The allow-list now accepts either form (security audit LOW-1). The `login` claim itself is trustworthy (set live from `api.github.com/user`, keyed by the server-held token, not client-controllable) so it is fine to match on; the `sub` option is the stronger pin.
+- **Test pitfall: do not patch via `Class.__mro__[1]`.** A fastmcp version bump can reorder the MRO and silently change what gets patched. Patch the method on the class where it is defined (e.g. `GitHubProvider.verify_token`), which `super()` resolves to regardless of intermediate classes.
+
 ## Persistent memory
 
 There is project memory at `C:\Users\dioni\.claude\projects\d--Dionisio-Memex\memory\`. It contains workflow rules, user context, setup decisions. Read it at the start of each session.

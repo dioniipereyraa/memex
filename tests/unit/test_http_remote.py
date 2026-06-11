@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastmcp.server.auth.providers.github import GitHubProvider
 
 from memex.config import Settings
 from memex.transports.http import (
@@ -83,11 +84,21 @@ class TestValidateRemoteSettings:
 
 def make_provider(allowed: frozenset[str]) -> AllowlistGitHubProvider:
     return AllowlistGitHubProvider(
-        allowed_logins=allowed,
+        allowed=allowed,
         client_id="Iv1.fake-client-id",
         client_secret="fake-secret-long-enough-for-jwt",
         base_url="https://my-mac.tail1234.ts.net",
     )
+
+
+def patch_upstream(return_value):
+    """Patch the inherited verify_token (defined on GitHubProvider's base).
+
+    Patches the method on `GitHubProvider`, which is the class our subclass's
+    `super().verify_token()` resolves to via MRO regardless of intermediate
+    classes. More robust than indexing into `__mro__`.
+    """
+    return patch.object(GitHubProvider, "verify_token", new=AsyncMock(return_value=return_value))
 
 
 def make_access_token(claims: dict | None):
@@ -107,43 +118,36 @@ class TestAllowlistProvider:
     async def test_allowed_login_passes(self) -> None:
         provider = make_provider(frozenset({"dioni"}))
         upstream = make_access_token({"login": "Dioni", "sub": "1"})
-        with patch.object(
-            AllowlistGitHubProvider.__mro__[1],
-            "verify_token",
-            new=AsyncMock(return_value=upstream),
-        ):
+        with patch_upstream(upstream):
+            assert await provider.verify_token("x") is upstream
+
+    @pytest.mark.asyncio
+    async def test_allowed_numeric_id_passes(self) -> None:
+        # The allow-list entry is the immutable numeric account id, not the
+        # username. A renamed/reused username must not change the outcome.
+        provider = make_provider(frozenset({"123456"}))
+        upstream = make_access_token({"login": "whatever", "sub": "123456"})
+        with patch_upstream(upstream):
             assert await provider.verify_token("x") is upstream
 
     @pytest.mark.asyncio
     async def test_other_login_rejected(self) -> None:
         provider = make_provider(frozenset({"dioni"}))
         upstream = make_access_token({"login": "intruso", "sub": "2"})
-        with patch.object(
-            AllowlistGitHubProvider.__mro__[1],
-            "verify_token",
-            new=AsyncMock(return_value=upstream),
-        ):
+        with patch_upstream(upstream):
             assert await provider.verify_token("x") is None
 
     @pytest.mark.asyncio
     async def test_missing_login_claim_rejected(self) -> None:
         provider = make_provider(frozenset({"dioni"}))
         upstream = make_access_token({"sub": "3"})
-        with patch.object(
-            AllowlistGitHubProvider.__mro__[1],
-            "verify_token",
-            new=AsyncMock(return_value=upstream),
-        ):
+        with patch_upstream(upstream):
             assert await provider.verify_token("x") is None
 
     @pytest.mark.asyncio
     async def test_invalid_upstream_token_stays_rejected(self) -> None:
         provider = make_provider(frozenset({"dioni"}))
-        with patch.object(
-            AllowlistGitHubProvider.__mro__[1],
-            "verify_token",
-            new=AsyncMock(return_value=None),
-        ):
+        with patch_upstream(None):
             assert await provider.verify_token("x") is None
 
 

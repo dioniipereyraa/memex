@@ -1,7 +1,7 @@
 """Tests de las tools puras de `memex.transports.tools`.
 
 Tests directos sobre las funciones que devuelven dicts. La capa MCP de
-`stdio.py` solo serializa estos dicts a JSON, así que testear acá cubre
+`mcp_server.py` solo serializa estos dicts a JSON, así que testear acá cubre
 toda la lógica de retrieval que va a expose el servidor.
 """
 
@@ -127,7 +127,7 @@ class TestSearchChats:
     def test_embedder_error_becomes_json_error(self, populated_db: sqlite3.Connection) -> None:
         """`tools.search_chats` atrapa EmbedderError y devuelve un dict con `error`.
 
-        Esto es lo que permite que `stdio.search_chats` no necesite atraparlo:
+        Esto es lo que permite que `mcp_server.search_chats` no necesite atraparlo:
         el dict ya viene formateado para serializar a JSON.
         """
 

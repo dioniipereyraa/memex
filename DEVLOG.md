@@ -6,7 +6,7 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
-## 2026-06-11: Phase 4, remote MCP transport (code complete)
+## 2026-06-11: Phase 4, remote MCP transport (CLOSED)
 
 Goal of the phase: claude.ai consumes Memex as a remote MCP custom connector. Before coding, verified the current connector requirements against the official docs (support.claude.com + claude.com/docs/connectors, checked 2026-06): custom connectors exist on **all consumer plans** (Free is capped at one), one connector serves claude.ai web + Desktop + mobile, transport is **Streamable HTTP** (HTTP+SSE is deprecated), and the connection **originates from Anthropic's cloud**, never from the user's device. That settles the two open design questions from the Phase 1 notes:
 
@@ -23,7 +23,18 @@ Goal of the phase: claude.ai consumes Memex as a remote MCP custom connector. Be
 
 Also today: registered Memex in Claude Code at user scope on the Mac (`claude mcp add --scope user memex -- uv run --directory ~/Dionisio/memex memex-mcp`, health check green).
 
-**Pending to close the phase:** the Mac's DB is empty (the indexed corpus lives on the Windows machine), so end-to-end validation needs data first (fresh claude.ai export or live capture); then Tailscale install + Funnel, the GitHub OAuth App, the real connector test from claude.ai, and the phase-close audit.
+**End-to-end validation (same day):** populated the Mac DB from a fresh official export (2 projects, 96 conversations, 1607 messages, 1064 chunks, 0 errors). Brought up Tailscale Funnel (`https://dionisios-macbook-air.tail2a5fa8.ts.net` → loopback 8377), created the GitHub OAuth App (callback `/auth/callback`), filled `.env`, started `memex serve-remote`. Confirmed `/mcp` returns 401 unauthenticated both locally and through the Funnel, and the `/.well-known/oauth-protected-resource/mcp` metadata is served publicly. Added the connector in claude.ai, completed the GitHub OAuth dance, and `search_chats("transnova")` from a real claude.ai chat returned real indexed history. Goal of the project (the context claude.ai has is now also reachable the other way: Memex feeds claude.ai) demonstrated live.
+
+**Phase-close audit (two parallel auditors):**
+- *Security (attacker mindset over the internet-exposed surface):* no critical/high. The auditor traced the full request path through the installed fastmcp 3.3.1 source and confirmed: the allow-list runs on **every** request (Starlette `AuthenticationMiddleware` → `BearerAuthBackend` → our `verify_token`), the `login` claim is set live from `api.github.com/user` keyed by the server-held upstream token (not client-spoofable, JWT `upstream_claims` cannot override top-level `login`), verification caching is disabled by default (immediate revocation), and there is no fail-open path (empty allow-list aborts startup; the only authless server is local stdio). One LOW worth acting on (LOW-1): username reuse/rename on GitHub means a `login`-only allow-list could grant access to a future holder of the handle.
+- *Correctness/dead-code/docs:* no bugs. Refactor is behavior-preserving (singletons aligned, `server.tool(fn, run_in_thread=False)` loop registers identically to the old decorator, verified description + param schema). Docs consistent (port 8377, `/auth/callback`, setting names match `config.py` aliases). Two nitpicks: stale `stdio.py` references in docstrings, and a fragile `__mro__[1]` test patch.
+
+**Fixes applied at close (363 tests green, ruff + format + mypy clean):**
+- LOW-1: `AllowlistGitHubProvider` now matches an allow-list entry against the username (`login`) OR the immutable numeric account id (`sub`); param renamed `allowed_logins`→`allowed`. New test `test_allowed_numeric_id_passes`. `.env.example` documents the id option. Lesson logged in CLAUDE.md.
+- Stale docstrings in `tools.py` and `test_tools.py` updated from `stdio.py` to `mcp_server.py`.
+- Replaced `__mro__[1]` patching with a `patch_upstream` helper that patches `GitHubProvider.verify_token` directly. Lesson logged in CLAUDE.md.
+
+**Phase 4 CLOSED.** Operational caveat: the connector responds only while the Mac is on, the Funnel is up, and `memex serve-remote` is running. Persistent service (macOS launchd) stays a 0.2.0 item; for now it is started manually.
 
 ---
 

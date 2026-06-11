@@ -15,9 +15,10 @@ dynamic client registration; bearer tokens cannot be configured in its UI):
   authorizes via GitHub, and the proxy issues its own JWTs bound to the
   upstream GitHub token.
 - `AllowlistGitHubProvider` narrows that to a fixed set of GitHub
-  usernames: token verification fails (401) for anyone else, even after a
-  successful OAuth dance. Every MCP request re-validates the upstream
-  token, so revoking access on GitHub takes effect immediately.
+  identities (username or numeric id): token verification fails (401) for
+  anyone else, even after a successful OAuth dance. Every MCP request
+  re-validates the upstream token, so revoking access on GitHub takes
+  effect immediately.
 - OAuth state (client registrations, token mappings) is persisted by
   FastMCP encrypted on disk, keyed deterministically from the client
   secret, so server restarts do not break the claude.ai connection.
@@ -53,27 +54,39 @@ class RemoteConfigError(ValueError):
 
 
 class AllowlistGitHubProvider(GitHubProvider):
-    """GitHubProvider that only accepts a fixed set of GitHub usernames.
+    """GitHubProvider that only accepts a fixed set of GitHub identities.
 
     The OAuth dance itself succeeds for any GitHub account (GitHub does not
     know about our allow-list), but the token issued to a non-allowed user
     fails verification on every MCP request, so they never reach a tool.
+
+    Allow-list entries match against the username (`login`, case-insensitive)
+    OR the numeric account id (`sub`). GitHub usernames are reusable after an
+    account is deleted or renamed, so listing the immutable numeric id (find
+    it at https://api.github.com/users/<name>) is the stronger option; the
+    username form is kept because it is what people know offhand. An entry
+    matches if it equals either claim, so both can coexist.
     """
 
-    def __init__(self, *, allowed_logins: frozenset[str], **kwargs: object) -> None:
+    def __init__(self, *, allowed: frozenset[str], **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
-        self._allowed_logins = frozenset(login.lower() for login in allowed_logins)
+        self._allowed = frozenset(entry.lower() for entry in allowed)
 
     async def verify_token(self, token: str) -> AccessToken | None:
         access = await super().verify_token(token)
         if access is None:
             return None
-        login = (access.claims or {}).get("login")
-        if not isinstance(login, str) or login.lower() not in self._allowed_logins:
+        claims = access.claims or {}
+        login = claims.get("login")
+        sub = claims.get("sub")
+        login_ok = isinstance(login, str) and login.lower() in self._allowed
+        sub_ok = sub is not None and str(sub) in self._allowed
+        if not (login_ok or sub_ok):
             # Do not log the token; the login is enough to diagnose.
             logger.warning(
-                "Rejected GitHub user %r: not in MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS.",
+                "Rejected GitHub user %r (id %s): not in MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS.",
                 login,
+                sub,
             )
             return None
         return access
@@ -139,7 +152,7 @@ def build_remote_app(cfg: Settings | None = None) -> Starlette:
     base_url, allowed_logins = _validate_remote_settings(cfg)
 
     auth = AllowlistGitHubProvider(
-        allowed_logins=allowed_logins,
+        allowed=allowed_logins,
         client_id=(cfg.github_client_id or "").strip(),
         client_secret=(cfg.github_client_secret or "").strip(),
         base_url=base_url,

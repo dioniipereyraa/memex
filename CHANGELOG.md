@@ -10,7 +10,7 @@ Phase 4: remote MCP transport, so claude.ai (web, Desktop, and mobile) can consu
 
 ### Added
 - **`memex serve-remote`:** serves the same 4 MCP tools over Streamable HTTP at `/mcp`, protected by OAuth. Designed for a loopback bind behind a tunnel (e.g. Tailscale Funnel) that publishes `MEMEX_REMOTE_BASE_URL`.
-- **GitHub OAuth with a username allow-list.** claude.ai registers via dynamic client registration and the user authorizes through a GitHub OAuth App; `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS` is enforced on every request (fail closed: the server refuses to start with an empty allow-list, and any non-listed GitHub account gets 401 after the OAuth dance). OAuth state is persisted encrypted on disk, so restarts do not break the connection.
+- **GitHub OAuth with an identity allow-list.** claude.ai registers via dynamic client registration and the user authorizes through a GitHub OAuth App; `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS` is enforced on every request (fail closed: the server refuses to start with an empty allow-list, and any non-listed GitHub account gets 401 after the OAuth dance). Each entry matches the username or the immutable numeric account id (the id resists username rename/reuse). OAuth state is persisted encrypted on disk, so restarts do not break the connection.
 - New settings: `MEMEX_REMOTE_BASE_URL`, `MEMEX_REMOTE_PORT`, `MEMEX_GITHUB_CLIENT_ID`, `MEMEX_GITHUB_CLIENT_SECRET`, `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS`. README gained a "Connecting from claude.ai" guide.
 
 ### Changed

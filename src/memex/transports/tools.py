@@ -4,9 +4,9 @@ Each function takes a SQLite connection and/or an Embedder, does the work,
 and returns a serializable dict. These functions know NOTHING about MCP;
 they are testable directly with an in-memory DB and FakeEmbedder.
 
-The MCP layer (`transports/stdio.py`) wraps them, decorates them with
-`@server.tool`, and serializes the dict to JSON before returning to the
-MCP client.
+The MCP layer (`transports/mcp_server.py`) wraps them, registers them as
+`server.tool`s, and serializes the dict to JSON before returning to the
+MCP client. Both transports (stdio and remote HTTP) share that layer.
 """
 
 from __future__ import annotations
