@@ -151,6 +151,56 @@ class TestAllowlistProvider:
             assert await provider.verify_token("x") is None
 
 
+class TestAllowlistReload:
+    def test_reloads_from_env_file_on_change(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=alice\n", encoding="utf-8")
+        provider = AllowlistGitHubProvider(
+            allowed=frozenset({"alice"}),
+            env_path=env,
+            client_id="Iv1.fake-client-id",
+            client_secret="fake-secret-long-enough-for-jwt",
+            base_url="https://my-mac.tail1234.ts.net",
+        )
+        assert provider._current_allowed() == frozenset({"alice"})
+
+        # Remove alice, add bob: the change must take effect without a restart.
+        env.write_text("MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=bob\n", encoding="utf-8")
+        # Force a different (mtime, size) signature deterministically.
+        provider._env_sig = None
+        assert provider._current_allowed() == frozenset({"bob"})
+
+    def test_empty_env_keeps_last_good(self, tmp_path):
+        # A transient empty/truncated .env must NOT fail open to an empty list.
+        env = tmp_path / ".env"
+        env.write_text("MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=alice\n", encoding="utf-8")
+        provider = AllowlistGitHubProvider(
+            allowed=frozenset({"alice"}),
+            env_path=env,
+            client_id="Iv1.fake-client-id",
+            client_secret="fake-secret-long-enough-for-jwt",
+            base_url="https://my-mac.tail1234.ts.net",
+        )
+        provider._current_allowed()
+        env.write_text("", encoding="utf-8")  # truncated mid-edit
+        provider._env_sig = None
+        assert provider._current_allowed() == frozenset({"alice"})  # last good
+
+
+class TestConsentStaysEnabled:
+    def test_authorization_consent_not_disabled(self):
+        # The confused-deputy defense rests on the consent screen; a future
+        # change that disables it would silently open a token-theft path.
+        provider = AllowlistGitHubProvider(
+            allowed=frozenset({"alice"}),
+            client_id="Iv1.fake-client-id",
+            client_secret="fake-secret-long-enough-for-jwt",
+            base_url="https://my-mac.tail1234.ts.net",
+        )
+        consent = getattr(provider, "_require_authorization_consent", True)
+        assert consent not in (False, "external"), "consent screen must stay enabled"
+
+
 class TestBuildRemoteApp:
     def test_incomplete_config_raises(self) -> None:
         with pytest.raises(RemoteConfigError):

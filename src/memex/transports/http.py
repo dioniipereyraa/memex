@@ -33,6 +33,7 @@ Defense in depth, same spirit as `http_ingest.py`:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -41,7 +42,7 @@ from fastmcp.server.auth.providers.github import GitHubProvider
 from starlette.applications import Starlette
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from memex.config import Settings, get_settings, settings
+from memex.config import Settings, settings
 from memex.transports.mcp_server import build_server
 
 logger = logging.getLogger("memex.http")
@@ -78,28 +79,47 @@ class AllowlistGitHubProvider(GitHubProvider):
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._allowed = frozenset(entry.lower() for entry in allowed)
         # If given, the allow-list is re-read from this `.env` whenever its
-        # mtime changes, so removing a login takes effect without a daemon
-        # restart (closes the revocation gap). Falls back to the last good set.
+        # (mtime, size) changes, so removing a login takes effect without a
+        # daemon restart (closes the revocation gap). The file is read
+        # DIRECTLY (not via Settings) so it stays authoritative: a value
+        # exported as an OS env var would shadow the file in pydantic-settings
+        # and silently defeat the reload. Falls back to the last good set.
         self._env_path = env_path
-        self._env_mtime: float | None = None
+        self._env_sig: tuple[int, int] | None = None
+        if env_path is not None and "MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS" in os.environ:
+            logger.warning(
+                "MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS is set as an OS env var; it "
+                "shadows the .env file. Allow-list edits to .env will NOT take "
+                "effect until restart. Unset the env var to enable live reload."
+            )
+
+    def _read_allowed_from_env_file(self) -> frozenset[str]:
+        """Parse the allow-list line directly from the watched `.env` file."""
+        if self._env_path is None:
+            return frozenset()
+        try:
+            for raw in self._env_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if line.startswith("MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS"):
+                    _, _, value = line.partition("=")
+                    return parse_allowed_logins(value.strip().strip("\"'"))
+        except OSError:
+            logger.warning("Could not reload allow-list from %s; keeping previous.", self._env_path)
+        return frozenset()
 
     def _current_allowed(self) -> frozenset[str]:
         if self._env_path is None:
             return self._allowed
         try:
-            mtime = self._env_path.stat().st_mtime
+            st = self._env_path.stat()
+            sig = (st.st_mtime_ns, st.st_size)
         except OSError:
             return self._allowed
-        if mtime != self._env_mtime:
-            self._env_mtime = mtime
-            try:
-                fresh = parse_allowed_logins(get_settings().remote_allowed_github_logins)
-                if fresh:  # never drop to an empty (fail-open) allow-list
-                    self._allowed = fresh
-            except Exception:
-                logger.warning(
-                    "Could not reload allow-list from %s; keeping previous.", self._env_path
-                )
+        if sig != self._env_sig:
+            self._env_sig = sig
+            fresh = self._read_allowed_from_env_file()
+            if fresh:  # never drop to an empty (fail-open) allow-list
+                self._allowed = fresh
         return self._allowed
 
     async def verify_token(self, token: str) -> AccessToken | None:

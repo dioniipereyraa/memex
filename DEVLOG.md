@@ -21,7 +21,13 @@ Ran a final security audit with four parallel auditors (internet-facing connecto
 
 **Confirmed solid by the auditors (no change):** remote auth chain has no bypass (JWT unforgeable, allow-list per request, claims not client-spoofable); local capture token is constant-time compared and 0600; hook stdin handling is injection-safe (quoted, parsed via stdlib json); `.env` is 0600 and not in git; DB/sidecars 0600 in a 0700 dir.
 
-**Still open (next):** GitHub client secret rotation (user action, appeared in audit logs); adversarial red-team rounds against the reinforced redaction (per the user's ask, attack it many ways, re-attack what breaks); optional DCR `/register` rate-limit (LOW-1), provenance flag (MEDIUM-2), and injection sentinels (MEDIUM-1-inj) as defense-in-depth.
+**Adversarial red-team round 1 (4 attackers) + fixes:**
+
+Four red-teamers attacked the reinforced redaction (vendor formats, evasion/obfuscation, false-pos/neg + ReDoS) and the connector (second independent pass). They executed real attacks against `redact_secrets`, not theory. Redaction leaks found and fixed (redact.py rewritten again): pure-hex keys (Twilio/Datadog/Ethereum — entropy can never catch 64-hex, added a dedicated `\b(0x)?[0-9a-fA-F]{64}\b` rule gated on non-digest context); JSON quoted-key creds (`{"password": "x"}` — allow optional quotes around the assignment name); empty-user URLs (`redis://:pass@` — user segment `{0,256}`); single-charset random tokens (relaxed the 2-class gate to allow single-class at higher entropy ≥ 4.3); cleartext tail of >100-char secrets (token candidate upper bound 100 → 4096); more vendors (GitLab, Vault, Stripe webhook, DigitalOcean, New Relic, age, otpauth). False positives fixed (over-redaction kills search): removed `/` from the token charset and skip path-segment / digest-context tokens, so file paths, S3 object keys, git SHAs, and lockfile SRI hashes survive. A 32-entry MUST_REDACT / MUST_PRESERVE adversarial corpus (`test_redact_adversarial.py`) now guards both directions. No ReDoS (bounded quantifiers hold; ~4 MB/s linear).
+
+Connector (second pass): no auth bypass, no exfiltration; TrustedHost-outermost and the allow-list reload both verified correct against fastmcp source. Fixes: allow-list now read DIRECTLY from `.env` (not `Settings()`, which an exported env var would shadow), with `(mtime_ns, size)` change detection and a warn if the env var is set; regression test asserting the OAuth consent screen stays enabled (the confused-deputy defense). 451 tests green.
+
+**Still open (next):** GitHub client secret rotation (user action); red-team round 2 (re-attack with the same + new methods, per the user's ask); optional DCR `/register` rate-limit, provenance flag, injection sentinels as defense-in-depth.
 
 ---
 

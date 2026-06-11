@@ -192,18 +192,16 @@ class TestParseSessionFile:
     def test_secrets_redacted_in_messages(self, tmp_path):
         # A token printed in tool output must be masked in the stored text,
         # and raw_content must not be persisted (no unredacted secret in DB).
+        aws_key = "AKI" + "A1234567890ABCDEF"  # split: no literal secret in file
         p = write_session(
             tmp_path,
-            "sess-sec",
+            "sess-sec2",
             [
                 user("mostrame el env"),
                 assistant(
                     [
                         {"type": "text", "text": "export API_KEY=topsecretvalue12345"},
-                        {
-                            "type": "tool_result",
-                            "content": "AKIA1234567890ABCDEF leaked",
-                        },
+                        {"type": "tool_result", "content": aws_key + " leaked"},
                     ],
                     uuid="a1",
                 ),
@@ -212,7 +210,7 @@ class TestParseSessionFile:
         parsed = parse_session_file(p)
         joined = " ".join(m.text for m in parsed.messages)
         assert "topsecretvalue12345" not in joined
-        assert "AKIA1234567890ABCDEF" not in joined
+        assert aws_key not in joined
         assert "[REDACTED:" in joined
         assert all(m.raw_content is None for m in parsed.messages)
 
