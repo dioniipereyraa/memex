@@ -6,6 +6,18 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-11 (install docs): one-command installers + per-OS install section
+
+Rewrote the README install section to be per-OS (macOS / Linux / Windows / manual) and added `scripts/install.sh` + `scripts/install.ps1`: each installs uv (Astral's official installer, verified against docs.astral.sh) if missing, runs `uv sync` (which fetches the pinned Python 3.13, so no system Python is needed), and verifies with `memex doctor`. That is the closest honest thing to "one command" without shipping a binary: a click-installer (.dmg/.exe) is not feasible without heavy, fragile packaging (fastembed/onnxruntime/sqlite-vec), so it was not promised.
+
+Two honesty notes baked into the docs:
+- **PyPI is still 0.1.0**, which predates Phase 4 (claude.ai connector) and Phase 6 (Claude Code ingestion). The README now steers users to install from source for those features, with a note, instead of the old "install from PyPI (recommended)" that would hand them a stale build. Publishing a new release needs the maintainer's PyPI token (a bump + `uv build` + `uv publish`), tracked for later.
+- **`install.sh` was tested on this macOS box** (uv detected, `uv sync`, `memex doctor` → Python/DB/embedder OK). **`install.ps1` was written from the verified official uv Windows command but NOT run on a Windows machine** (none available here); it mirrors the shell script step for step and needs a real-Windows smoke test before being called proven.
+
+Ollama stays documented as optional (fastembed is the zero-config default); the install section no longer implies it is required.
+
+---
+
 ## 2026-06-11 (later): Phase 6, Claude Code / terminal ingestion (CLOSED)
 
 Same day, second push. The user wanted "one brain in different forms": claude.ai, Claude Code, and the terminal all searchable from anywhere. claude.ai → Memex already existed (export + live capture + the Phase 4 remote connector). The missing half was Claude Code / terminal → Memex. It had been parked as out-of-scope (deferring to Claude Historian), but the user explicitly prioritized a single unified store, so it moved in scope as Phase 6.

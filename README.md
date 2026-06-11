@@ -33,62 +33,89 @@ Memex fills that gap: runs locally, indexes the entire corpus of your chats, and
 
 Design: pure core (storage, ingest, embeddings, retrieval) decoupled from transport. The same engine serves both stdio and remote MCP without a rewrite.
 
-## Requirements
+## Installation
 
-- Python 3.12 or newer
-- [uv](https://docs.astral.sh/uv/) (package manager)
+Memex is a Python package. You do not need to install Python yourself: the
+installer below uses [uv](https://docs.astral.sh/uv/), which downloads the
+right Python (3.13) and all dependencies into a local environment. The only
+thing you need beforehand is [git](https://git-scm.com/downloads).
 
-Embeddings: **zero-config by default** (uses [fastembed](https://github.com/qdrant/fastembed) with a quantized 130 MB model that downloads itself the first time).
+Embeddings work **out of the box**: by default Memex uses
+[fastembed](https://github.com/qdrant/fastembed), which downloads a quantized
+130 MB model the first time you ingest. No Ollama, no API key, no extra setup.
+(Ollama is optional, see [Embeddings backend](#embeddings-backend) below.)
 
-If you would rather route through your local Ollama (because you already run it for other models), set:
-```bash
-export MEMEX_EMBED_BACKEND=ollama
-# and optionally:
-ollama pull nomic-embed-text
-```
+> Note: the published PyPI package (`memex-chats 0.1.0`) predates the
+> claude.ai remote connector and the Claude Code ingestion. Until the next
+> release is published, install from source (below) to get those features.
 
-## Quickstart
-
-### Option A: install from PyPI (recommended)
-
-```bash
-# One-time install (zero-config: includes fastembed for local embeddings).
-uvx --from memex-chats memex --help
-# Or with pipx if you prefer:
-pipx install memex-chats
-```
-
-Then:
-
-1. Request your official Claude.ai export (Settings → Privacy → Export data).
-2. Ingest it (the first run downloads the local embedding model, takes ~30s):
-   ```bash
-   memex ingest /path/to/your-export.zip
-   ```
-3. Verify the install:
-   ```bash
-   memex doctor
-   ```
-4. Search from the CLI or wire it into Claude Code (see [Wiring it into Claude Code](#wiring-it-into-claude-code) below):
-   ```bash
-   memex search "your query" -n 5
-   memex stats
-   ```
-
-To enable the always-on live capture and the chat ↔ repo features, see the corresponding sections below.
-
-### Option B: from source
+### macOS / Linux
 
 ```bash
 git clone https://github.com/dioniipereyraa/memex
 cd memex
-uv sync
-uv run memex doctor          # verify setup
-uv run memex ingest data/exports/<your-export>.zip
-uv run memex search "your query" -n 5
+./scripts/install.sh
 ```
 
-### Diagnostics
+`install.sh` installs uv if you do not have it, runs `uv sync`, and verifies
+the install with `memex doctor`. That is the whole setup.
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/dioniipereyraa/memex
+cd memex
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+Same three steps as the macOS script (install uv, sync, verify). If git is
+not installed, get it from [git-scm.com](https://git-scm.com/downloads) first.
+
+### Manual (any OS, if you prefer explicit steps)
+
+```bash
+# 1. Install uv (skip if you already have it):
+#    macOS/Linux:  curl -LsSf https://astral.sh/uv/install.sh | sh
+#    Windows:      powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+git clone https://github.com/dioniipereyraa/memex
+cd memex
+uv sync               # installs Python 3.13 + dependencies into .venv
+uv run memex doctor   # verify
+```
+
+## First run
+
+```bash
+# 1. Request your official Claude.ai export (Settings → Privacy → Export data),
+#    then ingest it (first run downloads the embedding model, ~30s):
+uv run memex ingest /path/to/your-export.zip
+
+# 2. Optionally index your local Claude Code / terminal sessions:
+uv run memex ingest-claude-code
+
+# 3. Search, or wire it into Claude Code (see "Wiring it into Claude Code"):
+uv run memex search "your query" -n 5
+uv run memex stats
+```
+
+(If you installed with a script, the commands above work as written. If you
+installed the published PyPI package instead, drop the `uv run` prefix.)
+
+## Embeddings backend
+
+Default is fastembed (zero-config). To route through a local Ollama instead
+(e.g. you already run it for other models):
+
+```bash
+export MEMEX_EMBED_BACKEND=ollama
+ollama pull nomic-embed-text          # install Ollama first: https://ollama.com/download
+```
+
+On Windows, install Ollama from [ollama.com/download](https://ollama.com/download)
+before setting `MEMEX_EMBED_BACKEND=ollama`. This is optional; fastembed needs
+none of it.
+
+## Diagnostics
 
 Run `memex doctor` any time something is not working. It checks Python version, database, embedder, live-capture server, summarizer config, registered repos, and indexed corpus. Reports OK / WARN / FAIL per check.
 
