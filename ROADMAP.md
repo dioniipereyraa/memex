@@ -1,8 +1,8 @@
 # Roadmap
 
-> Last updated: 2026-05-25
+> Last updated: 2026-06-11
 
-**Current state:** Phases 0 to 3 closed. **Phase 5 essentially done:** `memex-chats 0.1.0` published to PyPI; Chrome extension `memex-live-capture 0.1.0` submitted to the Web Store (in review). Remaining Phase 5 items are non-blocking (screencast, Discord post after Web Store approval, macOS launchd in 0.2.0). **Next:** Phase 4 (remote transport). **341 unit tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 3 closed. **Phase 5 essentially done:** `memex-chats 0.1.0` published to PyPI; Chrome extension `memex-live-capture 0.1.0` submitted to the Web Store (in review). Remaining Phase 5 items are non-blocking (screencast, Discord post after Web Store approval, macOS launchd in 0.2.0). **Phase 4 (remote transport): code complete**, pending real end-to-end validation from claude.ai and the phase-close audit. **362 unit tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
@@ -94,9 +94,10 @@ The context Claude.ai has should also be available to Claude Code. Every phase h
 **Goal:** Claude.ai consumes Memex as a remote MCP.
 
 **Tasks:**
-- [ ] SSE/HTTP transport in FastMCP.
-- [ ] Auth (local token, port forwarding or tunnel).
-- [ ] Document how to connect from Claude.ai.
+- [x] **Streamable HTTP transport.** (Plan said "SSE/HTTP"; claude.ai deprecated HTTP+SSE, so Streamable HTTP it is.) Shared server factory extracted to `transports/mcp_server.py`; `transports/http.py` mounts it at `/mcp` with `TrustedHostMiddleware` pinned to the public hostname. CLI `memex serve-remote` binds loopback behind a tunnel (Tailscale Funnel) that publishes `MEMEX_REMOTE_BASE_URL`. (2026-06-11)
+- [x] **Auth: GitHub OAuth with username allow-list.** The original "local token in header" idea is impossible for claude.ai (its UI only supports authless or full OAuth with dynamic client registration). Implemented as FastMCP's `GitHubProvider` (OAuth proxy over a GitHub OAuth App, DCR + PKCE) subclassed by `AllowlistGitHubProvider`: `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS` enforced on every request, fail closed (server refuses to start with an empty allow-list). 14 new tests. (2026-06-11)
+- [x] Document how to connect from Claude.ai. README section "Connecting from claude.ai" (Funnel, OAuth App, `.env`, connector add); `.env.example` updated. (2026-06-11)
+- [ ] Real end-to-end validation: Tailscale Funnel up, GitHub OAuth App created, connector added in claude.ai, tools invoked from a real chat. Blocked on populating the Mac's DB first (the indexed corpus lives on the Windows machine).
 - [ ] Phase-close audit.
 
 **Estimated duration:** ~1 week.

@@ -5,6 +5,7 @@ Commands:
 - `memex search "<query>"`: semantic search over the local DB.
 - `memex stats`: show what is indexed.
 - `memex serve`: run the local HTTP server for live capture.
+- `memex serve-remote`: run the remote MCP server (HTTP + OAuth) for claude.ai.
 - `memex reindex-fts`: rebuild the FTS5 index from `chunks`.
 - `memex repos`: manage code repos that boost search results.
 - `memex tag` / `memex untag`: manual chat-to-repo association.
@@ -248,6 +249,59 @@ def serve(
     console.print(f"  [bold cyan]{token}[/bold cyan]")
     console.print("[dim]Ctrl+C to stop.[/dim]\n")
     uvicorn.run(http_ingest.app, host=host, port=port, log_level="info")
+
+
+@app.command("serve-remote")
+def serve_remote(
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help="Interface to listen on. Keep 127.0.0.1: the tunnel does the public part.",
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int | None,
+        typer.Option("--port", "-p", help="Port (default: MEMEX_REMOTE_PORT, 8377)."),
+    ] = None,
+) -> None:
+    """Start the remote MCP server (Streamable HTTP + OAuth) for claude.ai.
+
+    Serves the same 4 tools as `memex-mcp`, but over HTTP at `/mcp`,
+    protected by a GitHub OAuth allow-list. Expose it with a tunnel that
+    publishes MEMEX_REMOTE_BASE_URL and proxies here (e.g. Tailscale
+    Funnel), then add that URL as a custom connector in claude.ai.
+
+    Requires in `.env`: MEMEX_REMOTE_BASE_URL, MEMEX_GITHUB_CLIENT_ID,
+    MEMEX_GITHUB_CLIENT_SECRET, MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS.
+    """
+    import uvicorn
+
+    from memex.transports.http import RemoteConfigError, build_remote_app
+
+    try:
+        remote_app = build_remote_app()
+    except RemoteConfigError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1) from None
+
+    resolved_port = port if port is not None else settings.remote_port
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        console.print(
+            f"[yellow]Warning:[/yellow] binding to [bold]{host}[/bold] exposes the MCP "
+            "server beyond loopback. OAuth still protects it, but the intended setup "
+            "is loopback + tunnel."
+        )
+
+    console.print(
+        f"[bold]Memex remote MCP[/bold] listening on [cyan]http://{host}:{resolved_port}/mcp[/cyan]"
+    )
+    console.print(f"Public URL (via tunnel): [cyan]{settings.remote_base_url}/mcp[/cyan]")
+    console.print(
+        f"Allowed GitHub users: [bold cyan]{settings.remote_allowed_github_logins}[/bold cyan]"
+    )
+    console.print("[dim]Ctrl+C to stop.[/dim]\n")
+    uvicorn.run(remote_app, host=host, port=resolved_port, log_level="info")
 
 
 @app.command("token")

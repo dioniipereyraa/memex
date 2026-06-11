@@ -6,7 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pr
 
 ## [Unreleased]
 
-(nothing yet — Phase 4 work starts after this line)
+Phase 4: remote MCP transport, so claude.ai (web, Desktop, and mobile) can consume Memex as a custom connector.
+
+### Added
+- **`memex serve-remote`:** serves the same 4 MCP tools over Streamable HTTP at `/mcp`, protected by OAuth. Designed for a loopback bind behind a tunnel (e.g. Tailscale Funnel) that publishes `MEMEX_REMOTE_BASE_URL`.
+- **GitHub OAuth with a username allow-list.** claude.ai registers via dynamic client registration and the user authorizes through a GitHub OAuth App; `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS` is enforced on every request (fail closed: the server refuses to start with an empty allow-list, and any non-listed GitHub account gets 401 after the OAuth dance). OAuth state is persisted encrypted on disk, so restarts do not break the connection.
+- New settings: `MEMEX_REMOTE_BASE_URL`, `MEMEX_REMOTE_PORT`, `MEMEX_GITHUB_CLIENT_ID`, `MEMEX_GITHUB_CLIENT_SECRET`, `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS`. README gained a "Connecting from claude.ai" guide.
+
+### Changed
+- The FastMCP server and the 4 tool wrappers moved from `transports/stdio.py` to a shared `transports/mcp_server.py` (`build_server()` factory). `memex-mcp` (stdio) behaves exactly as before; no config changes needed.
 
 ## [0.1.1] - 2026-06-01
 

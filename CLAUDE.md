@@ -52,19 +52,20 @@ src/memex/
 │   ├── fake.py          ← deterministic FakeSummarizer for tests
 │   └── __init__.py      ← get_default_summarizer() factory, returns None if disabled
 ├── transports/          ← MCP bindings + local HTTP
-│   ├── tools.py         ← pure logic of the 3 MCP tools
-│   ├── stdio.py         ← stdio MCP entrypoint with FastMCP (memex-mcp)
+│   ├── tools.py         ← pure logic of the 4 MCP tools
+│   ├── mcp_server.py    ← shared FastMCP server + tool wrappers, build_server(auth=None) factory
+│   ├── stdio.py         ← thin stdio entrypoint (memex-mcp), no auth
 │   ├── http_ingest.py   ← local HTTP server for live capture (Starlette)
-│   └── http.py          ← SSE/HTTP remote MCP (TBD, Phase 4)  ← does not exist yet
-└── cli/                 ← CLI with typer (ingest, search, stats, serve, reindex-fts)
+│   └── http.py          ← remote MCP over Streamable HTTP + GitHub OAuth allow-list (Phase 4)
+└── cli/                 ← CLI with typer (ingest, search, stats, serve, serve-remote, reindex-fts)
 ```
 
 **Dependency rule:** `core/` does not import from `transports/` or `cli/`. Arrows point inward.
 
-**State as of 2026-05-23 (Phase 3 in progress):**
-- Phases 0, 1, and 2 closed with audit. Phase 3 first sub-task closed: on-demand auto-summaries via Claude Haiku (opt-in, lazy at first `search_chats`, persisted).
+**State as of 2026-06-11 (Phase 4 code complete):**
+- Phases 0 to 3 closed with audit; 0.1.0 on PyPI, 0.1.1 security hardening shipped.
 - `vector_search`, `text_search`, and `hybrid_search` live in `core/storage/repo.py`. The `core/retrieval/` directory was removed (it was empty); if retrieval logic grows (re-ranking, complex filters), it gets recreated with real content.
-- `transports/http.py` does not exist yet; Phase 4 adds it when the remote MCP is built. Live capture uses `transports/http_ingest.py` (a different local server, not the MCP).
+- Remote MCP (`memex serve-remote`): loopback bind behind a tunnel (Tailscale Funnel) publishing `MEMEX_REMOTE_BASE_URL`; auth is a GitHub OAuth proxy with a username allow-list enforced per request (claude.ai only supports authless or full OAuth, never pasted tokens). Pending: real end-to-end validation from claude.ai + phase-close audit. Live capture uses `transports/http_ingest.py` (a different local server, not the MCP).
 
 ## Common commands
 
@@ -78,6 +79,7 @@ uv run mypy src/memex/core    # type check (strict in core)
 uv run memex --help           # CLI (ingest, search, stats, serve, reindex-fts)
 uv run memex-mcp              # stdio MCP server (for Claude Code / Desktop)
 uv run memex serve            # local HTTP server for live capture from Chrome ext
+uv run memex serve-remote     # remote MCP (Streamable HTTP + OAuth) for claude.ai connectors
 ```
 
 ## Multi-Claude with git worktrees

@@ -121,6 +121,55 @@ Set `cwd` to the absolute path where you cloned Memex (where `pyproject.toml` li
 
 The same searches are also available from the CLI via `uv run memex search "..."` if you prefer them outside Claude Code.
 
+## Connecting from claude.ai (remote MCP, Phase 4)
+
+`memex serve-remote` exposes the same 4 tools as a [custom connector](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) for claude.ai. One connector works across claude.ai web, Claude Desktop, and the mobile apps: the connection is brokered by your Claude account and always originates from Anthropic's cloud, never from your device. That has two consequences:
+
+1. The server must be reachable on a **public HTTPS URL** (a hostname with a public IPv4 `A` record; `localhost` and private IPs are rejected by design). The intended setup is a tunnel that terminates TLS and proxies to Memex on loopback.
+2. Auth is either *none* or *full OAuth 2.0* (claude.ai has no field to paste a token). Memex uses OAuth backed by a GitHub OAuth App, restricted to an allow-list of GitHub usernames: anyone else who completes the OAuth dance still gets a 401 on every request. Your machine must be on (and the tunnel up) for the connector to respond.
+
+### 1. Publish a URL with Tailscale Funnel
+
+Install [Tailscale](https://tailscale.com/download), log in, then:
+
+```bash
+tailscale funnel --bg 8377
+```
+
+This prints your public URL, e.g. `https://my-mac.my-tailnet.ts.net`, TLS included. Any other tunnel works the same way (ngrok, Cloudflare Tunnel); Memex only needs the resulting `https://` URL.
+
+### 2. Create a GitHub OAuth App
+
+At [github.com/settings/developers](https://github.com/settings/developers) > OAuth Apps > New OAuth App:
+
+- Homepage URL: your funnel URL.
+- Authorization callback URL: `<funnel URL>/auth/callback`.
+
+Copy the Client ID and generate a Client Secret.
+
+### 3. Configure and run
+
+In `.env` (see `.env.example`):
+
+```bash
+MEMEX_REMOTE_BASE_URL=https://my-mac.my-tailnet.ts.net
+MEMEX_GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxx
+MEMEX_GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxx
+MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=your-github-username
+```
+
+```bash
+uv run memex serve-remote   # listens on 127.0.0.1:8377, endpoint at /mcp
+```
+
+The server refuses to start with incomplete config (no insecure defaults: an empty allow-list would expose your whole chat history to any GitHub account).
+
+### 4. Add the connector in claude.ai
+
+Settings > Connectors > Add custom connector, with URL `https://my-mac.my-tailnet.ts.net/mcp`. claude.ai registers itself via dynamic client registration, sends you through the GitHub authorization, and the tools appear in your chats. OAuth state is persisted encrypted on disk, so restarting `serve-remote` does not break the connection.
+
+Security model in short: loopback bind + tunnel, OAuth proxy over GitHub with a username allow-list enforced on **every** request (revoking the app on GitHub locks it out immediately), `TrustedHostMiddleware` pinned to the public hostname, and the same indirect-prompt-injection envelope on tool results as the stdio transport.
+
 ## Auto-summaries (Phase 3, optional)
 
 When `search_chats` returns a chat that does not have a summary yet, Memex can generate one on-the-fly using Claude Haiku. The summary is persisted, so the next search of the same chat hits cache and does not pay the API again. This way you only pay for chats you actually look at, not for the whole corpus.

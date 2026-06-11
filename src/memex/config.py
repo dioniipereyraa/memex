@@ -74,6 +74,28 @@ class Settings(BaseSettings):
         default="127.0.0.1,localhost", alias="MEMEX_INGEST_ALLOWED_HOSTS"
     )
 
+    # Remote MCP transport (transports/http.py). Lets claude.ai consume Memex
+    # as a custom connector. All four settings below are required to start
+    # `memex serve-remote`; there are no insecure defaults on purpose.
+    #
+    # Public HTTPS base URL where the server is reachable from the internet
+    # (e.g. the Tailscale Funnel URL "https://my-mac.tailnet.ts.net"). OAuth
+    # redirects and token audiences are derived from it.
+    remote_base_url: str | None = Field(default=None, alias="MEMEX_REMOTE_BASE_URL")
+    # Local port the remote MCP server binds to (loopback). The tunnel
+    # (Tailscale Funnel) terminates TLS publicly and proxies to this port.
+    remote_port: int = Field(default=8377, alias="MEMEX_REMOTE_PORT", ge=1, le=65535)
+    # GitHub OAuth App credentials. The app's authorization callback URL must
+    # be {MEMEX_REMOTE_BASE_URL}/auth/callback.
+    github_client_id: str | None = Field(default=None, alias="MEMEX_GITHUB_CLIENT_ID")
+    github_client_secret: str | None = Field(default=None, alias="MEMEX_GITHUB_CLIENT_SECRET")
+    # Comma-separated GitHub usernames allowed to access the remote MCP.
+    # Any other GitHub account that completes the OAuth flow gets its token
+    # rejected on every request (fail closed). Case-insensitive.
+    remote_allowed_github_logins: str = Field(
+        default="", alias="MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS"
+    )
+
     log_level: str = Field(default="INFO", alias="MEMEX_LOG_LEVEL")
 
     # Auto-summaries with Claude Haiku. Opt-in: OFF by default to avoid

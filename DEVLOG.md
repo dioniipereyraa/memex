@@ -6,6 +6,27 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-11: Phase 4, remote MCP transport (code complete)
+
+Goal of the phase: claude.ai consumes Memex as a remote MCP custom connector. Before coding, verified the current connector requirements against the official docs (support.claude.com + claude.com/docs/connectors, checked 2026-06): custom connectors exist on **all consumer plans** (Free is capped at one), one connector serves claude.ai web + Desktop + mobile, transport is **Streamable HTTP** (HTTP+SSE is deprecated), and the connection **originates from Anthropic's cloud**, never from the user's device. That settles the two open design questions from the Phase 1 notes:
+
+- **Reachability:** the server needs a public HTTPS URL with a public IPv4 `A` record; loopback/private IPs are rejected at DNS validation. So: tunnel, non-negotiable. Chosen: **Tailscale Funnel** (stable URL, automatic TLS, free, no domain needed). Memex only cares about the resulting URL; ngrok/Cloudflare work identically.
+- **Auth:** claude.ai supports exactly two modes for custom connectors: authless or full OAuth 2.0 with dynamic client registration (PKCE S256). There is **no UI field for a bearer token**, and tokens in the query string are prohibited by the MCP auth spec. The ROADMAP's original "local token in header" idea is therefore impossible for this client. Chosen: **OAuth proxy over a GitHub OAuth App** (FastMCP 3.x `GitHubProvider`, which implements DCR/CIMD + consent + token swap), narrowed by `AllowlistGitHubProvider`: `verify_token` re-checks the upstream GitHub `login` claim against `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS` on **every request** and fails closed. The OAuth dance succeeds for any GitHub account (GitHub does not know the allow-list), but a non-allowed user's token dies at verification, so they never reach a tool. Revoking the app on GitHub locks out immediately because the proxy validates the upstream token per request.
+
+**What was built:**
+
+- **Refactor first:** the FastMCP server + the 4 tool wrappers moved from `transports/stdio.py` to a shared `transports/mcp_server.py` with a `build_server(auth=None)` factory. `stdio.py` is now a thin entrypoint (logging-to-stderr + `server.run()`); `memex-mcp` and existing `.mcp.json` configs are untouched. `tests/unit/test_stdio_server.py` renamed to `test_mcp_server.py`, pointing at the shared module and additionally asserting the stdio entrypoint still serves the 4 tools.
+- **`transports/http.py`:** `build_remote_app()` validates config (reports every missing var at once, refuses plain `http://`, refuses an empty allow-list), builds the allow-list provider, and mounts `build_server(auth=...)` via `server.http_app()` at `/mcp` with `TrustedHostMiddleware` pinned to the funnel hostname + loopback (same DNS-rebinding posture as `http_ingest.py`). The injection envelope lives in the shared `tools.py`, so remote results carry the same `_meta.untrusted_content` marker as stdio.
+- **CLI `memex serve-remote`:** binds loopback (the tunnel does the public part), warns on non-loopback binds, prints the public `/mcp` URL and the allow-list. New settings in `config.py` + `.env.example`: `MEMEX_REMOTE_BASE_URL`, `MEMEX_REMOTE_PORT` (default 8377), `MEMEX_GITHUB_CLIENT_ID/SECRET`, `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS`.
+- **Restart behavior verified in the FastMCP source:** the OAuth proxy persists client registrations and token mappings Fernet-encrypted on disk, keyed deterministically from the client secret, and derives the JWT signing key from the same secret, so `serve-remote` restarts do not invalidate the claude.ai connection.
+- **Tests:** 14 new in `tests/unit/test_http_remote.py` (config fail-closed matrix, allow-list accept/reject/missing-claim/invalid-upstream, app construction + Host pinning, CLI exit code on bad config). Suite: **362 unit tests green**, ruff + format + mypy clean.
+
+Also today: registered Memex in Claude Code at user scope on the Mac (`claude mcp add --scope user memex -- uv run --directory ~/Dionisio/memex memex-mcp`, health check green).
+
+**Pending to close the phase:** the Mac's DB is empty (the indexed corpus lives on the Windows machine), so end-to-end validation needs data first (fresh claude.ai export or live capture); then Tailscale install + Funnel, the GitHub OAuth App, the real connector test from claude.ai, and the phase-close audit.
+
+---
+
 ## 2026-06-01: full security audit + hardening pass (0.1.1)
 
 Ran a multi-agent security audit across 10 trust boundaries (HTTP ingest server, SQL/data layer, Chrome extension, untrusted-input parsing, secrets, filesystem, MCP tools / indirect prompt injection, CLI + autostart, external egress, dependencies), each finding adversarially verified before being accepted. Result: **no critical/high**, 2 medium, ~23 low, ~6 info. The data layer came back clean (every query parameterized, FTS5 input sanitized, no zip-slip, no `shell=True`, API key never logged). Threat model is a local single-user tool, so severity was calibrated accordingly (a bug needing local code-exec as the user is low).
