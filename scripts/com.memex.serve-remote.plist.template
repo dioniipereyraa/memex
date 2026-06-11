@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent: run the Memex remote MCP server (claude.ai connector) always,
+  restarting it if it dies. Pair with a persistent Tailscale Funnel on the same
+  port. Idle is cheap (no embedding model until a search runs).
+
+  Install (replace __REPO__, or use the README one-liner):
+    sed "s|__REPO__|$(pwd)|g" scripts/com.memex.serve-remote.plist.template \
+      > ~/Library/LaunchAgents/com.memex.serve-remote.plist
+    launchctl load ~/Library/LaunchAgents/com.memex.serve-remote.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.memex.serve-remote</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/serve-remote-daemon.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__REPO__/data/serve-remote.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/data/serve-remote.log</string>
+</dict>
+</plist>

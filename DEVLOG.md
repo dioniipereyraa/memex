@@ -6,6 +6,16 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-11 (always-on): launchd agents for serve + serve-remote
+
+Made the two long-lived servers persistent on macOS so the user never has to start them by hand (they used to die with the Claude Code session that launched them). Added `scripts/serve-daemon.sh` and `scripts/serve-remote-daemon.sh` (resolve the repo from their own location, `cd` into it so the relative DB path and `.env` resolve, then `exec uv run memex serve` / `serve-remote`), plus two launchd plist templates with `RunAtLoad` + `KeepAlive` + `ProcessType Background`. Installed and verified on this Mac: `launchctl list | grep memex` shows all three agents (serve, serve-remote, ingest-claude-code) at status 0; `serve` answers `/health` 200, `serve-remote` answers `/mcp` 401 (auth required) both on loopback and through the public Funnel.
+
+Clarified the user's confusion in the process: `serve`/`serve-remote` are for claude.ai (browser capture + the connector), not for Claude Code; the Claude Code ingest (hook + 15-min launchd) was already automatic and only works when there is something new. Idle cost of both servers is low because the embedder is lazy (no model loaded until a real ingest/search), which is why always-on is fine. The Tailscale Funnel is expected to persist across reboots via its `--bg` serve config (Tailscale re-applies it), pairing with the now-persistent `serve-remote`.
+
+Now persistent: ingest (hook + schedule), serve, serve-remote. The `.env`, the installed plists, and `~/.claude/settings.json` are machine config (not committed); the scripts and templates are.
+
+---
+
 ## 2026-06-11 (auto-sync): SessionEnd hook + periodic backstop for Claude Code
 
 Made Claude Code / terminal ingestion automatic (it was manual). Two complementary mechanisms, both background + low priority so they never block or slow a session:

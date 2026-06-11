@@ -239,6 +239,22 @@ These sessions are stored under the `claude_code` source, searchable like any ot
    ```
    It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. On Linux, run the same script from a systemd user timer or cron; the script is OS-agnostic. (On Windows, the hook needs a PowerShell equivalent of `session-end-hook.sh`, not yet included; until then, schedule `memex ingest-claude-code` with Task Scheduler.)
 
+## Running always-on (macOS)
+
+`memex serve` (claude.ai capture) and `memex serve-remote` (the claude.ai connector) are long-lived servers. To have them start with your Mac and stay up (restarting if they crash), install them as launchd agents. Idle cost is low: neither loads the embedding model until there is real work.
+
+```bash
+cd /path/to/memex
+for svc in serve serve-remote ingest-claude-code; do
+  sed "s|__REPO__|$(pwd)|g" "scripts/com.memex.$svc.plist.template" \
+    > ~/Library/LaunchAgents/com.memex.$svc.plist
+  launchctl load ~/Library/LaunchAgents/com.memex.$svc.plist
+done
+launchctl list | grep memex      # all three at status 0
+```
+
+`serve-remote` needs the Tailscale Funnel up on the same port (`tailscale funnel --bg 8377`); the Funnel persists across reboots. To stop a service: `launchctl unload ~/Library/LaunchAgents/com.memex.<name>.plist`. (On Linux, run the daemon scripts from systemd user units instead; on Windows, use `scripts/install-autostart.ps1` for the capture server.)
+
 ## Auto-summaries (Phase 3, optional)
 
 When `search_chats` returns a chat that does not have a summary yet, Memex can generate one on-the-fly using Claude Haiku. The summary is persisted, so the next search of the same chat hits cache and does not pay the API again. This way you only pay for chats you actually look at, not for the whole corpus.

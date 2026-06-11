@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent: run the Memex live-capture server (claude.ai capture) always,
+  restarting it if it dies. Idle is cheap (no embedding model until ingest).
+
+  Install (replace __REPO__, or use the README one-liner):
+    sed "s|__REPO__|$(pwd)|g" scripts/com.memex.serve.plist.template \
+      > ~/Library/LaunchAgents/com.memex.serve.plist
+    launchctl load ~/Library/LaunchAgents/com.memex.serve.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.memex.serve</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/serve-daemon.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__REPO__/data/serve.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/data/serve.log</string>
+</dict>
+</plist>
