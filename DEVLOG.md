@@ -6,6 +6,21 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-11 (auto-sync): SessionEnd hook + periodic backstop for Claude Code
+
+Made Claude Code / terminal ingestion automatic (it was manual). Two complementary mechanisms, both background + low priority so they never block or slow a session:
+
+- **SessionEnd hook** (`scripts/session-end-hook.sh`): Claude Code passes the closed session's `transcript_path` on stdin; the script ingests just that one session, detached (`nohup nice -n 19 ... &`), and returns 0 immediately. Confirmed against the docs (via claude-code-guide) that SessionEnd cannot block and a backgrounded command is the right pattern, and that the hook fires for both the terminal CLI and the VS Code extension (both write `.jsonl` under `~/.claude/projects`). Catches the "user says the important thing then closes" case with no delay.
+- **Periodic backstop** (`scripts/scheduled-ingest.sh` + a launchd plist template, 15-min `StartInterval`, `ProcessType Background`): a full incremental scan that picks up anything the hook missed (crash, etc.).
+
+**Resource fix (the user's main worry):** the old ingest loaded the fastembed model (hundreds of MB, ~1-2s) every run, even when nothing changed. Added `LazyEmbedder` (`core/embeddings/lazy.py`) wrapping the factory and building the real backend only on the first non-empty `embed()`. The pipeline only embeds when a session actually produced new chunks, and `embed([])` is a no-op, so an all-skipped scan never loads the model. Verified: re-scan of an unchanged corpus leaves `LazyEmbedder.loaded is False`. Also added single-file ingest to `ingest_claude_code_sessions` (pass a `.jsonl` path) so the hook embeds one session, not 432. CLI now builds `LazyEmbedder(get_default_embedder)` and no longer forces a load just to print the model name.
+
+Installed on this Mac and validated end to end: the hook returns 0 instantly and ingests in the background (re-ingesting an already-indexed session → skipped, model not loaded); the launchd agent is loaded (`launchctl list | grep memex`) and ran at load. 5 new tests (lazy embedder + single-file + no-load-on-unchanged); **401 green**, ruff + format + mypy clean.
+
+Honesty note: the hook script is bash, so the hook half is macOS/Linux for now; Windows needs a PowerShell equivalent (documented as not-yet-included; Windows users can still schedule the scan via Task Scheduler). `~/.claude/settings.json` and the installed plist are the user's machine config, not committed; the scripts and the plist template are.
+
+---
+
 ## 2026-06-11 (install docs): one-command installers + per-OS install section
 
 Rewrote the README install section to be per-OS (macOS / Linux / Windows / manual) and added `scripts/install.sh` + `scripts/install.ps1`: each installs uv (Astral's official installer, verified against docs.astral.sh) if missing, runs `uv sync` (which fetches the pinned Python 3.13, so no system Python is needed), and verifies with `memex doctor`. That is the closest honest thing to "one command" without shipping a binary: a click-installer (.dmg/.exe) is not feasible without heavy, fragile packaging (fastembed/onnxruntime/sqlite-vec), so it was not promised.

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent that runs the Memex Claude Code ingest every 15 minutes as a
+  low-priority background job (the backstop to the SessionEnd hook).
+
+  Install (replace __REPO__ with the absolute repo path, or use the README
+  one-liner that does it for you):
+    sed "s|__REPO__|$(pwd)|g" scripts/com.memex.ingest-claude-code.plist.template \
+      > ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
+    launchctl load ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
+    rm ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.memex.ingest-claude-code</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/scheduled-ingest.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__REPO__/data/scheduled-ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/data/scheduled-ingest.log</string>
+</dict>
+</plist>

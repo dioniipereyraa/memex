@@ -224,8 +224,12 @@ def ingest_claude_code_sessions(
 ) -> IngestSummary:
     """Ingest local Claude Code / terminal session logs under `root`.
 
-    `root` is typically `~/.claude/projects`. Every `*.jsonl` below it is a
-    session; each is parsed (see `claude_code.parse_session_file`) and ingested
+    `root` is typically `~/.claude/projects` (scan every `*.jsonl` below it),
+    but it may also be a single `.jsonl` file, in which case only that session
+    is ingested. The single-file form is what the `SessionEnd` hook uses to
+    ingest just the session that closed, cheaply, in the background.
+
+    Each session is parsed (see `claude_code.parse_session_file`) and ingested
     with the shared per-conversation pipeline.
 
     Incremental: unchanged sessions (same `content_hash`) are skipped without
@@ -247,8 +251,15 @@ def ingest_claude_code_sessions(
         summary.errors.append(f"{root_path}: path does not exist")
         return summary
 
-    root_resolved = root_path.resolve()
-    for jsonl_path in sorted(root_path.rglob("*.jsonl")):
+    if root_path.is_file():
+        # Single-session ingest (the SessionEnd hook path).
+        paths: list[Path] = [root_path]
+        root_resolved = root_path.parent.resolve()
+    else:
+        root_resolved = root_path.resolve()
+        paths = sorted(root_path.rglob("*.jsonl"))
+
+    for jsonl_path in paths:
         try:
             # `rglob` follows directory symlinks; skip anything that resolves
             # outside the scan root so a symlinked subtree cannot pull in

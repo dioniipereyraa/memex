@@ -195,3 +195,48 @@ class TestIngestClaudeCodeSessions:
             assert summary.errors
         finally:
             db.close()
+
+    def test_single_file_ingest(self, tmp_path):
+        # The SessionEnd hook path: --path points at one .jsonl file.
+        root = tmp_path / "projects"
+        f = make_session(
+            root,
+            "-Users-d-proj",
+            "sess-one",
+            [
+                turn("user", "una sola sesion", "u1", "/Users/d/proj"),
+                turn("assistant", "ok", "a1", "/Users/d/proj"),
+            ],
+        )
+        db = connect_and_init(":memory:")
+        try:
+            summary = ingest_claude_code_sessions(db, FakeEmbedder(dim=768), f)
+            assert summary.conversations == 1
+            assert repo.get_conversation(db, "sess-one") is not None
+        finally:
+            db.close()
+
+    def test_unchanged_scan_does_not_load_embedder(self, tmp_path):
+        # The resource win: a re-scan with nothing new must not build the model.
+        from memex.core.embeddings.lazy import LazyEmbedder
+
+        root = tmp_path / "projects"
+        make_session(
+            root,
+            "-Users-d-proj",
+            "sess-1",
+            [
+                turn("user", "hola", "u1", "/Users/d/proj"),
+                turn("assistant", "chau", "a1", "/Users/d/proj"),
+            ],
+        )
+        db = connect_and_init(":memory:")
+        try:
+            ingest_claude_code_sessions(db, FakeEmbedder(dim=768), root)  # first ingest
+            lazy = LazyEmbedder(lambda: FakeEmbedder(dim=768))
+            second = ingest_claude_code_sessions(db, lazy, root)
+            assert second.skipped_unchanged_conversations == 1
+            assert second.conversations == 0
+            assert lazy.loaded is False  # nothing new -> model never loaded
+        finally:
+            db.close()

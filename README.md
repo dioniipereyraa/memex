@@ -213,6 +213,32 @@ These sessions are stored under the `claude_code` source, searchable like any ot
 - **What is indexed:** your prompts, the assistant replies, and tool calls as `[tool_use: ...]` / `[result]` markers. Excluded: assistant internal reasoning (`thinking`), parallel sub-agent side threads, and CLI plumbing (slash-command echoes, bash wrappers). Everything stays in the local SQLite DB.
 - **Secret redaction.** Session logs capture real terminal output and file contents, which often contain credentials. Before storing, Memex masks common secret shapes (API keys, bearer/JWT tokens, PEM private keys, `KEY=`/`SECRET=` assignments, URLs with embedded passwords) as `[REDACTED:...]`, and does not persist the raw block content for this source. Best-effort, not a guarantee: it catches well-known formats so third-party credentials that were never really part of a conversation stay out of the index (this matters because the remote connector can surface indexed text to claude.ai).
 
+### Automatic sync (keep Claude Code sessions fresh)
+
+`memex ingest-claude-code` is manual. To index sessions automatically, use two complementary mechanisms (both run in the background at low priority, and the embedding model only loads when there is something new, so they barely cost anything):
+
+1. **SessionEnd hook** — ingests a session the moment it closes (no delay, nothing lost). Add to `~/.claude/settings.json`:
+   ```json
+   {
+     "hooks": {
+       "SessionEnd": [
+         { "matcher": "*", "hooks": [
+           { "type": "command", "command": "/absolute/path/to/memex/scripts/session-end-hook.sh" }
+         ] }
+       ]
+     }
+   }
+   ```
+   The hook reads the closed session's `transcript_path` and ingests just that one session, detached, returning immediately (SessionEnd hooks cannot block Claude Code).
+
+2. **Periodic backstop** — a scheduled scan that catches anything the hook missed (e.g. a crash). On macOS, with launchd:
+   ```bash
+   sed "s|__REPO__|$(pwd)|g" scripts/com.memex.ingest-claude-code.plist.template \
+     > ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
+   launchctl load ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
+   ```
+   It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. On Linux, run the same script from a systemd user timer or cron; the script is OS-agnostic. (On Windows, the hook needs a PowerShell equivalent of `session-end-hook.sh`, not yet included; until then, schedule `memex ingest-claude-code` with Task Scheduler.)
+
 ## Auto-summaries (Phase 3, optional)
 
 When `search_chats` returns a chat that does not have a summary yet, Memex can generate one on-the-fly using Claude Haiku. The summary is persisted, so the next search of the same chat hits cache and does not pay the API again. This way you only pay for chats you actually look at, not for the whole corpus.

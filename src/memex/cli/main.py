@@ -26,6 +26,7 @@ from rich.table import Table
 
 from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
+from memex.core.embeddings.lazy import LazyEmbedder
 from memex.core.ingest.pipeline import ingest_claude_code_sessions, ingest_export
 from memex.core.repos import find_repo_root, match_text, parse_repo, resolve_repo_key
 from memex.core.storage import repo
@@ -113,7 +114,8 @@ def ingest_claude_code(
         Path | None,
         typer.Option(
             "--path",
-            help="Root of Claude Code session logs. Default: ~/.claude/projects.",
+            help="Root dir of session logs (default ~/.claude/projects), or a "
+            "single .jsonl file to ingest just that session.",
         ),
     ] = None,
     db_path: Annotated[
@@ -128,6 +130,10 @@ def ingest_claude_code(
     and Claude Code work alike. Incremental: unchanged sessions are skipped,
     so re-running is cheap. Sessions are auto-associated with the registered
     repo of their working directory (`memex repos add` to register one).
+
+    Pass `--path <file.jsonl>` to ingest a single session (used by the
+    SessionEnd hook). The embedding model is loaded lazily, so a scan that
+    finds nothing new costs almost nothing.
     """
     root = path if path is not None else Path.home() / ".claude" / "projects"
     console.print(f"[bold]Ingesting Claude Code sessions[/bold] from [cyan]{root}[/cyan]")
@@ -135,8 +141,10 @@ def ingest_claude_code(
 
     conn = connect_and_init(db_path)
     try:
-        embedder = get_default_embedder()
-        console.print(f"  embedder: {settings.embed_backend} ({embedder.model_name})\n")
+        # Lazy: the fastembed model only loads if there is something new to
+        # embed, so the periodic backstop scan stays cheap when nothing changed.
+        embedder = LazyEmbedder(get_default_embedder)
+        console.print(f"  embedder: {settings.embed_backend} (loaded on demand)\n")
         with console.status("[yellow]Scanning sessions...[/yellow]"):
             summary = ingest_claude_code_sessions(conn, embedder, root)
     except EmbedderError as e:
