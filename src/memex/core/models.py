@@ -16,11 +16,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Source(StrEnum):
-    """Origin of a conversation inside the Claude.ai export."""
+    """Origin of a conversation.
+
+    The first three come from the Claude.ai export (or live capture).
+    `CLAUDE_CODE` comes from local Claude Code / terminal session logs
+    (`~/.claude/projects/**/*.jsonl`), unifying both halves of the user's
+    history into one searchable store.
+    """
 
     CONVERSATIONS = "conversations"
     DESIGN_CHAT = "design_chat"
     MEMORY = "memory"
+    CLAUDE_CODE = "claude_code"
 
 
 class Sender(StrEnum):

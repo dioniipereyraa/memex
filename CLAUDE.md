@@ -39,7 +39,7 @@ src/memex/
 ├── core/                ← pure library, no transport
 │   ├── models.py        ← Project, Conversation, Message, Chunk, SearchHit
 │   ├── storage/         ← SQLite + sqlite-vec + FTS5 (schema, db, repo)
-│   └── ingest/          ← parsers + chunker + pipeline (content_renderer, chunker, claude_export, pipeline)
+│   └── ingest/          ← parsers + chunker + pipeline (content_renderer, chunker, claude_export, claude_code, pipeline)
 ├── core/embeddings/     ← factory + interfaces
 │   ├── base.py          ← Embedder ABC + EmbedderError + l2_normalize
 │   ├── fastembed_embedder.py  ← default (ONNX, zero-config)
@@ -62,8 +62,9 @@ src/memex/
 
 **Dependency rule:** `core/` does not import from `transports/` or `cli/`. Arrows point inward.
 
-**State as of 2026-06-11 (Phase 4 code complete):**
-- Phases 0 to 3 closed with audit; 0.1.0 on PyPI, 0.1.1 security hardening shipped.
+**State as of 2026-06-11 (Phase 4 closed, Phase 6 code complete):**
+- Phases 0 to 4 closed with audit; 0.1.0 on PyPI, 0.1.1 security hardening shipped.
+- Phase 6: local Claude Code / terminal sessions are ingested into the same store (`memex ingest-claude-code`, source `claude_code`) via `core/ingest/claude_code.py`. One search spans claude.ai chats and Claude Code work. The `conversations.source` CHECK was widened with a table-recreation migration in `storage/db.py`.
 - `vector_search`, `text_search`, and `hybrid_search` live in `core/storage/repo.py`. The `core/retrieval/` directory was removed (it was empty); if retrieval logic grows (re-ranking, complex filters), it gets recreated with real content.
 - Remote MCP (`memex serve-remote`): loopback bind behind a tunnel (Tailscale Funnel) publishing `MEMEX_REMOTE_BASE_URL`; auth is a GitHub OAuth proxy with a username allow-list enforced per request (claude.ai only supports authless or full OAuth, never pasted tokens). Pending: real end-to-end validation from claude.ai + phase-close audit. Live capture uses `transports/http_ingest.py` (a different local server, not the MCP).
 
@@ -80,6 +81,7 @@ uv run memex --help           # CLI (ingest, search, stats, serve, reindex-fts)
 uv run memex-mcp              # stdio MCP server (for Claude Code / Desktop)
 uv run memex serve            # local HTTP server for live capture from Chrome ext
 uv run memex serve-remote     # remote MCP (Streamable HTTP + OAuth) for claude.ai connectors
+uv run memex ingest-claude-code   # index local Claude Code / terminal sessions
 ```
 
 ## Multi-Claude with git worktrees
@@ -120,6 +122,13 @@ Running log of things that broke, were found in audits, or were non-obvious desi
 - **Allow-list must be enforced on every request and fail closed.** `AllowlistGitHubProvider.verify_token` (`transports/http.py`) re-checks the GitHub identity on each call (token-result caching is disabled by default in fastmcp's `GitHubTokenVerifier`, so revocation is immediate). `build_remote_app` refuses to start with an empty allow-list. Never add a code path that builds the remote server with `auth=None`; the only legitimately authless server is local stdio.
 - **Match the immutable numeric id (`sub`), not just the username (`login`).** GitHub usernames are reusable after an account is deleted/renamed, so a username-only allow-list means a renamed/reused handle could grant access to the whole corpus. The allow-list now accepts either form (security audit LOW-1). The `login` claim itself is trustworthy (set live from `api.github.com/user`, keyed by the server-held token, not client-controllable) so it is fine to match on; the `sub` option is the stronger pin.
 - **Test pitfall: do not patch via `Class.__mro__[1]`.** A fastmcp version bump can reorder the MRO and silently change what gets patched. Patch the method on the class where it is defined (e.g. `GitHubProvider.verify_token`), which `super()` resolves to regardless of intermediate classes.
+
+### Claude Code ingestion + CHECK migration (Phase 6, 2026-06-11)
+- **`PRAGMA foreign_keys` is a no-op inside a transaction.** The `conversations.source` CHECK migration (recreate-table to widen the allowed values) toggles `foreign_keys = OFF` so the `DROP TABLE` does not cascade. The first cut toggled it while an implicit transaction was still open, so FKs stayed ON and the swap failed with "no such table" against a forward-referenced parent. Fix: `conn.commit()` before the toggle. Verify with `PRAGMA foreign_keys` returning 0 if ever in doubt.
+- **SQLite cannot ALTER a CHECK constraint in place.** Adding a new `source` value means recreating the table (the 12-step procedure). Copy columns by intersection of old and new, not `SELECT *`, so a DB predating a column (`ingested_at`, `content_hash`) still migrates. Always make it idempotent by checking the live DDL (`sqlite_master.sql`) for the new value first.
+- **Reuse the renderer's unknown-block behavior on purpose.** `content_renderer` ignores unknown block types, so assistant `thinking` blocks are dropped for free without special-casing. When adding a new transcript format, lean on that instead of writing a second renderer.
+- **`resolve_repo_key` must match the `repos.path` column, not just the key.** A repo with a git remote is keyed by the remote URL (`canonical_repo_key` prefers it), so resolving a filesystem path (a session `cwd`, or a user-passed `--repo` path) by key alone silently returns `None` for every cloned-from-GitHub repo. The Phase 6 cwd→repo association shipped broken because of this and a test that only covered `remote_url=None`. When a feature resolves a path to a registered repo, cover the git-remote-keyed case explicitly.
+- **Indexing terminal/file capture widens the remote blast radius; redact secrets.** Claude Code sessions contain command output and file contents with real credentials, and the remote claude.ai connector can surface that indexed text. `core/ingest/redact.py` masks common secret shapes on the `claude_code` path before storage/embedding, and `raw_content` is not persisted for that source. Any future source that ingests machine/terminal capture (not genuine conversation) must run through redaction too. The `_meta.untrusted_content` injection envelope is source-agnostic, so new sources inherit it for free.
 
 ## Persistent memory
 

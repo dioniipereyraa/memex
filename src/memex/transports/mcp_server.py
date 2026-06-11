@@ -120,8 +120,9 @@ def search_chats(
             proper nouns (e.g. "Amarok").
         limit: Number of results (default 5, max 50).
         source: Optional filter by chat origin. Valid values:
-            'conversations' (standalone chats), 'design_chat' (chats
-            inside a Claude.ai Project), 'memory' (curated memory).
+            'conversations' (standalone claude.ai chats), 'design_chat'
+            (chats inside a Claude.ai Project), 'memory' (curated memory),
+            'claude_code' (local Claude Code / terminal sessions).
         mode: Search strategy. 'hybrid' (default, recommended in most
             cases), 'semantic' (vectors only, for pure conceptual
             similarity), 'lexical' (FTS5 BM25 only, ideal for exact

@@ -33,13 +33,14 @@ CREATE TABLE IF NOT EXISTS projects (
     ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ) STRICT;
 
--- Conversaciones: las tres fuentes (conversations.json, design_chats, memories) se
--- unifican aquí. `project_uuid` solo aplica para design_chats.
+-- Conversaciones: las fuentes (conversations.json, design_chats, memories y las
+-- sesiones locales de Claude Code) se unifican aquí. `project_uuid` solo aplica
+-- para design_chats.
 CREATE TABLE IF NOT EXISTS conversations (
     uuid TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     summary TEXT,
-    source TEXT NOT NULL CHECK (source IN ('conversations', 'design_chat', 'memory')),
+    source TEXT NOT NULL CHECK (source IN ('conversations', 'design_chat', 'memory', 'claude_code')),
     project_uuid TEXT REFERENCES projects(uuid) ON DELETE SET NULL,
     account_uuid TEXT,
     created_at TEXT NOT NULL,

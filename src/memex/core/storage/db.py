@@ -132,6 +132,94 @@ def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
     if "content_hash" not in existing:
         conn.execute("ALTER TABLE conversations ADD COLUMN content_hash TEXT")
 
+    # content_hash must exist before the table is recreated below (the migration
+    # copies it column-by-column), so run the source-CHECK migration last.
+    _migrate_conversations_source_check(conn)
+
+
+def _migrate_conversations_source_check(conn: sqlite3.Connection) -> None:
+    """Widen the `conversations.source` CHECK to allow new sources.
+
+    SQLite cannot ALTER a CHECK constraint in place, so for a pre-existing DB
+    whose `conversations` table predates a new source value we recreate the
+    table (data + indexes preserved) following SQLite's documented
+    table-redefinition procedure. Idempotent: a DB already carrying the widened
+    CHECK (or a fresh one created from `schema.sql`) is left untouched.
+
+    FKs that reference `conversations` (messages, chunks, chat_repos) use
+    ON DELETE CASCADE, so `foreign_keys` is toggled OFF for the swap to keep
+    the DROP from cascading. Integrity is preserved structurally: rows are
+    copied wholesale with their original keys and the child tables are never
+    touched, so no FK target changes.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='conversations'"
+    ).fetchone()
+    if row is None:
+        return  # fresh DB: schema.sql already created it with the current CHECK
+    ddl = row["sql"] or ""
+    if "claude_code" in ddl:
+        return  # already migrated
+
+    # Columns of the new table, in order. Copy only those the old table also has
+    # so very old DBs (predating `ingested_at` / `content_hash`) still migrate;
+    # the omitted ones fall back to their DEFAULT / NULL.
+    new_cols = [
+        "uuid",
+        "title",
+        "summary",
+        "source",
+        "project_uuid",
+        "account_uuid",
+        "created_at",
+        "updated_at",
+        "ingested_at",
+        "content_hash",
+    ]
+    old_cols = {
+        r["name"] for r in conn.execute("SELECT name FROM pragma_table_info('conversations')")
+    }
+    copy = [c for c in new_cols if c in old_cols]
+    col_csv = ", ".join(copy)
+
+    # `PRAGMA foreign_keys` is a no-op inside a transaction, so commit any
+    # pending work first to guarantee the OFF takes effect during the swap.
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            f"""
+            BEGIN;
+            CREATE TABLE conversations_new (
+                uuid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                summary TEXT,
+                source TEXT NOT NULL CHECK (
+                    source IN ('conversations', 'design_chat', 'memory', 'claude_code')
+                ),
+                project_uuid TEXT REFERENCES projects(uuid) ON DELETE SET NULL,
+                account_uuid TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                content_hash TEXT
+            ) STRICT;
+            INSERT INTO conversations_new ({col_csv})
+                SELECT {col_csv} FROM conversations;
+            DROP TABLE conversations;
+            ALTER TABLE conversations_new RENAME TO conversations;
+            CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
+                ON conversations(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_conversations_project
+                ON conversations(project_uuid);
+            CREATE INDEX IF NOT EXISTS idx_conversations_source
+                ON conversations(source);
+            COMMIT;
+            """
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
 
 def connect_and_init(
     db_path: Path | str | None = None,

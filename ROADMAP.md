@@ -2,11 +2,11 @@
 
 > Last updated: 2026-06-11
 
-**Current state:** Phases 0 to 3 closed. **Phase 5 essentially done:** `memex-chats 0.1.0` published to PyPI; Chrome extension `memex-live-capture 0.1.0` submitted to the Web Store (in review). Remaining Phase 5 items are non-blocking (screencast, Discord post after Web Store approval, macOS launchd in 0.2.0). **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited (no critical/high, no correctness bugs). **363 unit tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.1.0` on PyPI; Chrome extension submitted to the Web Store. Remaining Phase 5 items are non-blocking (screencast, Discord post, macOS launchd in 0.2.0). **396 unit tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
-The context Claude.ai has should also be available to Claude Code. Every phase has to move toward that goal. If a task does not contribute, it does not belong here.
+The context Claude.ai has should be available to Claude Code, and the context Claude Code has should be available from Claude.ai: one memory, reachable from wherever you are talking to Claude. Every phase has to move toward that goal. If a task does not contribute, it does not belong here.
 
 ---
 
@@ -142,11 +142,28 @@ Deferred follow-ups (low severity, tracked here):
 
 ---
 
+## Phase 6: Claude Code / terminal ingestion
+
+**Goal:** close the loop the other way. The guiding principle was "the context Claude.ai has should also be available to Claude Code"; this adds "and the context Claude Code has should be available everywhere too". One store, searchable from claude.ai (remote connector) and from Claude Code (stdio), covering both halves of the user's history. (Previously listed as out of scope deferring to Claude Historian; the user prioritized a single unified brain, so it moved in scope.)
+
+**Tasks:**
+- [x] **`Source.CLAUDE_CODE`** added to the model + a `conversations.source` CHECK migration. SQLite cannot ALTER a CHECK in place, so `_migrate_conversations_source_check` recreates the table (data + indexes preserved, FKs handled) for pre-existing DBs; idempotent. (2026-06-11)
+- [x] **Parser `core/ingest/claude_code.py`.** One `~/.claude/projects/**/<sessionId>.jsonl` -> one conversation (uuid=sessionId, title from `ai-title` or derived, timestamps from first/last event). Reuses `content_renderer` (tool markers kept, `thinking` dropped for free as an unknown block). Filters per the user's choices: `isSidechain` sub-agents, `isMeta` lines, and harness plumbing (slash-command / bash wrappers) dropped. Malformed lines skipped, not fatal. (2026-06-11)
+- [x] **Pipeline `ingest_claude_code_sessions`** + CLI `memex ingest-claude-code`. Incremental: unchanged sessions (same `content_hash`) skipped without re-embedding (`skip_unchanged` flag), so re-scans over hundreds of files are cheap. Each session auto-associated to the registered repo of its `cwd` (resolved via `resolve_repo_key`, confidence 1.0) so `search_chats(repo=...)` boosts work on that project. (2026-06-11)
+- [x] **Secret redaction** (`core/ingest/redact.py`) on the `claude_code` path: masks provider API keys, JWTs, PEM blocks, `KEY=`/`SECRET=` assignments, `Bearer` tokens, and URL passwords before storage/embedding; `raw_content` not persisted for this source. Added after the close audit flagged that the remote connector exposes terminal output verbatim (user chose redact + full access). (2026-06-11)
+- [x] Tests: parser (filters, tool_result render, title/timestamps, malformed lines, redaction), pipeline (incremental skip, re-ingest, repo association incl. git-remote-keyed repos), redaction unit suite, and the CHECK migration. **396 green.** (2026-06-11)
+- [x] Real bulk ingest of the local sessions + unified-search validation (one query returning both claude.ai and Claude Code hits). (2026-06-11)
+- [x] **Phase-close audit** (security/privacy + correctness). One shipping-blocker fixed (cwd→repo association failed for git-remote-keyed repos: `resolve_repo_key` now also matches the `repos.path` column); one HIGH by-design privacy risk addressed with secret redaction; plus symlink containment, title/timestamp robustness, and doc-sync fixes. (2026-06-11)
+- [ ] Keep-fresh automation (periodic launchd scan or a Claude Code SessionEnd hook). MVP is the manual command; deferred.
+
+**Phase 6 CLOSED (2026-06-11).** One unified store searchable from claude.ai (remote connector) and Claude Code (stdio), covering both halves of the history.
+
+---
+
 ## Out of scope
 
 - Multi-user or cross-account sharing.
 - Cloud or hosted.
-- Indexing Claude Code chats (that is already covered by [Claude Historian](https://mcpmarket.com/server/claude-historian)).
 - Fancy browse UI (CLI and MCP are enough).
 - Attachments, tool_use, files (text only in v1 and v2).
 - Team-level shared memory.

@@ -724,6 +724,17 @@ def get_repo(conn: sqlite3.Connection, key: str) -> RepoInfo | None:
     return _row_to_repo_info(row) if row else None
 
 
+def get_repo_by_path(conn: sqlite3.Connection, path: str) -> RepoInfo | None:
+    """Find a registered repo by its local `path`.
+
+    A repo with a git remote is keyed by the remote URL, not its path, so a
+    plain path lookup (`get_repo`) misses it. This resolves a working
+    directory to its repo regardless of how the repo was keyed.
+    """
+    row = conn.execute("SELECT * FROM repos WHERE path = ?", (path,)).fetchone()
+    return _row_to_repo_info(row) if row else None
+
+
 def list_repos(conn: sqlite3.Connection) -> list[RepoInfo]:
     """All registered repos, ordered by name (case-insensitive)."""
     rows = conn.execute("SELECT * FROM repos ORDER BY LOWER(name)").fetchall()

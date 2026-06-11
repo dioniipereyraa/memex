@@ -73,6 +73,70 @@ class TestSchema:
         assert row["content_hash"] is None
         conn.close()
 
+    def test_migration_widens_source_check_for_claude_code(self) -> None:
+        """A legacy DB with the old source CHECK must accept `claude_code`.
+
+        Recreating the table preserves existing rows and the FK targets
+        (messages/chunks/chat_repos) referencing it.
+        """
+        import sqlite3 as _sqlite
+
+        from memex.core.storage.db import _apply_additive_migrations
+
+        conn = _sqlite.connect(":memory:")
+        conn.row_factory = _sqlite.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        # Old schema: source CHECK without 'claude_code', plus a child row in a
+        # CASCADE-FK table to prove the swap does not drop dependents.
+        conn.executescript(
+            """
+            CREATE TABLE projects (uuid TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
+            CREATE TABLE conversations (
+                uuid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                summary TEXT,
+                source TEXT NOT NULL CHECK (source IN ('conversations', 'design_chat', 'memory')),
+                project_uuid TEXT REFERENCES projects(uuid) ON DELETE SET NULL,
+                account_uuid TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                content_hash TEXT
+            ) STRICT;
+            CREATE TABLE messages (
+                uuid TEXT PRIMARY KEY,
+                conversation_uuid TEXT NOT NULL REFERENCES conversations(uuid) ON DELETE CASCADE,
+                text TEXT
+            ) STRICT;
+            INSERT INTO conversations (uuid, title, source, created_at, updated_at)
+            VALUES ('c-old', 'Legacy', 'conversations', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+            INSERT INTO messages (uuid, conversation_uuid, text) VALUES ('m-old', 'c-old', 'hola');
+            """
+        )
+
+        # Before: inserting a claude_code row is rejected by the old CHECK.
+        with pytest.raises(_sqlite.IntegrityError):
+            conn.execute(
+                "INSERT INTO conversations (uuid, title, source, created_at, updated_at) "
+                "VALUES ('x', 't', 'claude_code', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+            )
+
+        _apply_additive_migrations(conn)
+        _apply_additive_migrations(conn)  # idempotent
+
+        # After: claude_code is accepted.
+        conn.execute(
+            "INSERT INTO conversations (uuid, title, source, created_at, updated_at) "
+            "VALUES ('cc-1', 'Session', 'claude_code', '2026-06-10T00:00:00.000Z', '2026-06-10T00:00:00.000Z')"
+        )
+        # Old row and its CASCADE child survived the table recreation.
+        assert (
+            conn.execute("SELECT title FROM conversations WHERE uuid='c-old'").fetchone()[0]
+            == "Legacy"
+        )
+        assert conn.execute("SELECT text FROM messages WHERE uuid='m-old'").fetchone()[0] == "hola"
+        conn.close()
+
     def test_required_tables_exist(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
             "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name"

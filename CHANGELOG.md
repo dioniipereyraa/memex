@@ -6,15 +6,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pr
 
 ## [Unreleased]
 
-Phase 4: remote MCP transport, so claude.ai (web, Desktop, and mobile) can consume Memex as a custom connector.
+Phase 4 (remote MCP transport for claude.ai) and Phase 6 (Claude Code / terminal ingestion): Memex is now reachable from claude.ai web/Desktop/mobile, and indexes both claude.ai chats and local Claude Code sessions in one store.
 
 ### Added
 - **`memex serve-remote`:** serves the same 4 MCP tools over Streamable HTTP at `/mcp`, protected by OAuth. Designed for a loopback bind behind a tunnel (e.g. Tailscale Funnel) that publishes `MEMEX_REMOTE_BASE_URL`.
 - **GitHub OAuth with an identity allow-list.** claude.ai registers via dynamic client registration and the user authorizes through a GitHub OAuth App; `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS` is enforced on every request (fail closed: the server refuses to start with an empty allow-list, and any non-listed GitHub account gets 401 after the OAuth dance). Each entry matches the username or the immutable numeric account id (the id resists username rename/reuse). OAuth state is persisted encrypted on disk, so restarts do not break the connection.
-- New settings: `MEMEX_REMOTE_BASE_URL`, `MEMEX_REMOTE_PORT`, `MEMEX_GITHUB_CLIENT_ID`, `MEMEX_GITHUB_CLIENT_SECRET`, `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS`. README gained a "Connecting from claude.ai" guide.
+- New remote settings: `MEMEX_REMOTE_BASE_URL`, `MEMEX_REMOTE_PORT`, `MEMEX_GITHUB_CLIENT_ID`, `MEMEX_GITHUB_CLIENT_SECRET`, `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS`. README gained a "Connecting from claude.ai" guide.
+- **`memex ingest-claude-code`:** indexes local Claude Code / terminal sessions (`~/.claude/projects/**/*.jsonl`) into the same store under a new `claude_code` source, so one search spans claude.ai chats and Claude Code work. Incremental (unchanged sessions skipped via `content_hash`), and each session is auto-associated to the registered repo of its working directory (including repos keyed by a git remote). Sub-agent side threads, harness plumbing, and assistant `thinking` are excluded; tool calls are kept as markers.
+- **Secret redaction on the Claude Code path.** Terminal output and file contents are scanned for common credential shapes (provider API keys, JWTs, PEM private keys, `KEY=`/`SECRET=` assignments, `Bearer` tokens, URL-embedded passwords) and masked as `[REDACTED:...]` before storage/embedding; raw block content is not persisted for this source. Best-effort, since these logs can be reached through the remote claude.ai connector.
 
 ### Changed
 - The FastMCP server and the 4 tool wrappers moved from `transports/stdio.py` to a shared `transports/mcp_server.py` (`build_server()` factory). `memex-mcp` (stdio) behaves exactly as before; no config changes needed.
+- `conversations.source` CHECK widened to include `claude_code`. Pre-existing databases are migrated in place by recreating the table (data, indexes, and FK dependents preserved); idempotent and automatic on next open.
 
 ## [0.1.1] - 2026-06-01
 

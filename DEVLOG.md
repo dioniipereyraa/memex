@@ -6,6 +6,35 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-11 (later): Phase 6, Claude Code / terminal ingestion (CLOSED)
+
+Same day, second push. The user wanted "one brain in different forms": claude.ai, Claude Code, and the terminal all searchable from anywhere. claude.ai → Memex already existed (export + live capture + the Phase 4 remote connector). The missing half was Claude Code / terminal → Memex. It had been parked as out-of-scope (deferring to Claude Historian), but the user explicitly prioritized a single unified store, so it moved in scope as Phase 6.
+
+**Format study (real logs):** each session is `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`, one event per line. Relevant types: `user` (content is a str, or a list when it carries a `tool_result`), `assistant` (content is a list of `text`/`thinking`/`tool_use` blocks), `ai-title` (the `aiTitle`). Every line also has `cwd`, `timestamp`, `gitBranch`, `isMeta`, `isSidechain`. Across a 60-file sample: 1108 `isSidechain` lines (sub-agent noise) — confirms dropping them matters.
+
+**User's three choices (all "go with your recommendation"):** index prompts + replies + tool markers, drop my `thinking` (volume/noise); no sensitive folders to exclude; drop sub-agent side threads.
+
+**What was built (reuses a lot):**
+- `Source.CLAUDE_CODE` in the model. The `conversations.source` had a CHECK constraint listing the three old sources; SQLite cannot ALTER a CHECK in place, so `_migrate_conversations_source_check` (in `storage/db.py`) recreates the table following SQLite's table-redefinition procedure: data + indexes preserved, copy is column-intersection so very old DBs without `ingested_at` still migrate, FKs toggled OFF for the swap. Idempotent (checks the live DDL for `claude_code`). Verified on the real prod DB: 97 convs intact, CHECK widened.
+- `core/ingest/claude_code.py`: `parse_session_file` → `ParsedSession(conversation, messages, cwd)`. Reuses `content_renderer` verbatim, so `thinking` is dropped for free (unknown block type) and tool calls render as the same `[tool_use]`/`[result]` markers as the export. Filters `isMeta`, `isSidechain`, and harness plumbing (slash-command echoes, bash wrappers). Malformed lines skipped, not fatal.
+- `ingest_claude_code_sessions` in the pipeline, driving the shared `_ingest_conversation`. Added two reusable knobs to that helper: `skip_unchanged` (short-circuit on matching `content_hash` before any embed → cheap incremental re-scan over hundreds of files) and `extra_repo_keys` (associate a session to the registered repo of its `cwd`, resolved via `resolve_repo_key`, confidence 1.0 — a stronger signal than text matching, and free because every line carries `cwd`). New `IngestSummary.skipped_unchanged_conversations`.
+- CLI `memex ingest-claude-code [--path] [--db]`.
+- Tests: 10 parser + 5 pipeline + 1 migration. Suite **379 green**, ruff + format + mypy clean.
+
+**Gotcha logged (CLAUDE.md):** `PRAGMA foreign_keys` is a no-op inside a transaction. The first cut of the migration toggled it OFF while an implicit transaction was open, so FKs stayed ON and the table swap hit "no such table" against a forward-referenced parent. Fix: `conn.commit()` before toggling.
+
+**Phase-close audit (two parallel auditors: security/privacy + correctness/docs).**
+
+Correctness found one **shipping-blocker bug**: the marquee cwd→repo association did not fire for any repo with a git remote. Such a repo is keyed by the remote URL (`canonical_repo_key` prefers it), but `resolve_repo_key` only ever looked up by `key`, never by the `repos.path` column, so a working directory never matched. The test missed it because it registered the repo with `remote_url=None` (path-keyed, coincidentally working). Fix: added `repo.get_repo_by_path` and a 4th strategy in `resolve_repo_key` (match the normalized path against the `path` column); regression test with a real `git@github.com:...` remote that fails without the fix. Also fixed: `rglob` symlink containment (skip files resolving outside the scan root), derived title skips a leading `tool_result` line, min/max timestamps instead of first/last, stale `foreign_key_check` mention in the migration docstring, and the `source` tool docstring now lists `claude_code`.
+
+Security found one **HIGH by-design risk**: the remote claude.ai connector now exposes the full local terminal history (commands, file contents, paths, and any secrets that appear in them) with no redaction; secrets that were never really "a conversation" (a third party's token in tool output) could leave the box on a remote search. The user chose **redact-secrets, full access**. Added `core/ingest/redact.py`: masks API keys (Anthropic/OpenAI/GitHub/Slack/Google/AWS), JWTs, PEM private-key blocks, `KEY=`/`SECRET=` assignments, `Bearer` tokens, and URL-embedded passwords as `[REDACTED:...]`, applied on the `claude_code` path before storage/embedding; `raw_content` is no longer persisted for this source (would store the unredacted blocks). Other security findings: the indirect-prompt-injection `_meta.untrusted_content` envelope already covers the new source for free (source-agnostic); CHECK migration verified correct (data + CASCADE children + FK toggle, f-string `col_csv` not injectable since it comes from `pragma_table_info` ∩ a hardcoded literal). Lessons logged in CLAUDE.md.
+
+After the fixes: **396 unit tests green**, ruff + format + mypy clean. The partial bulk ingest (13 sessions) from before the audit was dropped and re-run clean with redaction + the association fix; unified search validated (one query returning both claude.ai and Claude Code hits).
+
+**Phase 6 CLOSED.** Keep-fresh automation (launchd scan or a Claude Code SessionEnd hook) is deferred; MVP is the manual `memex ingest-claude-code`.
+
+---
+
 ## 2026-06-11: Phase 4, remote MCP transport (CLOSED)
 
 Goal of the phase: claude.ai consumes Memex as a remote MCP custom connector. Before coding, verified the current connector requirements against the official docs (support.claude.com + claude.com/docs/connectors, checked 2026-06): custom connectors exist on **all consumer plans** (Free is capped at one), one connector serves claude.ai web + Desktop + mobile, transport is **Streamable HTTP** (HTTP+SSE is deprecated), and the connection **originates from Anthropic's cloud**, never from the user's device. That settles the two open design questions from the Phase 1 notes:

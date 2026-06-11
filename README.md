@@ -170,6 +170,22 @@ Settings > Connectors > Add custom connector, with URL `https://my-mac.my-tailne
 
 Security model in short: loopback bind + tunnel, OAuth proxy over GitHub with a username allow-list enforced on **every** request (revoking the app on GitHub locks it out immediately), `TrustedHostMiddleware` pinned to the public hostname, and the same indirect-prompt-injection envelope on tool results as the stdio transport.
 
+## Indexing Claude Code / terminal sessions (Phase 6)
+
+Memex also indexes your local Claude Code and terminal sessions, so a single search covers both halves of your history: what you discussed on claude.ai and what you built with Claude Code. Claude Code records each session as a JSONL file under `~/.claude/projects/`; Memex reads them directly (no extension, no network).
+
+```bash
+uv run memex ingest-claude-code        # scans ~/.claude/projects/**/*.jsonl
+uv run memex ingest-claude-code --path /custom/path   # alternate root
+```
+
+These sessions are stored under the `claude_code` source, searchable like any other chat (and filterable with `source="claude_code"`). Details:
+
+- **Incremental.** Unchanged sessions are skipped (by content hash), so re-running after more work is cheap. Sessions grow append-only, so a re-scan picks up new turns and new sessions. Re-run it whenever you want to refresh, or wire it to a schedule.
+- **Repo-aware for free.** Every session carries its working directory, so each is auto-associated with the registered repo of that `cwd` (run `memex repos add <path>` first). `search_chats(repo=...)` then boosts the sessions where you worked on that project.
+- **What is indexed:** your prompts, the assistant replies, and tool calls as `[tool_use: ...]` / `[result]` markers. Excluded: assistant internal reasoning (`thinking`), parallel sub-agent side threads, and CLI plumbing (slash-command echoes, bash wrappers). Everything stays in the local SQLite DB.
+- **Secret redaction.** Session logs capture real terminal output and file contents, which often contain credentials. Before storing, Memex masks common secret shapes (API keys, bearer/JWT tokens, PEM private keys, `KEY=`/`SECRET=` assignments, URLs with embedded passwords) as `[REDACTED:...]`, and does not persist the raw block content for this source. Best-effort, not a guarantee: it catches well-known formats so third-party credentials that were never really part of a conversation stay out of the index (this matters because the remote connector can surface indexed text to claude.ai).
+
 ## Auto-summaries (Phase 3, optional)
 
 When `search_chats` returns a chat that does not have a summary yet, Memex can generate one on-the-fly using Claude Haiku. The summary is persisted, so the next search of the same chat hits cache and does not pay the API again. This way you only pay for chats you actually look at, not for the whole corpus.

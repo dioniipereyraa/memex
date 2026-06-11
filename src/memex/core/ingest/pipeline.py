@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from memex.config import settings
 from memex.core.embeddings.base import Embedder
 from memex.core.ingest.chunker import ChunkSpan, chunk_text
+from memex.core.ingest.claude_code import parse_session_file
 from memex.core.ingest.claude_export import (
     parse_conversation_dict,
     parse_conversations_list,
@@ -43,7 +44,7 @@ from memex.core.ingest.claude_export import (
     parse_project,
 )
 from memex.core.models import Chunk, Conversation, Message, Source
-from memex.core.repos import match_text
+from memex.core.repos import match_text, resolve_repo_key
 from memex.core.storage import repo
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,9 @@ class IngestSummary(BaseModel):
     # Conversations whose text exceeded `max_chunks_per_conversation` and were
     # truncated (tail dropped) to bound resource use.
     truncated_conversations: int = 0
+    # Conversations skipped because their content was unchanged since the last
+    # ingest (incremental re-scan, e.g. `ingest-claude-code`). No re-embed.
+    skipped_unchanged_conversations: int = 0
     errors: list[str] = Field(default_factory=list)
 
 
@@ -210,6 +214,72 @@ def ingest_single_conversation(
     return summary
 
 
+def ingest_claude_code_sessions(
+    conn: sqlite3.Connection,
+    embedder: Embedder,
+    root: Path | str,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    batch_size: int = 32,
+) -> IngestSummary:
+    """Ingest local Claude Code / terminal session logs under `root`.
+
+    `root` is typically `~/.claude/projects`. Every `*.jsonl` below it is a
+    session; each is parsed (see `claude_code.parse_session_file`) and ingested
+    with the shared per-conversation pipeline.
+
+    Incremental: unchanged sessions (same `content_hash`) are skipped without
+    re-embedding, so a re-scan over hundreds of files is cheap. Live sessions
+    grow append-only, so re-running picks up new turns and new sessions.
+
+    Each session is associated with the registered repo of its `cwd` (resolved
+    via `resolve_repo_key`) at full confidence, when that repo is registered.
+
+    One bad file does not abort the scan: it is logged into `summary.errors`
+    and the rest proceed. Each session commits independently.
+    """
+    cs = chunk_size if chunk_size is not None else settings.chunk_size
+    co = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
+    summary = IngestSummary()
+
+    root_path = Path(root).expanduser()
+    if not root_path.exists():
+        summary.errors.append(f"{root_path}: path does not exist")
+        return summary
+
+    root_resolved = root_path.resolve()
+    for jsonl_path in sorted(root_path.rglob("*.jsonl")):
+        try:
+            # `rglob` follows directory symlinks; skip anything that resolves
+            # outside the scan root so a symlinked subtree cannot pull in
+            # `.jsonl` files from elsewhere on disk.
+            if not jsonl_path.resolve().is_relative_to(root_resolved):
+                continue
+            parsed = parse_session_file(jsonl_path)
+            if parsed is None:
+                continue
+            repo_key = resolve_repo_key(conn, parsed.cwd) if parsed.cwd else None
+            _ingest_conversation(
+                conn,
+                embedder,
+                parsed.conversation,
+                parsed.messages,
+                summary,
+                cs,
+                co,
+                batch_size,
+                skip_unchanged=True,
+                extra_repo_keys=[repo_key] if repo_key else None,
+            )
+            conn.commit()
+        except Exception as e:
+            logger.exception("Error ingesting session %s", jsonl_path)
+            summary.errors.append(f"{jsonl_path.name}: {e}")
+            conn.rollback()
+
+    return summary
+
+
 # ---------- private helpers ----------
 
 
@@ -222,6 +292,9 @@ def _ingest_conversation(
     chunk_size_tokens: int,
     chunk_overlap_tokens: int,
     batch_size: int,
+    *,
+    skip_unchanged: bool = False,
+    extra_repo_keys: list[str] | None = None,
 ) -> None:
     """Insert a conversation with its messages and chunks/embeddings.
 
@@ -238,6 +311,16 @@ def _ingest_conversation(
     summarizer in `tools.search_chats` consumes it to detect whether a
     conv has changed since the last generation and force regen even
     when a summary is already cached.
+
+    `skip_unchanged`: when True, if the conversation already exists with
+    the same `content_hash`, return early without re-embedding (cheap
+    incremental re-scan, used by `ingest-claude-code` over hundreds of
+    session files). The export path leaves this False (full re-ingest).
+
+    `extra_repo_keys`: registered repo keys to associate with this
+    conversation in addition to text-matched ones, with confidence 1.0.
+    Used to associate a Claude Code session with the repo of its `cwd`
+    (a stronger signal than text matching).
     """
     if conv.project_uuid is not None:
         exists = conn.execute(
@@ -256,6 +339,15 @@ def _ingest_conversation(
     # in memory. We call it early to have the hash ready before the upsert.
     full_text, msg_map = _join_messages(messages, summary)
     content_hash = _hash_content(full_text) if full_text else None
+
+    # Incremental short-circuit: if the conv already exists with the same
+    # content hash, there is nothing to re-embed. Done before any write so the
+    # bulk `ingest-claude-code` re-scan stays cheap over unchanged sessions.
+    if skip_unchanged and content_hash is not None:
+        existing = repo.get_conversation(conn, conv.uuid)
+        if existing is not None and existing.content_hash == content_hash:
+            summary.skipped_unchanged_conversations += 1
+            return
 
     # Preserve the cached summary if the conv already existed and the
     # content did NOT change. Important: the upsert overwrites `summary`
@@ -334,6 +426,12 @@ def _ingest_conversation(
             source="auto",
             confidence=match.confidence,
         )
+    # Sessions carry their own repo via `cwd`: associate it directly at full
+    # confidence (stronger than text matching). De-duped against text matches.
+    text_matched = {m.repo_key for m in repo_matches}
+    for repo_key in extra_repo_keys or []:
+        if repo_key not in text_matched:
+            repo.associate_chat_repo(conn, conv.uuid, repo_key, source="auto", confidence=1.0)
 
     for chunk, vec in prepared_chunks:
         repo.add_chunk(conn, chunk, vec)

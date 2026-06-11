@@ -2,6 +2,7 @@
 
 Commands:
 - `memex ingest <zip>`: ingest an official Claude.ai export.
+- `memex ingest-claude-code`: index local Claude Code / terminal sessions.
 - `memex search "<query>"`: semantic search over the local DB.
 - `memex stats`: show what is indexed.
 - `memex serve`: run the local HTTP server for live capture.
@@ -25,7 +26,7 @@ from rich.table import Table
 
 from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
-from memex.core.ingest.pipeline import ingest_export
+from memex.core.ingest.pipeline import ingest_claude_code_sessions, ingest_export
 from memex.core.repos import find_repo_root, match_text, parse_repo, resolve_repo_key
 from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
@@ -92,6 +93,63 @@ def ingest(
     table.add_column("Count", justify="right")
     table.add_row("Projects", str(summary.projects))
     table.add_row("Conversations", str(summary.conversations))
+    table.add_row("Messages", str(summary.messages))
+    table.add_row("Chunks", str(summary.chunks))
+    table.add_row("Empty messages skipped", str(summary.skipped_empty_messages))
+    table.add_row("Errors", str(len(summary.errors)))
+    console.print(table)
+
+    if summary.errors:
+        console.print("\n[yellow]Errors during ingest:[/yellow]")
+        for err in summary.errors[:10]:
+            console.print(f"  [dim]- {err}[/dim]")
+        if len(summary.errors) > 10:
+            console.print(f"  [dim]...and {len(summary.errors) - 10} more[/dim]")
+
+
+@app.command("ingest-claude-code")
+def ingest_claude_code(
+    path: Annotated[
+        Path | None,
+        typer.Option(
+            "--path",
+            help="Root of Claude Code session logs. Default: ~/.claude/projects.",
+        ),
+    ] = None,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database. Default: MEMEX_DB_PATH."),
+    ] = None,
+) -> None:
+    """Index local Claude Code / terminal sessions into the same store.
+
+    Scans `~/.claude/projects/**/*.jsonl` (one file per session) and ingests
+    them with source `claude_code`, so a single search covers claude.ai chats
+    and Claude Code work alike. Incremental: unchanged sessions are skipped,
+    so re-running is cheap. Sessions are auto-associated with the registered
+    repo of their working directory (`memex repos add` to register one).
+    """
+    root = path if path is not None else Path.home() / ".claude" / "projects"
+    console.print(f"[bold]Ingesting Claude Code sessions[/bold] from [cyan]{root}[/cyan]")
+    console.print(f"  DB: {db_path or settings.db_path}")
+
+    conn = connect_and_init(db_path)
+    try:
+        embedder = get_default_embedder()
+        console.print(f"  embedder: {settings.embed_backend} ({embedder.model_name})\n")
+        with console.status("[yellow]Scanning sessions...[/yellow]"):
+            summary = ingest_claude_code_sessions(conn, embedder, root)
+    except EmbedderError as e:
+        console.print(f"[red]Embedder error:[/red] {e}")
+        raise typer.Exit(code=2) from e
+    finally:
+        conn.close()
+
+    table = Table(title="Claude Code ingest complete", show_header=False)
+    table.add_column("Metric", style="bold")
+    table.add_column("Count", justify="right")
+    table.add_row("Sessions ingested", str(summary.conversations))
+    table.add_row("Unchanged (skipped)", str(summary.skipped_unchanged_conversations))
     table.add_row("Messages", str(summary.messages))
     table.add_row("Chunks", str(summary.chunks))
     table.add_row("Empty messages skipped", str(summary.skipped_empty_messages))
