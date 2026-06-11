@@ -33,15 +33,15 @@ Defense in depth, same spirit as `http_ingest.py`:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.providers.github import GitHubProvider
 from starlette.applications import Starlette
-from starlette.middleware import Middleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from memex.config import Settings, settings
+from memex.config import Settings, get_settings, settings
 from memex.transports.mcp_server import build_server
 
 logger = logging.getLogger("memex.http")
@@ -68,19 +68,50 @@ class AllowlistGitHubProvider(GitHubProvider):
     matches if it equals either claim, so both can coexist.
     """
 
-    def __init__(self, *, allowed: frozenset[str], **kwargs: object) -> None:
+    def __init__(
+        self,
+        *,
+        allowed: frozenset[str],
+        env_path: Path | None = None,
+        **kwargs: object,
+    ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._allowed = frozenset(entry.lower() for entry in allowed)
+        # If given, the allow-list is re-read from this `.env` whenever its
+        # mtime changes, so removing a login takes effect without a daemon
+        # restart (closes the revocation gap). Falls back to the last good set.
+        self._env_path = env_path
+        self._env_mtime: float | None = None
+
+    def _current_allowed(self) -> frozenset[str]:
+        if self._env_path is None:
+            return self._allowed
+        try:
+            mtime = self._env_path.stat().st_mtime
+        except OSError:
+            return self._allowed
+        if mtime != self._env_mtime:
+            self._env_mtime = mtime
+            try:
+                fresh = parse_allowed_logins(get_settings().remote_allowed_github_logins)
+                if fresh:  # never drop to an empty (fail-open) allow-list
+                    self._allowed = fresh
+            except Exception:
+                logger.warning(
+                    "Could not reload allow-list from %s; keeping previous.", self._env_path
+                )
+        return self._allowed
 
     async def verify_token(self, token: str) -> AccessToken | None:
         access = await super().verify_token(token)
         if access is None:
             return None
+        allowed = self._current_allowed()
         claims = access.claims or {}
         login = claims.get("login")
         sub = claims.get("sub")
-        login_ok = isinstance(login, str) and login.lower() in self._allowed
-        sub_ok = sub is not None and str(sub) in self._allowed
+        login_ok = isinstance(login, str) and login.lower() in allowed
+        sub_ok = sub is not None and str(sub) in allowed
         if not (login_ok or sub_ok):
             # Do not log the token; the login is enough to diagnose.
             logger.warning(
@@ -151,13 +182,19 @@ def build_remote_app(cfg: Settings | None = None) -> Starlette:
     cfg = cfg if cfg is not None else settings
     base_url, allowed_logins = _validate_remote_settings(cfg)
 
+    env_path = Path(".env")
     auth = AllowlistGitHubProvider(
         allowed=allowed_logins,
+        env_path=env_path if env_path.exists() else None,
         client_id=(cfg.github_client_id or "").strip(),
         client_secret=(cfg.github_client_secret or "").strip(),
         base_url=base_url,
     )
     server = build_server(auth=auth)
-    return server.http_app(
-        middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts(base_url))],
-    )
+    app = server.http_app()
+    # Add TrustedHost as the OUTERMOST middleware so a bad Host is rejected
+    # before the auth backend runs (which would otherwise call the GitHub API
+    # on every request, even ones doomed by Host pinning). `add_middleware`
+    # prepends, i.e. wraps outermost in Starlette.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts(base_url))
+    return app

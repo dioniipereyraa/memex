@@ -7,9 +7,9 @@
 #   uninstall stop + disable + remove the unit
 #   status    show systemctl status for the unit
 #
-# This is the Linux counterpart of scripts/install-autostart.ps1. macOS
-# launchd support is tracked as a separate sub-task; for now macOS users
-# run `uv run memex serve` manually in a terminal or as a background job.
+# This is the Linux counterpart of scripts/install-autostart.ps1. For macOS,
+# install the launchd agents via the README section "Running always-on
+# (macOS)" using scripts/com.memex.*.plist.template.
 
 set -euo pipefail
 

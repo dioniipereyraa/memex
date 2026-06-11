@@ -5,6 +5,7 @@
 # Idle cost is low: the embedding model is loaded lazily, only on first ingest.
 
 set -uo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"

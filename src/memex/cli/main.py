@@ -17,6 +17,7 @@ Invoke as `uv run memex ...`, or `memex ...` if the .venv is active.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -311,8 +312,14 @@ def serve(
 
     console.print(f"[bold]Memex serve[/bold] listening on [cyan]http://{host}:{port}[/cyan]")
     console.print("Connect the Memex Chrome ext and start using claude.ai.")
-    console.print("Pair the extension with this access token (paste it in the popup):")
-    console.print(f"  [bold cyan]{token}[/bold cyan]")
+    # Only echo the token to an interactive terminal. Under a daemon (launchd)
+    # stdout is redirected to a file that may be world-readable, so printing the
+    # token there would leak it; direct non-interactive users to `memex token`.
+    if sys.stdout.isatty():
+        console.print("Pair the extension with this access token (paste it in the popup):")
+        console.print(f"  [bold cyan]{token}[/bold cyan]")
+    else:
+        console.print("Run `memex token` in a terminal to get the pairing token.")
     console.print("[dim]Ctrl+C to stop.[/dim]\n")
     uvicorn.run(http_ingest.app, host=host, port=port, log_level="info")
 
@@ -848,17 +855,19 @@ def install_service(
 
     if system == "Darwin":
         console.print(
-            "[yellow]macOS launchd integration is not implemented in this release.[/yellow]"
+            "On macOS, install the launchd agents (serve, serve-remote, ingest) "
+            "with the one-liner from the README section [bold]Running always-on "
+            "(macOS)[/bold]:"
         )
-        console.print("\nFor now, run the server manually:")
-        console.print("  [bold]uv run memex serve[/bold]   (Ctrl+C to stop)")
-        console.print("\nOr keep it alive in the background:")
-        console.print("  [bold]nohup uv run memex serve > ~/memex-serve.log 2>&1 &[/bold]")
         console.print(
-            "\nTrack: https://github.com/dioniipereyraa/memex/issues "
-            "(macOS launchd support is on the 0.2.0 roadmap)."
+            "  [bold]for svc in serve serve-remote ingest-claude-code; do\n"
+            '    sed "s|__REPO__|$(pwd)|g" "scripts/com.memex.$svc.plist.template" '
+            "> ~/Library/LaunchAgents/com.memex.$svc.plist\n"
+            "    launchctl load ~/Library/LaunchAgents/com.memex.$svc.plist\n"
+            "  done[/bold]"
         )
-        raise typer.Exit(code=0 if action == "status" else 2)
+        console.print("\nThey start with your Mac and restart if they crash.")
+        raise typer.Exit(code=0)
 
     console.print(
         f"[red]Unsupported platform:[/red] {system!r} ({_sys.platform}). "

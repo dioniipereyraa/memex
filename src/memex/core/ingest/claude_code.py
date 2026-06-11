@@ -188,7 +188,9 @@ def _build_message(obj: dict[str, Any], session_id: str, ltype: str) -> Message 
             return None
         tool_flag = False
     elif isinstance(content, list):
-        text = render_content(content)
+        # Redact tool input/result text BEFORE truncation (so a secret that
+        # straddles the truncation boundary is masked whole).
+        text = render_content(content, redactor=redact_secrets)
         tool_flag = has_tool_use(content)
     else:
         return None
@@ -197,8 +199,10 @@ def _build_message(obj: dict[str, Any], session_id: str, ltype: str) -> Message 
         return None
 
     # Mask credentials that leak into terminal output / file contents before
-    # they are stored or embedded. `raw_content` is deliberately not persisted
-    # for this source: the rendered+redacted `text` is the source of truth, and
+    # they are stored or embedded. Runs again on the full rendered text to
+    # cover plain `text` blocks and string content (idempotent on already-
+    # redacted tool output). `raw_content` is deliberately not persisted for
+    # this source: the rendered+redacted `text` is the source of truth, and
     # keeping the raw blocks would store unredacted secrets in the DB.
     text = redact_secrets(text)
 

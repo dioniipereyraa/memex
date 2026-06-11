@@ -174,15 +174,15 @@ class TestInstallServiceCommand:
         assert any("install-autostart.sh" in part for part in cmd)
         assert "status" in cmd
 
-    def test_macos_prints_manual_instructions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_macos_prints_launchd_instructions(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import platform
 
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
         result = runner.invoke(app, ["install-service", "install"])
-        # macOS not supported: exits non-zero for install/uninstall, 0 for status.
-        assert result.exit_code != 0
-        assert "macOS" in result.output
-        assert "memex serve" in result.output
+        # macOS now points at the shipped launchd agents (clean exit).
+        assert result.exit_code == 0
+        assert "launchd" in result.output
+        assert "com.memex" in result.output
 
     def test_macos_status_is_clean_exit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import platform

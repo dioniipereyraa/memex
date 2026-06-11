@@ -6,6 +6,25 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-11 (final security audit): 4-auditor sweep + hardening
+
+Ran a final security audit with four parallel auditors (internet-facing connector, sensitive-data/redaction/injection, local surface + daemons + hook, and correctness). User's call on the headline finding: **acceso total + redacción reforzada** (keep Claude Code reachable from the remote connector, but make redaction much stronger), and then attack it adversarially in rounds.
+
+**Findings and fixes applied this pass (416 tests green, ruff + format + mypy clean):**
+
+- **Redaction reinforced (HIGH-1/2/3/4 + the ReDoS bug):** `redact.py` rewritten. Added vendor prefixes (Stripe, Twilio, SendGrid, npm, PyPI, Square, Google OAuth, GitHub fine-grained, Slack webhooks, more AWS prefixes, OpenSSH keys), more sensitive assignment names (dsn, database_url, connection_string, credential, mnemonic, seed/pass/recovery phrase, signing key), quoted-value-with-spaces handling, and a **high-entropy fallback** (Shannon ≥ 4.0, mixed charset, 32–100 chars, skips pure-hex/UUIDs and huge base64 blobs) for secrets with no known prefix. Fixed a **quadratic `url-credentials` regex** (an 180 KB no-whitespace blob went from ~6 s to ~3 ms) by bounding all quantifiers. Redaction now also runs in `content_renderer` **before** tool input/result truncation, so a secret straddling the cut is masked whole. Removed the `pwd:` false positive.
+- **Ingest token leaked into a world-readable daemon log (HIGH-5):** `memex serve` now only echoes the token when stdout `isatty()`; under launchd it points users to `memex token`. Added `umask 077` to the daemon/hook scripts, `Umask` (077) to the launchd plists, and chmod'd the existing `data/*.log` to 0600. The leaked token is being rotated.
+- **Allow-list revocation gap (MEDIUM-1):** `AllowlistGitHubProvider` now re-reads the allow-list from `.env` when its mtime changes, so removing a login takes effect without a daemon restart (fail-safe to the last good set; never drops to empty). GitHub-side revocation was already immediate.
+- **TrustedHost ordering (LOW-2):** moved `TrustedHostMiddleware` to outermost via `app.add_middleware`, so a bad Host is rejected before the GitHub API call the auth backend would otherwise make.
+- **Concurrency (LOW-4) + migration robustness (OBS-1):** `busy_timeout` 15s → 30s for the multi-writer setup; the CHECK migration now `DROP TABLE IF EXISTS conversations_new` + `CREATE TABLE IF NOT EXISTS` to survive a crashed prior run.
+- **Docs (DOC-1/2/3):** README status header corrected (Phases 0–4 + 6 closed; PyPI 0.1.0 predates the new features); `install-service` on macOS now points to the shipped launchd one-liner instead of claiming launchd is unimplemented; stale comment in `install-autostart.sh` fixed.
+
+**Confirmed solid by the auditors (no change):** remote auth chain has no bypass (JWT unforgeable, allow-list per request, claims not client-spoofable); local capture token is constant-time compared and 0600; hook stdin handling is injection-safe (quoted, parsed via stdlib json); `.env` is 0600 and not in git; DB/sidecars 0600 in a 0700 dir.
+
+**Still open (next):** GitHub client secret rotation (user action, appeared in audit logs); adversarial red-team rounds against the reinforced redaction (per the user's ask, attack it many ways, re-attack what breaks); optional DCR `/register` rate-limit (LOW-1), provenance flag (MEDIUM-2), and injection sentinels (MEDIUM-1-inj) as defense-in-depth.
+
+---
+
 ## 2026-06-11 (always-on): launchd agents for serve + serve-remote
 
 Made the two long-lived servers persistent on macOS so the user never has to start them by hand (they used to die with the Claude Code session that launched them). Added `scripts/serve-daemon.sh` and `scripts/serve-remote-daemon.sh` (resolve the repo from their own location, `cd` into it so the relative DB path and `.env` resolve, then `exec uv run memex serve` / `serve-remote`), plus two launchd plist templates with `RunAtLoad` + `KeepAlive` + `ProcessType Background`. Installed and verified on this Mac: `launchctl list | grep memex` shows all three agents (serve, serve-remote, ingest-claude-code) at status 0; `serve` answers `/health` 200, `serve-remote` answers `/mcp` 401 (auth required) both on loopback and through the public Funnel.

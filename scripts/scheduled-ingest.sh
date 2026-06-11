@@ -6,6 +6,7 @@
 # quiet run is nearly free. Low priority so it never competes with real work.
 
 set -uo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"

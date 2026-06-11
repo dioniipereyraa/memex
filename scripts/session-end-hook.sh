@@ -15,6 +15,7 @@
 # exits 0 silently. A memory tool must never break the editor it watches.
 
 set -uo pipefail
+umask 077  # any file we create (the log) is user-only
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"

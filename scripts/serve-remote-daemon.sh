@@ -6,6 +6,7 @@
 # same port. Idle cost is low (no embedding model until a search runs).
 
 set -uo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"

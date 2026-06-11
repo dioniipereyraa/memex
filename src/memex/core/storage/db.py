@@ -99,7 +99,11 @@ def get_connection(
     # processes, so a write can briefly contend. Wait instead of failing fast.
     # CPython's sqlite3 default happens to be 5000ms; set it explicitly so it
     # does not silently change and so the value is intentional and documented.
-    conn.execute("PRAGMA busy_timeout = 15000")
+    # 30s: serve + serve-remote + the 15-min scheduled ingest + the SessionEnd
+    # hook can all write to the same DB; a bulk ingest can hold the write lock
+    # for several seconds while embedding, so give contenders room to wait
+    # rather than fail with SQLITE_BUSY.
+    conn.execute("PRAGMA busy_timeout = 30000")
 
     return conn
 
@@ -190,7 +194,8 @@ def _migrate_conversations_source_check(conn: sqlite3.Connection) -> None:
         conn.executescript(
             f"""
             BEGIN;
-            CREATE TABLE conversations_new (
+            DROP TABLE IF EXISTS conversations_new;
+            CREATE TABLE IF NOT EXISTS conversations_new (
                 uuid TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 summary TEXT,

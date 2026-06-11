@@ -26,6 +26,8 @@
     <true/>
     <key>ProcessType</key>
     <string>Background</string>
+    <key>Umask</key>
+    <integer>63</integer>
     <key>StandardOutPath</key>
     <string>__REPO__/data/serve-remote.log</string>
     <key>StandardErrorPath</key>
