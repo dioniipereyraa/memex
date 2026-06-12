@@ -6,6 +6,28 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-12: red-team round 4 (data-theft focus) + 0.2.1 security patch
+
+User asked for one more big adversarial verification focused on what matters most: stealing sensitive info that could be sent through a chat, and stealing chat content from outside. Ran four parallel attackers, each executing REAL attacks (not theory): (A) redaction bypass, (B) the remote connector, (C) the local surface, (D) end-to-end data-flow / injection.
+
+**Verdict: data theft from outside did NOT work.** The remote connector held against unauthenticated tool calls, forged/`alg:none` JWTs, Host-header/DNS-rebinding, redirect_uri theft, consent CSRF, and allow-list bypass; zero chat bytes leaked. The local capture server held (constant-time token, Origin/Host pinned, body caps); all of `data/` is 0600 in a 0700 dir and the token is never logged. The claude_code→cloud path leaks no new field un-redacted (the round-2 title fix still holds; every adjacent derived field is covered).
+
+**Redaction bypasses found by execution and fixed (redact.py), all reproduced first:**
+- **HIGH: 64-hex key exempted by a non-adjacent digest WORD.** `_DIGEST_CONTEXT` matched free-text `object`/`commit`/`hash`/`tree`/`oid` anywhere in the 160-char window, so `the commit message references <eth-key>` left a 256-bit key in cleartext. Tightened to adjacency (marker must abut the token, anchored `$` with a short separator), mirroring the round-3 `_INTEGRITY_PREFIX` fix. Real `sha256:HEX` / `commit HEX` / `etag: "HEX"` still preserved.
+- **HIGH: dot/colon-segmented secrets leaked whole.** Discord (`id.ts.hmac`) and Telegram (`id:secret`) tokens, and any dot/colon-chunked secret, evaded the entropy pass (each segment under the 28-char floor). Added Discord + Telegram vendor rules and a general `_redact_dotted_secret` gated hard (joined body ≥40 chars, 3 char classes, entropy ≥4.0, not a camel identifier, `/` excluded so paths/URLs are not swallowed). Verified domains, semvers, Maven coords, Java package paths, k8s image refs all survive.
+- **MED: zero-width / soft-hyphen split.** An invisible `Cf` char mid-secret split the token; each half survived, and the read-time strip was too late (already chunked/embedded). Now `_strip_format_chars` (Cf category + TAG block) runs first in `redact_secrets`.
+- **MED: PEM ReDoS.** Packed unterminated `-----BEGIN ... PRIVATE KEY-----` markers forced a 16 KB lazy scan each (2.9 MB ≈ 10 s). Required a trailing newline after the header → junk BEGIN fails instantly, linear again (≈1 s). Real PEM/CRLF blocks still redacted (verified).
+
+**Other fixes:** the untrusted-content envelope now names the `project` description/prompt_template surfaced by `get_chat` (a Project prompt_template reads like a system prompt; it was already control-char-stripped, this closes the framing gap). Chrome extension: `content.js` checks message origin + payload shape; corrected the misleading `scrubSensitive` "redaction" comment (it is not a security boundary); bumped manifest to 0.2.1. Honest call: a nonce handshake between the MAIN-world inject and the isolated content script can't be forge-proof (no un-observable cross-world channel; a nonce rides postMessage and is observable by a page-world attacker), so documented the limit instead of shipping security theater. That vector needs a claude.ai XSS and is index-poisoning (integrity), not exfiltration.
+
+**Documented, not fixed:** unauthenticated DCR `/register` is unbounded (no TTL/cap in upstream FastMCP) → disk-exhaustion DoS. Availability only, no data exposure, behind the user's own Tailscale Funnel. Mitigate at the tunnel; proper fix is upstream. The round-4 attacker created ~60 throwaway encrypted client files (<1 MB total) proving it; harmless and left in place (can't distinguish them from the live claude.ai client by mtime without risking the real connection).
+
+**State:** 493 tests green (+16 round-4 corpus/perf guards), ruff + format + mypy clean. Shipping as 0.2.1.
+
+Next: publish 0.2.1 to PyPI (maintainer token), tag, push. Repackage the Chrome ext (0.2.1) if resubmitting.
+
+---
+
 ## 2026-06-12: credential rotation + 0.2.0 release
 
 Closed the pending security actions and shipped the release.

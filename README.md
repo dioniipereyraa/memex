@@ -6,7 +6,7 @@
 
 Local-first MCP server that indexes your Claude.ai chat history AND your local Claude Code / terminal sessions, and exposes them both to Claude Code (stdio) and to Claude.ai (remote MCP connector). The goal: one memory, reachable from wherever you talk to Claude.
 
-**Status:** alpha, `0.2.0` on PyPI. Phases 0 to 4 and 6 closed, security-audited (plus three adversarial red-team rounds) before this release. Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), and Claude Code / terminal ingestion with secret redaction and automatic sync.
+**Status:** alpha, `0.2.1` on PyPI. Phases 0 to 4 and 6 closed, security-audited (plus four adversarial red-team rounds) before this release. Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), and Claude Code / terminal ingestion with secret redaction and automatic sync.
 
 ![Session memory check](docs/screenshots/session-memory-check.jpeg)
 

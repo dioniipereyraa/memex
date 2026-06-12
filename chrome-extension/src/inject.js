@@ -20,8 +20,10 @@
     return String(input);
   };
 
-  // Defense in depth: si claude.ai alguna vez pone auth en el body del request,
-  // redactamos antes de pasarlo al background. Hoy no aplica (usa cookies).
+  // NO es una frontera de seguridad: es un best-effort por nombre de clave sobre
+  // el body del request, por si claude.ai algún día mete auth ahí (hoy usa
+  // cookies, así que no aplica). La redacción real de secretos es server-side
+  // (core/ingest/redact.py) sobre el contenido almacenado; no confiar en esto.
   const SENSITIVE_KEY_RX = /(token|secret|key|password|authorization|api[_-]?key|bearer|cookie|session)/i;
   const scrubSensitive = (bodyStr) => {
     if (typeof bodyStr !== "string" || bodyStr.length === 0) return bodyStr;
@@ -108,5 +110,5 @@
     return response;
   };
 
-  console.log(TAG, "fetch hooked (v0.1.0)");
+  console.log(TAG, "fetch hooked (v0.2.1)");
 })();

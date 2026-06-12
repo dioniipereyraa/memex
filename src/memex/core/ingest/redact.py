@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections.abc import Callable
 
 # Each rule: (label, compiled pattern). Patterns are specific and use bounded
@@ -44,7 +45,13 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
         # `(?: BLOCK)?` also covers PGP armored "PRIVATE KEY BLOCK".
         "private-key",
         re.compile(
-            r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,16384}?"
+            # Require the header to end with a newline before the body. Real PEM /
+            # armored blocks always do; this prevents a packed run of unterminated
+            # `-----BEGIN ... PRIVATE KEY-----` markers (no newline, no END) from
+            # forcing a 16 KB lazy forward scan per marker (an O(n*16384) ReDoS
+            # on a single-line blob). With the newline required, a junk `BEGIN`
+            # fails immediately and the scan is O(n).
+            r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----[ \t]*\r?\n[\s\S]{0,16384}?"
             r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----"
         ),
     ),
@@ -78,6 +85,13 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     ("square-token", re.compile(r"\b(?:sq0atp|sq0csp|EAAA)[0-9A-Za-z_-]{20,128}")),
     ("digitalocean-token", re.compile(r"\bdo[oprt]_v1_[0-9a-f]{64}\b")),
     ("newrelic-key", re.compile(r"\bNRAK-[A-Z0-9]{27}\b")),
+    # Discord bot token: base64 user id (starts M/N/O) . timestamp . hmac.
+    (
+        "discord-token",
+        re.compile(r"\b[MNO][A-Za-z0-9_-]{23,26}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{24,45}\b"),
+    ),
+    # Telegram bot token: numeric id : 35-char secret starting AA.
+    ("telegram-token", re.compile(r"\b\d{8,10}:AA[A-Za-z0-9_-]{32,35}\b")),
     # otpauth:// URIs carry the TOTP secret in the `secret=` query param.
     (
         "otp-secret",
@@ -133,9 +147,16 @@ def _redact_assignments(text: str) -> str:
 # line marks it as a digest (lockfiles, image refs, integrity hashes). 32-hex
 # (MD5) and 40-hex (git SHA-1) are left alone: too many benign occurrences.
 _HEX64_RE = re.compile(r"(?<![0-9a-fA-Fx])(?:0x)?[0-9a-fA-F]{64}(?![0-9a-fA-F])")
+# A digest marker only exempts a 64-hex token when it ABUTS the token. Free-text
+# words anywhere on the line (`the commit hash is <key>`, `object key for wallet:
+# <key>`) must NOT exempt a 256-bit key: those words occur constantly in terminal
+# output and an attacker can prepend one to dodge redaction. Real digest lines put
+# the marker right before the hash (`sha256:HEX`, `commit HEX`, `etag: "HEX"`), so
+# anchor the marker to the end of the preceding slice with only a short separator.
+# This mirrors the adjacency-only `_INTEGRITY_PREFIX` used by the entropy pass.
 _DIGEST_CONTEXT = re.compile(
-    r"(?i:sha-?\d{2,3}|integrity|checksum|etag|digest|@sha\d|blob|oid|hash|"
-    r"commit|object|tree|content[_-]?hash)"
+    r"(?i:sha-?\d{2,3}|@sha\d|integrity|checksum|etag|digest|content[_-]?hash|"
+    r"\b(?:commit|object|tree|blob|oid|hash)\b)[\s:=@\"'()-]{0,4}$"
 )
 
 
@@ -272,6 +293,56 @@ _PURE_HEX = re.compile(r"[0-9a-fA-F]+")
 _INTEGRITY_PREFIX = re.compile(r"(?i:sha\d{3}-|h1:)\W{0,2}$")
 
 
+# Secrets split into dot/colon-joined segments evade the high-entropy pass,
+# which judges each segment alone and finds each under the length floor (a
+# Discord `id.ts.hmac`, a Telegram `id:hash`, or a deliberately chunked token
+# dump). Catch a multi-segment run whose CONCATENATED body is long, near-random,
+# and mixes all three character classes, which a dotted domain (lowercase), a
+# semver (`1.2.3`), a package coordinate, or a file name never does. Segments
+# must be >=3 chars so version/IP/date dotted numbers do not match.
+# Segment charset excludes `/` (like the high-entropy pass) so file paths and
+# URLs, which the `:`/`.` could otherwise bridge across slashes, are not swallowed.
+_DOTTED_RUN_RE = re.compile(
+    r"(?<![A-Za-z0-9_+=.:/-])"
+    r"[A-Za-z0-9_+=-]{3,}(?:[.:][A-Za-z0-9_+=-]{3,}){1,8}"
+    r"(?![A-Za-z0-9_+=.:/-])"
+)
+
+
+def _redact_dotted_secret(text: str) -> str:
+    def repl(m: re.Match[str]) -> str:
+        run = m.group(0)
+        body = run.replace(".", "").replace(":", "")
+        if len(body) < 40:
+            return run
+        if _is_camel_identifier(body):
+            return run  # a dotted code path / class chain, not a secret
+        has_lower = any(c.islower() for c in body)
+        has_upper = any(c.isupper() for c in body)
+        has_digit = any(c.isdigit() for c in body)
+        if (has_lower + has_upper + has_digit) < 3:
+            return run  # domains, package coords, versions are <3 classes
+        if _shannon_entropy(body) < 4.0:
+            return run
+        return "[REDACTED:token]"
+
+    return _DOTTED_RUN_RE.sub(repl, text)
+
+
+# Unicode format characters (category Cf: zero-width spaces, soft hyphens, bidi
+# controls) and the TAG block can be inserted mid-secret to split a token so each
+# half falls under the entropy/length floors and survives. Strip them BEFORE
+# redaction (the read-time serializer also strips them, but by then the split
+# token is already chunked and embedded). Invisible by definition, so removing
+# them does not change what a human reads.
+def _strip_format_chars(text: str) -> str:
+    if not any(unicodedata.category(c) == "Cf" or 0xE0000 <= ord(c) <= 0xE007F for c in text):
+        return text
+    return "".join(
+        c for c in text if unicodedata.category(c) != "Cf" and not (0xE0000 <= ord(c) <= 0xE007F)
+    )
+
+
 def _shannon_entropy(s: str) -> float:
     n = len(s)
     if n == 0:
@@ -360,6 +431,7 @@ def redact_secrets(text: str) -> str:
     """
     if not text:
         return text
+    text = _strip_format_chars(text)
     for label, pattern in _RULES:
         if "pre" in pattern.groupindex:
             text = pattern.sub(_prefix_keeper(label), text)
@@ -369,5 +441,6 @@ def redact_secrets(text: str) -> str:
     text = _redact_labeled_values(text)
     text = _redact_b64_secret(text)
     text = _redact_hex64(text)
+    text = _redact_dotted_secret(text)
     text = _redact_high_entropy(text)
     return text

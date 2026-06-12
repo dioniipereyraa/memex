@@ -27,6 +27,15 @@ _NRAK = "NRA" + "K-ABCDEFGHIJKLMNOPQRSTUVWXY12"
 _DOO = "do" + "o_v1_" + "a" * 64
 _AGE = "AGE-" + "SECRET-KEY-1" + "A" * 58
 _VAULT = "s." + "aBcDeFgHiJkLmNoPqRsTuVwX"
+# round 4 (data-theft red-team)
+_DISCORD = "MTk4NjIyNDgzNDcxOTI1MjQ4" + "." + "Cl2FMQ" + "." + "aBcDeFgHiJkLmNoPqRsTuVwX"
+_TELEGRAM = "123456789" + ":AA" + "FakeTelegramBotTokenHere1234567890xyz"
+_DOTTED = "Xq7Zm2Vp9Lr4Ks8" + "." + "Tn3Wj6Yb1Dc5" + "." + "Fg0Hh4Jk8Mn2Pq6Rs0"
+# a 64-hex key with a free-text digest word elsewhere on the line must NOT be
+# exempted (the word must abut the token to count as a digest context)
+_HEX_FREEWORD = "the commit message references " + _HEX64
+# zero-width space splitting a high-entropy token must not let a half survive
+_ZW_SPLIT = "leaked Xq7Zm2Vp9Lr4Ks8Tn3Wj" + "​" + "6Yb1Dc5Fg0Hh4Jk8Mn2Pq6Rs0Tv4Wx8Zy2"
 
 MUST_REDACT = [
     # vendor prefixes (built from fragments to dodge secret-scanning)
@@ -80,6 +89,17 @@ MUST_REDACT = [
     ("Hk7Lp2Qr9Xt4Yw1Zb6Nm3Vc5Df8Gh", "base64 Hk7Lp2Qr9Xt4Yw1Zb6Nm3Vc5Df8Gh end"),
     # round 3: Spanish label
     ("Hk7Lp2Qr9Xt4Yw1Zb6Nm3", "la contraseña es Hk7Lp2Qr9Xt4Yw1Zb6Nm3"),
+    # round 4: Discord / Telegram bot tokens (dot/colon-segmented, evaded the
+    # per-segment entropy floor before)
+    (_DISCORD, "DISCORD_BOT_TOKEN was " + _DISCORD),
+    (_TELEGRAM, "bot " + _TELEGRAM),
+    # round 4: generic dotted-secret chunking
+    (_DOTTED, "session " + _DOTTED + " ok"),
+    # round 4: a 64-hex key is NOT exempted by a non-adjacent digest word
+    (_HEX64, _HEX_FREEWORD),
+    (_HEX64, "Loaded object key for wallet: " + _HEX64),
+    # round 4: zero-width split must not leave a cleartext half
+    ("Xq7Zm2Vp9Lr4Ks8Tn3Wj", _ZW_SPLIT),
 ]
 
 # Non-secret content that must NOT be mangled.
@@ -110,6 +130,17 @@ MUST_PRESERVE = [
     "stack at getUserAuthenticationTokenFromDb9 line 42",
     "the secret to success is hard work and patience",
     "my password manager is open source and audited",
+    # round 4: dotted code/coords/domains must survive the new dotted-secret rule
+    "org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter",
+    "com.google.guava:guava:31.0.1-jre is the dependency",
+    "MyNamespace.SubModule.HandlerClass.processRequest()",
+    "host db.internal.example.com:5432 is up",
+    "image registry.k8s.io/pause:3.9 pulled",
+    "timestamp 2026.06.12.14.30.00 logged",
+    # round 4: a 64-hex digest with an ADJACENT marker is still a hash, not a key
+    "commit " + _HEX64 + " authored by dioni",
+    "image@sha256:" + _HEX64 + " pulled",
+    'etag: "' + _HEX64 + '" cached',
 ]
 
 
@@ -128,6 +159,16 @@ class TestPerfQuadraticRegression:
         start = time.perf_counter()
         redact_secrets(one_line)
         assert time.perf_counter() - start < 1.0
+
+    def test_packed_unterminated_pem_markers_fast(self):
+        # Round 4: a packed run of `-----BEGIN ... PRIVATE KEY-----` with no
+        # newline and no matching END forced a 16 KB lazy forward scan per marker
+        # (O(n*16384)); ~2.9 MB took ~10 s. The header now requires a trailing
+        # newline, so a junk BEGIN fails immediately. Must stay near-linear.
+        blob = "-----BEGIN A PRIVATE KEY-----" * 100000  # ~2.9 MB, no newlines
+        start = time.perf_counter()
+        redact_secrets(blob)
+        assert time.perf_counter() - start < 2.0
 
 
 class TestMustRedact:

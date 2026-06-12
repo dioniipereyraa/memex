@@ -2,7 +2,7 @@
 
 > Last updated: 2026-06-11
 
-**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.2.0` on PyPI (2026-06-12, includes both phases plus the security/red-team and resource hardening); Chrome extension submitted to the Web Store. Remaining Phase 5 items are non-blocking (screencast, Discord post). **477 tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.2.1` on PyPI (2026-06-12; 0.2.0 shipped both phases plus the security/resource hardening, 0.2.1 is a redaction-bypass patch from a fourth data-theft-focused red-team round); Chrome extension submitted to the Web Store. Remaining Phase 5 items are non-blocking (screencast, Discord post). **493 tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
