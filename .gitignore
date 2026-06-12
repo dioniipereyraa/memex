@@ -13,6 +13,11 @@ data/
 # Documento de contexto interno (handoff doc, no es para usuarios)
 MEMEX.md
 
+# Notas internas de seguridad: detalle fino de amenazas, limitaciones vivas
+# (soft spots aun no cerrados) y tecnicas exactas de bypass. NO se publican,
+# para no regalarle un mapa a un atacante. Los docs publicos quedan en alto nivel.
+docs/internal/
+
 # Python
 __pycache__/
 *.py[cod]

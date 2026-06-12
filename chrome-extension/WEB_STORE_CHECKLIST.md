@@ -115,7 +115,7 @@ Privacy:
   * No analytics. No remote storage.
   * Permissions limited to claude.ai and localhost:5777.
 
-Status: alpha (0.1.0). Open source, MIT.
+Status: alpha (0.2.1). Open source, MIT.
 ```
 
 **Category:**
