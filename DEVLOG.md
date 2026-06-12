@@ -6,6 +6,16 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-12: redaction re-index of the live corpus + orphan-vector cleanup
+
+Applied the round-4 redaction to already-indexed content (the new rules only mask on ingest going forward; secrets of the newly-covered shapes already in the store stay until re-ingested). Only the `claude_code` source is redacted (claude.ai chats are genuine conversation, not redacted by design), so the scope was the 20 `claude_code` conversations, not the 92 claude.ai ones.
+
+Approach (low-risk, no raw deletes): online backup of `data/memex.db` first (`data/backups/memex.db.pre-reindex.bak`, via the sqlite3 backup API for a consistent snapshot), then `UPDATE conversations SET content_hash=NULL WHERE source='claude_code'` so the skip-unchanged check fails, then `memex ingest-claude-code` re-ingested all 20 (the pipeline's `delete_chunks_for_conversation` cleanly replaces vec+fts+chunks per conversation). Verified: 20 re-ingested, 0 errors, content_hash repopulated, claude.ai 92 untouched, search works across both sources.
+
+**Found and fixed a pre-existing data-integrity bug:** the DB carried 3823 orphaned `vec_chunks`/`fts_chunks` entries (vec=fts=7355 vs chunks=3532) — confirmed pre-existing by checking the backup (identical orphan count), so the re-index did NOT cause it (`delete_chunks_for_conversation` kept vec/chunks 1:1, orphans stayed exactly 3823 across the re-ingest). Root cause: a prior session cleared rows with a raw `DELETE FROM conversations`, which cascades to `chunks` but not to the virtual vec/fts tables. Cleaned them (`DELETE ... WHERE rowid NOT IN (SELECT id FROM chunks)`, batched), now chunks=vec=fts=3584, 0 orphans, search verified. Lesson logged in CLAUDE.md (never raw-delete conversations; there is no `delete_conversation` helper that cleans vec/fts yet).
+
+---
+
 ## 2026-06-12: red-team round 4 (data-theft focus) + 0.2.1 security patch
 
 User asked for one more big adversarial verification focused on what matters most: stealing sensitive info that could be sent through a chat, and stealing chat content from outside. Ran four parallel attackers, each executing REAL attacks (not theory): (A) redaction bypass, (B) the remote connector, (C) the local surface, (D) end-to-end data-flow / injection.
