@@ -278,3 +278,32 @@ class TestBodyCap:
         monkeypatch.setattr(settings, "ingest_max_body_bytes", 16 * 1024 * 1024)
         r = http_client.post("/ingest/conversation", json=VALID_PAYLOAD, headers=AUTH)
         assert r.status_code == 200
+
+
+class TestEmbedderRelease:
+    """The always-on capture server drops the model when idle so it does not
+    hold ~1 GB resident forever after a single capture."""
+
+    def test_release_drops_the_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(http_ingest, "_embedder", FakeEmbedder(dim=768))
+        http_ingest._release_embedder()
+        assert http_ingest._embedder is None
+
+    def test_get_embedder_reloads_after_release(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(http_ingest, "_embedder", None)
+        monkeypatch.setattr(http_ingest, "get_default_embedder", lambda: FakeEmbedder(dim=768))
+        assert http_ingest._get_embedder() is not None
+
+    def test_schedule_is_noop_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(settings, "ingest_idle_release_seconds", 0)
+        monkeypatch.setattr(http_ingest, "_release_handle", None)
+        http_ingest._schedule_embedder_release()  # disabled -> no timer armed
+        assert http_ingest._release_handle is None
+
+    def test_schedule_outside_event_loop_does_not_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "ingest_idle_release_seconds", 60)
+        monkeypatch.setattr(http_ingest, "_release_handle", None)
+        http_ingest._schedule_embedder_release()  # no running loop -> graceful
+        assert http_ingest._release_handle is None

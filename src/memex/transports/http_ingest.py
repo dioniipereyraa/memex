@@ -35,7 +35,9 @@ Security model (this is a LOCAL, single-user service):
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import gc
 import hmac
 import json
 import logging
@@ -63,6 +65,9 @@ logger = logging.getLogger("memex.http_ingest")
 # Lazy globals. Tests overwrite these to inject mocks or an in-memory DB.
 _conn: sqlite3.Connection | None = None
 _embedder: Embedder | None = None
+# Timer that releases the embedder after a stretch of capture inactivity, so the
+# always-on server does not hold the model (~1+ GB) resident forever.
+_release_handle: asyncio.TimerHandle | None = None
 # Per-install access token. Loaded lazily from disk (or generated). Tests set
 # it directly to avoid filesystem I/O.
 _token: str | None = None
@@ -95,6 +100,36 @@ def _get_embedder() -> Embedder:
         _embedder = get_default_embedder()
         logger.info("Embedder initialized: %s", _embedder.model_name)
     return _embedder
+
+
+def _release_embedder() -> None:
+    """Drop the in-process embedding model so an idle always-on capture server
+    returns to baseline RSS. The model + onnxruntime arena is ~1 GB resident; a
+    capture server that embedded one chat would otherwise hold it forever. The
+    next capture rebuilds it lazily (model weights stay cached on disk)."""
+    global _embedder, _release_handle
+    _release_handle = None
+    if _embedder is not None:
+        _embedder = None
+        gc.collect()
+        logger.info("Embedder released after idle; will reload on next capture")
+
+
+def _schedule_embedder_release() -> None:
+    """(Re)arm the idle-release timer. Called after each capture: while captures
+    keep arriving within the window the model stays hot; once they stop, it is
+    released. Best-effort and a no-op if disabled or outside a running loop."""
+    global _release_handle
+    delay = settings.ingest_idle_release_seconds
+    if delay <= 0:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if _release_handle is not None:
+        _release_handle.cancel()
+    _release_handle = loop.call_later(delay, _release_embedder)
 
 
 def load_or_create_ingest_token(path: Path | str | None = None) -> str:
@@ -253,6 +288,10 @@ async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
             {"error": f"Internal error: {type(e).__name__}"},
             status_code=500,
         )
+    finally:
+        # Arm/refresh the idle-release timer so the model is dropped once
+        # captures stop arriving (kept hot during an active browsing burst).
+        _schedule_embedder_release()
 
     return JSONResponse(
         {

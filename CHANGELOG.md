@@ -18,6 +18,7 @@ Security patch from a fourth adversarial red-team round (four parallel attackers
 - A consolidated round-4 MUST_REDACT / MUST_PRESERVE corpus and a packed-PEM perf regression test guard all of the above.
 
 ### Performance
+- **The always-on capture server releases the embedding model when idle.** `memex serve` embeds each captured chat in-process, so after the first capture it held the model + onnxruntime arena (~1+ GB) resident forever (one user reported the capture server at 1.79 GB). It now drops the embedder after `MEMEX_INGEST_IDLE_RELEASE_SECONDS` (default 60s) of capture inactivity, returning to its ~0.15 GB baseline; the next capture reloads it lazily (~1-2s, weights stay cached). During an active browsing burst the model stays hot. Set the value to 0 to keep the old always-resident behavior.
 - **Default embedding batch size lowered from 4 to 2 (memory).** With `embed_threads` capped at 2, a larger batch buys no throughput (measured ~45 s for 200 chunks at batch 1/2/4 alike); it only inflates the onnxruntime per-batch arena, the real memory driver. Measured embedder peak RSS at the 500-token chunk size: ~0.67 GB (batch=1), ~0.97 GB (batch=2), ~1.56 GB (batch=4). So a small batch is a near-free RAM win for a background ingest. `MEMEX_EMBED_BATCH_SIZE=1` drops it further to ~0.67 GB. (Tested and rejected: disabling the onnxruntime CPU memory arena via fastembed's `enable_cpu_mem_arena=False` made peak RSS *worse* at batch=4, 2.29 GB vs 1.56 GB, so the arena stays on.)
 
 ### Known limitation

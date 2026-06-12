@@ -78,6 +78,19 @@ class Settings(BaseSettings):
         default=5000, alias="MEMEX_MAX_CHUNKS_PER_CONVERSATION", ge=1
     )
 
+    # Seconds of capture inactivity after which the always-on capture server
+    # releases the in-process embedding model (~1+ GB resident: model + the
+    # onnxruntime arena) so an idle server returns to its ~0.15 GB baseline. The
+    # next capture rebuilds it lazily (a ~1-2s model load, paid only when
+    # actually capturing; the model weights stay cached on disk). During an
+    # active browsing burst (captures closer together than this) the model stays
+    # hot. 0 disables the release (keep the model resident forever, the old
+    # behavior). Live capture is occasional and not latency-critical, so the
+    # default trades a brief reload for a much lower idle footprint.
+    ingest_idle_release_seconds: int = Field(
+        default=60, alias="MEMEX_INGEST_IDLE_RELEASE_SECONDS", ge=0
+    )
+
     # Live-capture HTTP server hardening (transports/http_ingest.py).
     # Max request body accepted by the ingest endpoint, in bytes. A single
     # Claude.ai conversation is well under a few MB; the cap rejects oversized
