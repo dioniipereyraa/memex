@@ -89,16 +89,23 @@ class FastEmbedEmbedder(Embedder):
             return []
         model = self._ensure_model()
         # fastembed returns a generator of numpy arrays; convert to lists.
-        # `parallel=1` forces a single process (the default spawns a worker per
-        # core, each loading its own model copy = multi-GB RAM); a small
-        # `batch_size` keeps onnxruntime's per-batch allocation small. Together
-        # these hold a background ingest near ~0.4 GB instead of several GB.
+        # `parallel=None` runs the ONNX inference INLINE in this process.
+        # IMPORTANT: `parallel=1` does NOT mean "single process" in fastembed:
+        # any value that is not None (and a batch not smaller than `batch_size`)
+        # takes the worker-pool branch, which spawns a subprocess that loads its
+        # OWN copy of the model (~+0.6 GB) and is re-spawned/torn-down on every
+        # `embed()` call (the pipeline calls this once per 32-chunk batch, so a
+        # long conversation re-loads the model hundreds of times: slower AND
+        # more RAM). `None` keeps the model resident in-process. A small
+        # `batch_size` then caps onnxruntime's per-batch arena (the real memory
+        # driver: it scales with batch_size * sequence_length, ~2.4 GB at
+        # batch=8 with 500-token chunks, ~1.0 GB at batch=2).
         try:
             results = list(
                 model.embed(
                     list(texts),
                     batch_size=settings.embed_batch_size,
-                    parallel=1,
+                    parallel=None,
                 )
             )
         except Exception as e:

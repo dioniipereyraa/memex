@@ -152,3 +152,20 @@ class TestPerformance:
         start = time.perf_counter()
         redact_secrets(blob)
         assert time.perf_counter() - start < 1.0
+
+    def test_linear_on_single_line_hex64_blob(self):
+        # Many 64-hex tokens on ONE line (no newlines) must stay linear. The
+        # hex64 pass calls `_line_before` per match; an `rfind("\n", 0, pos)`
+        # that scans to the start of a newline-free line is O(pos) per call and
+        # O(n^2) overall (a single-line JSON array of git object hashes, an
+        # `npm ls` dump). The back-scan must be window-bounded. A ~2 MB blob
+        # took ~9 s before the fix; it must finish in well under a second.
+        import random
+
+        rng = random.Random(0)
+        one_line = " ".join(
+            "".join(rng.choice("0123456789abcdef") for _ in range(64)) for _ in range(32000)
+        )  # ~2 MB single line of 64-hex tokens
+        start = time.perf_counter()
+        redact_secrets(one_line)
+        assert time.perf_counter() - start < 1.5

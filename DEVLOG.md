@@ -6,6 +6,25 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-11 (resource audit, round 3): embedder respawn + redaction O(n^2)
+
+Third-round performance/resource audit after the user hit a 20 GB RAM / machine-freeze during ingest. Measured everything for real (`uv run python`, peak tree-RSS polled across the whole process tree, `/usr/bin/time`-style accounting).
+
+**Findings + fixes applied (all tests green, ruff + mypy clean):**
+
+- **Embedder still spawned a worker subprocess (the round-2 "fix" was incomplete).** `parallel=1` does NOT mean single-process in fastembed: any non-None value (with a batch ≥ `batch_size`) takes the worker-pool branch, which spawns a subprocess that loads its OWN model copy (~+0.6 GB) and is re-created on every `embed()` call (the pipeline calls embed once per 32-chunk batch, so a 5000-chunk session re-loads the model ~156 times). Measured: parallel=1 = 164 s / 2.4–3.1 GB vs parallel=None = 117 s / 1.8–2.4 GB on 320 realistic 500-token chunks. Fix: `parallel=None` (inline, model resident). ~40% faster, ~0.6 GB less, and removes a latent bootstrap crash for any non-import-safe caller. RSS plateaus with chunk count (50→1000 chunks: 2.4→2.7 GB), so it is the arena, not accumulation.
+- **The real memory driver is the onnxruntime per-batch arena, not the pipeline.** It scales with `batch_size * sequence_length`. At the default 500-token chunk size: ~0.7 GB (batch=1), ~1.0 GB (batch=2), ~1.6 GB (batch=4), ~2.4 GB (batch=8). The user's 2.4 GB on a real 16 MB session matches batch=8. Lowered the default to **batch=4** (~1.6 GB). The pipeline's own structures are cheap: full_text (16 MB) + chunks (9.5 MB, capped at 5000) + vectors (30 MB) ≈ 55 MB total; `chunk_text` and `_join_messages` on 16 MB run in ~3–4 ms at <110 MB RSS. So accumulating `prepared_chunks` is NOT the problem; per-batch streaming would save ~tens of MB, not worth the complexity.
+- **Redaction quadratic on a newline-free blob (the round-2 `_line_before` fix did not cover this path).** Round 2 clamped the returned slice length but left `rfind("\n", 0, pos)` searching from 0, which is O(pos) per match on a line with no newline. With thousands of 64-hex tokens on one line (single-line JSON array of git SHAs, `npm ls` output) the hex64 + entropy passes were O(n^2): a 2 MB single-line hex blob took **9.1 s** (0.5→1→2 MB = 0.7→2.4→9.1 s). Fix: bound the `rfind` search to the window (`rfind("\n", pos-160, pos)`). Now linear, 2 MB = ~0.8 s (11x). 0 correctness mismatches vs the old function over 2000 random inputs; regression test added.
+
+**Confirmed solid (no change):**
+- **The flock works.** Two concurrent `ingest-claude-code`: the second skips (exit 0, "Another Memex ingest is already running"); the lock releases on process exit (a third run acquires cleanly). `LOCK_EX | LOCK_NB` is fd-bound, so it releases even on crash.
+- **The round-2 single-line high-entropy fix holds** (alphanumeric-token blob stays linear: 200 KB ≈ 76 ms). FTS rebuild is a server-side `INSERT ... SELECT` (no Python-side materialization). Summary generation truncates to 12 K chars; the lazy path loads ≤3 full conversation texts transiently (bounded, ~tens of MB) before truncating — minor, not a freeze risk.
+
+**Next step:**
+- None blocking. Optional: truncate the lazy-summary text in the SQL/repo layer to avoid the transient full-text load. Consider a future smarter chunker so denser content (code/JSON) does not inflate per-batch sequence length.
+
+---
+
 ## 2026-06-11 (final security audit): 4-auditor sweep + hardening
 
 Ran a final security audit with four parallel auditors (internet-facing connector, sensitive-data/redaction/injection, local surface + daemons + hook, and correctness). User's call on the headline finding: **acceso total + redacción reforzada** (keep Claude Code reachable from the remote connector, but make redaction much stronger), and then attack it adversarially in rounds.
