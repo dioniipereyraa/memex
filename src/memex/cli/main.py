@@ -109,6 +109,31 @@ def ingest(
             console.print(f"  [dim]...and {len(summary.errors) - 10} more[/dim]")
 
 
+def _acquire_ingest_lock(db_path: Path) -> object | None:
+    """Take a non-blocking, process-lifetime lock for Claude Code ingest.
+
+    Returns an open file handle (keep it referenced for the lock to hold) or
+    None if another ingest already holds it. Best-effort on platforms without
+    `fcntl` (Windows): returns a handle without locking.
+    """
+    lock_path = db_path.parent / "ingest.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("w")
+    except OSError:
+        return object()  # cannot create the lock file; do not block ingest
+    try:
+        import fcntl
+    except ImportError:
+        return handle  # no flock on this platform; best-effort
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
 @app.command("ingest-claude-code")
 def ingest_claude_code(
     path: Annotated[
@@ -137,6 +162,17 @@ def ingest_claude_code(
     finds nothing new costs almost nothing.
     """
     root = path if path is not None else Path.home() / ".claude" / "projects"
+
+    # Single-ingest lock: the manual command, the 15-min schedule, and the
+    # SessionEnd hook can otherwise overlap and each load the embedding model,
+    # doubling/tripling RAM and CPU. A non-blocking flock means a second ingest
+    # simply skips (the schedule re-runs in 15 min). The lock is released
+    # automatically when the process exits, even on crash.
+    lock_handle = _acquire_ingest_lock(db_path or settings.db_path)
+    if lock_handle is None:
+        console.print("[yellow]Another Memex ingest is already running; skipping.[/yellow]")
+        raise typer.Exit(code=0)
+
     console.print(f"[bold]Ingesting Claude Code sessions[/bold] from [cyan]{root}[/cyan]")
     console.print(f"  DB: {db_path or settings.db_path}")
 

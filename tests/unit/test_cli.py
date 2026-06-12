@@ -314,3 +314,14 @@ class TestHelpAndStructure:
         result = runner.invoke(app, [])
         assert "ingest" in result.output
         assert "search" in result.output
+
+
+class TestIngestLock:
+    def test_second_acquire_is_blocked(self, tmp_path):
+        from memex.cli.main import _acquire_ingest_lock
+
+        db = tmp_path / "memex.db"
+        first = _acquire_ingest_lock(db)
+        second = _acquire_ingest_lock(db)
+        assert first is not None
+        assert second is None  # a second ingest must not run concurrently

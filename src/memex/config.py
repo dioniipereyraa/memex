@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     embed_model: str | None = Field(default=None, alias="MEMEX_EMBED_MODEL")
     embed_dim: int = Field(default=768, alias="MEMEX_EMBED_DIM")
 
+    # fastembed resource caps. The defaults keep a background ingest from
+    # hogging the machine: onnxruntime otherwise spawns a thread per core (10+)
+    # and grows a multi-GB memory arena proportional to the batch, and fastembed
+    # parallelizes with one model copy per worker. With a small batch + single
+    # process + capped threads, an ingest stays around ~0.4 GB and a few cores
+    # instead of multiple GB across all cores.
+    embed_threads: int = Field(default=2, alias="MEMEX_EMBED_THREADS", ge=1, le=64)
+    embed_batch_size: int = Field(default=8, alias="MEMEX_EMBED_BATCH_SIZE", ge=1, le=256)
+
     # Ollama-specific config (only used if embed_backend == "ollama").
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
 

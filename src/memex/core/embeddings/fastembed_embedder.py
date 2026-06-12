@@ -63,7 +63,11 @@ class FastEmbedEmbedder(Embedder):
                     "MEMEX_EMBED_BACKEND to 'ollama'."
                 ) from e
             try:
-                self._model = TextEmbedding(model_name=self._model_name)
+                # `threads` caps onnxruntime's intra-op parallelism (otherwise
+                # it uses a thread per core and a large per-thread memory arena).
+                self._model = TextEmbedding(
+                    model_name=self._model_name, threads=settings.embed_threads
+                )
             except Exception as e:
                 raise EmbedderError(
                     f"Could not load model {self._model_name!r}. "
@@ -85,8 +89,18 @@ class FastEmbedEmbedder(Embedder):
             return []
         model = self._ensure_model()
         # fastembed returns a generator of numpy arrays; convert to lists.
+        # `parallel=1` forces a single process (the default spawns a worker per
+        # core, each loading its own model copy = multi-GB RAM); a small
+        # `batch_size` keeps onnxruntime's per-batch allocation small. Together
+        # these hold a background ingest near ~0.4 GB instead of several GB.
         try:
-            results = list(model.embed(list(texts)))
+            results = list(
+                model.embed(
+                    list(texts),
+                    batch_size=settings.embed_batch_size,
+                    parallel=1,
+                )
+            )
         except Exception as e:
             raise EmbedderError(f"fastembed failed to embed: {e}") from e
 

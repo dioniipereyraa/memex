@@ -40,6 +40,19 @@ Re-attacked with the round-1 vectors (regression) + new ones. All round-1 fixes 
 - **Connector:** `.env` allow-list parser used `startswith` (a bug I introduced) — `..._OLD=evil` could hijack the allow-list; now exact-key match, last-wins, strips `export`/inline-comments. `search_chats` query length capped (parity with find_related). Bidi/zero-width control chars stripped from every tool result string in `_serialize` (defense-in-depth vs disguised injection). Consent-stays-enabled + reload tests confirmed meaningful.
 - **Left as documented/deferred:** DCR `/register` disk-growth (LOW, bounded by disk + TrustedHost; third-party fastmcp, no cleanup hook); nonce-fenced per-field injection delimiters (the `_meta` note + bidi strip are the current mitigation; full fencing is a larger change for marginal gain on a model-level problem).
 
+## 2026-06-12: RAM/CPU blowup fix (ingest was unusable for release)
+
+The user reported two `python3.13` processes eating 20 GB and freezing the machine. Root-caused it: (1) fastembed/onnxruntime loads a model copy per worker (fastembed parallelizes by default) and grows a memory arena with a thread-per-core (10 cores here), so embedding 100 chunks measured **4.5 GB** in one process; (2) the 15-min schedule, the manual command, and the SessionEnd hook could all run an ingest at once, multiplying that. Embedding a single text was only 0.4 GB, so it was the batch + parallelism, not the model.
+
+Fixes:
+- `FastEmbedEmbedder` now passes `threads=MEMEX_EMBED_THREADS` (default 2) to `TextEmbedding` and `parallel=1` + `batch_size=MEMEX_EMBED_BATCH_SIZE` (default 8) to `.embed()`. Measured: 200 chunks **4.5 GB → 0.47 GB**, and it no longer pins all 10 cores.
+- `memex ingest-claude-code` takes a non-blocking `fcntl.flock` (`data/ingest.lock`); a second concurrent ingest skips (the schedule retries in 15 min). Released automatically on process exit, even on crash. Best-effort no-op where `fcntl` is absent (Windows).
+- New settings `MEMEX_EMBED_THREADS` / `MEMEX_EMBED_BATCH_SIZE` (documented in `.env.example`). 468 tests green.
+
+Disabled the launchd ingest agent while diagnosing; re-enabled after the fix.
+
+---
+
 **PAUSED here (2026-06-11). Picking up next:**
 - Rotate the GitHub OAuth client secret (user action: GitHub > Developer settings > OAuth Apps > regenerate; then update `.env` + restart the connector). The current secret appeared in audit logs.
 - Re-pair the Chrome extension with the rotated ingest token `EaMGdsZcvv0RjuCaC-DQFztCx5wrV6eMgb653Gv5KJk` (or run `memex token`).
