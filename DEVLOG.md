@@ -53,6 +53,16 @@ Disabled the launchd ingest agent while diagnosing; re-enabled after the fix.
 
 ---
 
+## 2026-06-12: red-team round 3 + process naming
+
+Three attackers (verification + fresh). All round-1/2 fixes held. New fixes (476 tests green):
+
+- **Redaction (round-3 findings):** Azure Storage key (88 base64 chars with `/`) — generalized the `b64-key` rule to 40-512 chars, gated strict (3 char classes + entropy ≥4.3 + not-a-path: ≤2 slashes, no leading `/`, no SRI/digest prefix) so it catches AWS/Azure keys without redacting file paths or S3 object URLs. Tightened the integrity-skip: only an ADJACENT SRI/Go prefix (`sha256-`/`h1:`, detected on the token itself since the token includes `-`) skips the entropy pass — free-text `base64 <secret>` / `integrity <secret>` no longer dodges redaction (attacker-controllable). Replaced the over-eager labeled-value floor (3.7) and added a structural CamelCase-identifier check (humps + low digit ratio) so engineering prose/codenames (`the secret WidgetFactory2025Prod`, `RequestMappingHandlerAdapter24X`) survive while random tokens are still redacted. Added Spanish labels (`contraseña`/`clave`/`secreto`) and PGP `PRIVATE KEY BLOCK`. A consolidated MUST_REDACT/MUST_PRESERVE corpus (rounds 1-3) guards both directions.
+- **Injection (B1):** `_strip_control_chars` now strips by Unicode `Cf` category + the TAG block (U+E0000-E007F) instead of a hardcoded list — closes an invisible-instruction vector (TAG chars can encode hidden ASCII) the old list missed.
+- **Process naming:** added `setproctitle` and `memex.proctitle.set_process_title`; `serve`/`serve-remote`/`ingest`/`stdio` now show as `Memex capture`/`Memex connector`/`Memex ingest`/`Memex mcp` in Activity Monitor instead of bare `python3.13` (transparency, the user asked for it).
+
+Round-3 connector/e2e + perf attackers confirmed: title redaction holds, no other field bypasses redaction (gitBranch isn't even ingested), `.env` parser solid, flock correct, tool args bounded. Connector has no auth bypass across three rounds.
+
 **PAUSED here (2026-06-11). Picking up next:**
 - Rotate the GitHub OAuth client secret (user action: GitHub > Developer settings > OAuth Apps > regenerate; then update `.env` + restart the connector). The current secret appeared in audit logs.
 - Re-pair the Chrome extension with the rotated ingest token `EaMGdsZcvv0RjuCaC-DQFztCx5wrV6eMgb653Gv5KJk` (or run `memex token`).

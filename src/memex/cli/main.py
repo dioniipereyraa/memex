@@ -32,6 +32,7 @@ from memex.core.ingest.pipeline import ingest_claude_code_sessions, ingest_expor
 from memex.core.repos import find_repo_root, match_text, parse_repo, resolve_repo_key
 from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
+from memex.proctitle import set_process_title
 
 app = typer.Typer(
     help="Memex: index your Claude.ai chats for semantic + lexical retrieval.",
@@ -161,6 +162,7 @@ def ingest_claude_code(
     SessionEnd hook). The embedding model is loaded lazily, so a scan that
     finds nothing new costs almost nothing.
     """
+    set_process_title("Memex ingest")
     root = path if path is not None else Path.home() / ".claude" / "projects"
 
     # Single-ingest lock: the manual command, the 15-min schedule, and the
@@ -325,6 +327,7 @@ def serve(
 
     Sharing the SQLite DB with the MCP server is safe: both use WAL mode.
     """
+    set_process_title("Memex capture")
     import uvicorn
 
     from memex.core.storage.db import connect_and_init
@@ -384,6 +387,7 @@ def serve_remote(
     Requires in `.env`: MEMEX_REMOTE_BASE_URL, MEMEX_GITHUB_CLIENT_ID,
     MEMEX_GITHUB_CLIENT_SECRET, MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS.
     """
+    set_process_title("Memex connector")
     import uvicorn
 
     from memex.transports.http import RemoteConfigError, build_remote_app

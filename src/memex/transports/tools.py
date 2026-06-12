@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import sqlite3
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -62,16 +63,18 @@ REPO_BOOST_OVERSAMPLE = 5
 FIND_RELATED_MAX_INPUT_CHARS = 4000
 SEARCH_QUERY_MAX_CHARS = 4000
 
-# Unicode bidi/zero-width control chars an attacker could use to visually
-# disguise injected instructions inside stored chat text. Stripped from every
-# string in a tool result before it reaches the consuming agent.
-_CONTROL_CHARS = dict.fromkeys(
-    [*range(0x202A, 0x2030), *range(0x2066, 0x206A), 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0xFEFF]
-)
-
 
 def _strip_control_chars(s: str) -> str:
-    return s.translate(_CONTROL_CHARS)
+    """Remove Unicode format chars an attacker could use to hide injected
+    instructions inside stored chat text: every `Cf`-category code point (bidi
+    overrides/isolates, zero-width, BOM, word joiner, Arabic letter mark, etc.)
+    plus the TAG block (U+E0000-E007F, which can encode an invisible ASCII
+    instruction). Visible content and ordinary spaces are untouched."""
+    if not s or s.isascii():
+        return s  # ASCII has none of these; skip the per-char scan
+    return "".join(
+        ch for ch in s if not (unicodedata.category(ch) == "Cf" or 0xE0000 <= ord(ch) <= 0xE007F)
+    )
 
 
 def _sanitize_untrusted(obj: Any) -> Any:

@@ -71,6 +71,15 @@ MUST_REDACT = [
         "eyJhbGciOiJub25lIn0.eyJ1c2VyIjoiYWRtaW4ifQ.",
         "cookie eyJhbGciOiJub25lIn0.eyJ1c2VyIjoiYWRtaW4ifQ. set",
     ),
+    # round 3: Azure Storage account key (88 base64 chars, contains /)
+    (
+        "x8Kp9aLq2Rt5Uv7Wy0Bd3Fg6Hj1Kl4Mn8Pq2Rs5Tv8Wx1Zb4Cd7Ef0Gh3Jk6Lm9No2Pr5St8Uv1Wx4Yz7Ab0Cd",
+        "value x8Kp9aLq2Rt5Uv7Wy0Bd3Fg6Hj1Kl4Mn8Pq2Rs5Tv8Wx1Zb4Cd7Ef0Gh3Jk6Lm9No2Pr5St8Uv1Wx4Yz7Ab0Cd ok",
+    ),
+    # round 3: fake integrity marker must NOT hide a secret (>=28 chars)
+    ("Hk7Lp2Qr9Xt4Yw1Zb6Nm3Vc5Df8Gh", "base64 Hk7Lp2Qr9Xt4Yw1Zb6Nm3Vc5Df8Gh end"),
+    # round 3: Spanish label
+    ("Hk7Lp2Qr9Xt4Yw1Zb6Nm3", "la contraseña es Hk7Lp2Qr9Xt4Yw1Zb6Nm3"),
 ]
 
 # Non-secret content that must NOT be mangled.
@@ -95,6 +104,12 @@ MUST_PRESERVE = [
     "new AbstractSingletonProxyFactoryBeanInitializer()",
     # round 2: Go module hash (public content hash)
     "golang.org/x/text v0.3.7 h1:olpwvP2KacW1ZWvsR7uQhoyTYvKAupfQrRGBFM3p6kw=",
+    # round 3: code identifiers (incl. version digits) and prose must survive
+    "the secret WidgetFactory2025Prod will ship next week",
+    "class RequestMappingHandlerAdapter24X extends Base",
+    "stack at getUserAuthenticationTokenFromDb9 line 42",
+    "the secret to success is hard work and patience",
+    "my password manager is open source and audited",
 ]
 
 

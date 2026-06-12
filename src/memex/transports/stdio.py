@@ -40,6 +40,9 @@ def main() -> None:
 
     Configured in `pyproject.toml` as the `memex-mcp` script.
     """
+    from memex.proctitle import set_process_title
+
+    set_process_title("Memex mcp")
     logger.info("Memex MCP server starting (stdio).")
     server.run(show_banner=False)
 

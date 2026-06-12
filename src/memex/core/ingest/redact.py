@@ -41,10 +41,11 @@ from collections.abc import Callable
 _RULES: list[tuple[str, re.Pattern[str]]] = [
     # PEM / OpenSSH private key blocks (any header), bounded body.
     (
+        # `(?: BLOCK)?` also covers PGP armored "PRIVATE KEY BLOCK".
         "private-key",
         re.compile(
-            r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,8192}?"
-            r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----"
+            r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,16384}?"
+            r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----"
         ),
     ),
     ("age-key", re.compile(r"\bAGE-SECRET-KEY-1[0-9A-Z]{58}\b")),
@@ -147,7 +148,15 @@ _CONTEXT_WINDOW = 160
 
 
 def _line_before(text: str, pos: int) -> str:
-    start = max(text.rfind("\n", 0, pos) + 1, pos - _CONTEXT_WINDOW)
+    # Bound the back-scan to the window. `rfind` searches its [start, end) range,
+    # so searching from 0 is O(pos) per call and becomes O(n^2) when many
+    # candidate tokens share one newline-free line (a minified bundle, a
+    # single-line JSON array of git SHAs). Starting the search at the window
+    # bound keeps every call O(_CONTEXT_WINDOW); the markers we look for sit
+    # immediately before the token, so a clamped search is equivalent.
+    win_start = max(0, pos - _CONTEXT_WINDOW)
+    nl = text.rfind("\n", win_start, pos)
+    start = nl + 1 if nl != -1 else win_start
     return text[start:pos]
 
 
@@ -160,12 +169,12 @@ def _redact_hex64(text: str) -> str:
     return _HEX64_RE.sub(repl, text)
 
 
-# A standard-base64 secret (AWS secret access key is exactly 40 chars and often
-# contains `/`) is split by the high-entropy pass (which excludes `/` to protect
-# paths), so it survives. Catch a 40-char base64 run that contains `/` or `+`
-# and looks like a secret (mixed character classes — a lowercase path segment
-# does not), unless it is a path segment (preceded by `/`).
-_B64_SLASH_RE = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{40}(?![A-Za-z0-9+/=])")
+# A standard-base64 secret (AWS secret key = 40 chars; Azure Storage key = 88;
+# others 44/60) often contains `/`, which the high-entropy pass excludes to
+# protect paths, so such secrets survive. Catch a 40-512 char base64 run that
+# contains `/` or `+` and looks like a secret (mixed character classes — a
+# lowercase path segment does not), unless it is a path segment (preceded by `/`).
+_B64_SLASH_RE = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{40,512}(?![A-Za-z0-9+/=])")
 
 
 def _redact_b64_secret(text: str) -> str:
@@ -173,10 +182,27 @@ def _redact_b64_secret(text: str) -> str:
         tok = m.group(0)
         if "/" not in tok and "+" not in tok:
             return tok  # plain base64 (no /, +) is handled by the entropy pass
+        # Paths/URLs have several `/`-separated segments; a base64 key has at
+        # most 1-2 `/` as part of the encoding. More than two, or a leading `/`,
+        # means a path, not a secret.
+        if tok.startswith("/") or tok.count("/") > 2:
+            return tok
         if m.start() > 0 and text[m.start() - 1] == "/":
-            return tok  # path segment
-        if not _looks_like_secret(tok.replace("/", "").replace("+", "")):
-            return tok  # single-class (path-like), not a secret
+            return tok  # path segment (the run starts mid-path)
+        if _INTEGRITY_PREFIX.search(_line_before(text, m.start())):
+            return tok  # SRI / digest hash, not a secret
+        # Strict: require all three character classes AND high entropy. A file
+        # path or structured data is single/two-class or lower-entropy; a real
+        # base64 secret (AWS/Azure key) is mixed-case+digits and near-random.
+        body = tok.replace("/", "").replace("+", "")
+        if not (
+            any(c.islower() for c in body)
+            and any(c.isupper() for c in body)
+            and any(c.isdigit() for c in body)
+        ):
+            return tok
+        if _shannon_entropy(body) < 4.3:
+            return tok
         return "[REDACTED:b64-key]"
 
     return _B64_SLASH_RE.sub(repl, text)
@@ -188,7 +214,8 @@ def _redact_b64_secret(text: str) -> str:
 # unlikely (the value must still look random).
 _LABELED_VALUE_RE = re.compile(
     r"(?P<pre>(?i:secret|token|api[_-]?key|password|passphrase|auth[_-]?token|"
-    r"credential|access[_-]?key)\s+(?:is\s+|was\s+|:\s+)?)(?P<val>[A-Za-z0-9+/_=-]{16,512})\b"
+    r"credential|access[_-]?key|contrase(?:ña|na)|clave|secreto)"
+    r"\s+(?:is\s+|was\s+|es\s+|:\s+)?)(?P<val>[A-Za-z0-9+/_=-]{16,512})\b"
 )
 
 
@@ -201,16 +228,35 @@ def _redact_labeled_values(text: str) -> str:
     return _LABELED_VALUE_RE.sub(repl, text)
 
 
+def _is_camel_identifier(token: str) -> bool:
+    """Heuristic: a CamelCase/PascalCase code identifier, not a random secret.
+
+    Identifiers are alphanumeric with several lower->Upper humps and few digits;
+    random secrets are mostly distinguished by a high digit ratio. Catches
+    `RequestMappingHandlerAdapter24X`, `thisIsAVeryLongPropName` while leaving a
+    digit-heavy random token (the usual secret shape) to be redacted.
+    """
+    if len(token) < 12 or not token.isalnum():
+        return False
+    humps = sum(1 for i in range(1, len(token)) if token[i - 1].islower() and token[i].isupper())
+    digits = sum(c.isdigit() for c in token)
+    return humps >= 2 and digits <= len(token) * 0.3
+
+
 def _looks_like_short_secret(token: str) -> bool:
     """Like `_looks_like_secret` but for the 16+ labeled-context band."""
     if _PURE_HEX.fullmatch(token):
         return len(token) >= 32  # short hex is usually an id; long hex is a key
+    if _is_camel_identifier(token):
+        return False  # a CamelCase word/codename, not a random secret
     has_lower = any(c.islower() for c in token)
     has_upper = any(c.isupper() for c in token)
     has_digit = any(c.isdigit() for c in token)
     if (has_lower + has_upper + has_digit) < 2:
         return False
-    return _shannon_entropy(token) >= 3.7
+    # Higher floor than the general pass: a labeled value is only flagged when
+    # it really looks random, so engineering prose after "the secret …" survives.
+    return _shannon_entropy(token) >= 4.0
 
 
 # High-entropy fallback. Candidate tokens are runs of base64/token chars (NOT
@@ -220,7 +266,10 @@ def _looks_like_short_secret(token: str) -> bool:
 # integrity marker on the same line is skipped (lockfile SRI hashes).
 _TOKEN_CANDIDATE = re.compile(r"[A-Za-z0-9+_=-]{28,4096}")
 _PURE_HEX = re.compile(r"[0-9a-fA-F]+")
-_INTEGRITY_PREFIX = re.compile(r"(?i:sha\d{3}-|sha-?\d{2,3}|integrity|checksum|base64|h1:)\W{0,3}$")
+# Only an ADJACENT digest-token prefix (SRI `sha256-`, Go `h1:`) skips the
+# entropy pass. Free-text words (`integrity`/`checksum`/`base64`) were too
+# permissive: an attacker could write `base64 <secret>` to dodge redaction.
+_INTEGRITY_PREFIX = re.compile(r"(?i:sha\d{3}-|h1:)\W{0,2}$")
 
 
 def _shannon_entropy(s: str) -> float:
@@ -239,6 +288,12 @@ def _looks_like_secret(token: str) -> bool:
     # MD5, shorter hex digests are common and benign).
     if _PURE_HEX.fullmatch(token):
         return False
+    # CamelCase/PascalCase identifiers (with or without version digits) are
+    # code, not secrets — a structural check catches them at any length, which
+    # the entropy floor alone cannot (they sit at ~4.0-4.5, same as some real
+    # secrets).
+    if _is_camel_identifier(token):
+        return False
     has_lower = has_upper = has_digit = False
     for ch in token:
         if ch.islower():
@@ -250,13 +305,6 @@ def _looks_like_secret(token: str) -> bool:
     classes = has_lower + has_upper + has_digit
     ent = _shannon_entropy(token)
     if classes >= 2:
-        # Long letters-only (no digit) tokens overlap with code identifiers
-        # (PascalCase/camelCase: 40+ chars, entropy ~4.0-4.4). Random secrets of
-        # that length sit higher (~4.9+), so require more entropy in this band
-        # to avoid masking identifiers. Shorter alpha tokens overlap inherently
-        # with identifiers and keep the 4.0 floor (can't be told apart anyway).
-        if not has_digit and len(token) >= 40:
-            return ent >= 4.6
         return ent >= 4.0
     # Single character class: require near-maximal entropy so random tokens are
     # caught but words / ALLCAPS constants / repetitive identifiers are not.
@@ -265,9 +313,16 @@ def _looks_like_secret(token: str) -> bool:
     return False
 
 
+# The token candidate includes `-`, so an SRI hash `sha512-<b64>` is captured
+# as one token starting with the marker; detect it on the token itself.
+_SRI_TOKEN = re.compile(r"(?i:sha\d{3}-|h1:)")
+
+
 def _redact_high_entropy(text: str) -> str:
     def repl(m: re.Match[str]) -> str:
         token = m.group(0)
+        if _SRI_TOKEN.match(token):
+            return token  # the token IS an SRI/Go content hash
         if not _looks_like_secret(token):
             return token
         # A token right after `/` is a path / URL segment (object key, cache
@@ -276,7 +331,8 @@ def _redact_high_entropy(text: str) -> str:
         # exists for.
         if m.start() > 0 and text[m.start() - 1] == "/":
             return token
-        # Skip lockfile / SRI integrity hashes (public content hashes).
+        # Skip a lockfile / SRI hash marked just before the token (e.g. `h1:`,
+        # where `:` is not part of the captured token).
         if _INTEGRITY_PREFIX.search(_line_before(text, m.start())):
             return token
         return "[REDACTED:high-entropy]"
