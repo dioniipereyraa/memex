@@ -6,6 +6,16 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-12: capture server embeds in a subprocess (0.2.2)
+
+Closed the capture-server RSS issue properly. The earlier in-process idle-release was reverted because `del + gc` does not return the onnxruntime arena to the OS on macOS (measured). The only reliable fix is to embed in a process that exits, so the OS reclaims everything. User pushed for it: ~0.5 GB resident is a real cost for low-RAM users of an always-on local tool.
+
+Design: the `/ingest` handler, when `MEMEX_INGEST_EMBED_IN_SUBPROCESS` (default true), spawns `python -m memex.transports.ingest_worker <source>` via `asyncio.create_subprocess_exec`, pipes the conversation payload over stdin (nothing sensitive on disk), and reads the summary as one JSON line from stdout. The child loads the model, runs the full `ingest_single_conversation`, stores to the DB (own connection, WAL handles concurrency), and exits. The subprocess boundary is per CONVERSATION, not per embed() call (which is per-32-chunk-batch and would reload the model dozens of times). DB path passed absolute via env so the child does not depend on cwd. `False` keeps the in-process path (used by the existing capture tests with their injected in-memory DB + FakeEmbedder).
+
+Verified live: restarted `memex serve`, baseline 0.06 GB; POSTed a synthetic capture; the parent stayed at **0.06 GB** the whole time while the transient child peaked at ~0.63 GB and then exited cleanly (no lingering worker); the conversation ingested (1/30/19). Cleaned up the test conversation via `delete_chunks_for_conversation` + delete row (chunks=vec=fts stayed in sync). New `ingest_worker.py` + tests (worker `run_ingest` with injected fakes; endpoint subprocess branch and worker-failure-503, both mocked). 496 tests green, ruff + mypy clean. Cost: ~3-5s model load per captured chat (background, fine). The MCP server is left resident (one query per search is cheap, and search wants low latency); the `ingest-claude-code` process already exits.
+
+---
+
 ## 2026-06-12: redaction re-index of the live corpus + orphan-vector cleanup
 
 Applied the round-4 redaction to already-indexed content (the new rules only mask on ingest going forward; secrets of the newly-covered shapes already in the store stay until re-ingested). Only the `claude_code` source is redacted (claude.ai chats are genuine conversation, not redacted by design), so the scope was the 20 `claude_code` conversations, not the 92 claude.ai ones.

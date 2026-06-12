@@ -35,6 +35,7 @@ Security model (this is a LOCAL, single-user service):
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hmac
 import json
@@ -42,6 +43,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +97,41 @@ def _get_embedder() -> Embedder:
         _embedder = get_default_embedder()
         logger.info("Embedder initialized: %s", _embedder.model_name)
     return _embedder
+
+
+async def _ingest_in_subprocess(payload: dict[str, Any], source: Source) -> dict[str, int]:
+    """Ingest one conversation in a short-lived child process, then it exits.
+
+    Keeps the always-on capture server from holding the embedding model (~0.5 GB)
+    resident: the child loads the model, embeds, stores, and exits, so the OS
+    reclaims everything. The payload goes to the child over stdin (not a temp
+    file, so nothing sensitive touches disk); the summary comes back as one JSON
+    line on stdout. The DB path is passed absolute via the environment so the
+    child does not depend on the working directory.
+    """
+    env = {**os.environ, "MEMEX_DB_PATH": str(Path(settings.db_path).resolve())}
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "memex.transports.ingest_worker",
+        source.value,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    out, err = await proc.communicate(json.dumps(payload).encode())
+    if proc.returncode != 0:
+        detail = err.decode(errors="replace").strip()[-500:]
+        raise EmbedderError(f"ingest worker exited {proc.returncode}: {detail}")
+    lines = [ln for ln in out.decode(errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        raise EmbedderError("ingest worker produced no output")
+    try:
+        result: dict[str, int] = json.loads(lines[-1])
+    except ValueError as e:
+        raise EmbedderError(f"ingest worker bad output: {e}") from e
+    return result
 
 
 def load_or_create_ingest_token(path: Path | str | None = None) -> str:
@@ -232,12 +269,25 @@ async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
         )
 
     try:
-        summary = ingest_single_conversation(
-            _get_conn(),
-            _get_embedder(),
-            payload,
-            source=source,
-        )
+        if settings.ingest_embed_in_subprocess:
+            # Embed in a child process that exits, so the always-on server does
+            # not hold the model resident. See `_ingest_in_subprocess`.
+            counts = await _ingest_in_subprocess(payload, source)
+        else:
+            # In-process path (lower per-capture latency, higher steady RSS).
+            # Tests use this with an injected DB + embedder.
+            summary = ingest_single_conversation(
+                _get_conn(),
+                _get_embedder(),
+                payload,
+                source=source,
+            )
+            counts = {
+                "conversations": summary.conversations,
+                "messages": summary.messages,
+                "chunks": summary.chunks,
+                "skipped_empty_messages": summary.skipped_empty_messages,
+            }
     except EmbedderError as e:
         return JSONResponse({"error": str(e)}, status_code=503)
     except KeyError as e:
@@ -254,16 +304,7 @@ async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
             status_code=500,
         )
 
-    return JSONResponse(
-        {
-            "status": "ok",
-            "uuid": payload.get("uuid"),
-            "conversations": summary.conversations,
-            "messages": summary.messages,
-            "chunks": summary.chunks,
-            "skipped_empty_messages": summary.skipped_empty_messages,
-        }
-    )
+    return JSONResponse({"status": "ok", "uuid": payload.get("uuid"), **counts})
 
 
 def _allowed_hosts() -> list[str]:

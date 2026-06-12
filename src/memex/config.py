@@ -78,6 +78,17 @@ class Settings(BaseSettings):
         default=5000, alias="MEMEX_MAX_CHUNKS_PER_CONVERSATION", ge=1
     )
 
+    # Embed each captured chat in a short-lived subprocess that exits, instead
+    # of in the always-on `memex serve` process. The capture server embeds
+    # in-process, so once it embedded one chat it held the model + onnxruntime
+    # arena (~0.5 GB) resident forever (dropping the model + gc does NOT return
+    # the arena to the OS on macOS). Spawning a child per capture keeps the
+    # server itself at its ~0.08 GB baseline; the child reclaims everything on
+    # exit. Cost: a ~3-5s model load per captured chat (background, not latency
+    # critical). Set False to embed in-process (lower per-capture latency, higher
+    # steady RSS). Tests run with this False to use injected mocks.
+    ingest_embed_in_subprocess: bool = Field(default=True, alias="MEMEX_INGEST_EMBED_IN_SUBPROCESS")
+
     # Live-capture HTTP server hardening (transports/http_ingest.py).
     # Max request body accepted by the ingest endpoint, in bytes. A single
     # Claude.ai conversation is well under a few MB; the cap rejects oversized

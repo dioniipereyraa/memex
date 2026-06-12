@@ -70,9 +70,13 @@ def http_client() -> Iterator[TestClient]:
     original_conn = http_ingest._conn
     original_embedder = http_ingest._embedder
     original_token = http_ingest._token
+    original_subproc = settings.ingest_embed_in_subprocess
     http_ingest._conn = test_conn
     http_ingest._embedder = test_embedder
     http_ingest._token = TEST_TOKEN
+    # Exercise the in-process path so the injected in-memory DB + FakeEmbedder are
+    # used; the subprocess path runs the real worker against the real DB.
+    settings.ingest_embed_in_subprocess = False
 
     try:
         # base_url is a loopback host so TrustedHostMiddleware accepts it (the
@@ -83,6 +87,7 @@ def http_client() -> Iterator[TestClient]:
         http_ingest._conn = original_conn
         http_ingest._embedder = original_embedder
         http_ingest._token = original_token
+        settings.ingest_embed_in_subprocess = original_subproc
         test_conn.close()
 
 
@@ -278,3 +283,36 @@ class TestBodyCap:
         monkeypatch.setattr(settings, "ingest_max_body_bytes", 16 * 1024 * 1024)
         r = http_client.post("/ingest/conversation", json=VALID_PAYLOAD, headers=AUTH)
         assert r.status_code == 200
+
+
+class TestSubprocessPath:
+    """When enabled, the endpoint embeds via a child process and returns its
+    counts. Mock the child so the test does not spawn a real worker."""
+
+    def test_returns_worker_counts(
+        self, http_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_subproc(payload: dict, source: object) -> dict:
+            return {"conversations": 1, "messages": 2, "chunks": 3, "skipped_empty_messages": 0}
+
+        monkeypatch.setattr(settings, "ingest_embed_in_subprocess", True)
+        monkeypatch.setattr(http_ingest, "_ingest_in_subprocess", fake_subproc)
+        r = http_client.post("/ingest/conversation", json=VALID_PAYLOAD, headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "ok"
+        assert body["uuid"] == VALID_PAYLOAD["uuid"]
+        assert body["chunks"] == 3
+
+    def test_worker_failure_returns_503(
+        self, http_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from memex.core.embeddings import EmbedderError
+
+        async def boom(payload: dict, source: object) -> dict:
+            raise EmbedderError("worker exited 1")
+
+        monkeypatch.setattr(settings, "ingest_embed_in_subprocess", True)
+        monkeypatch.setattr(http_ingest, "_ingest_in_subprocess", boom)
+        r = http_client.post("/ingest/conversation", json=VALID_PAYLOAD, headers=AUTH)
+        assert r.status_code == 503

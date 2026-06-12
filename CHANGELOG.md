@@ -4,6 +4,11 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [0.2.2] - 2026-06-12
+
+### Performance
+- **The live-capture server (`memex serve`) embeds each chat in a short-lived subprocess that exits**, instead of in the always-on process. It was holding the embedding model resident after the first capture (~0.5 GB: model + the onnxruntime arena, which `del` + `gc` does not return to the OS on macOS). Now a child process per capture loads the model, embeds, stores, and exits, so the OS reclaims everything and the server itself stays at its ~0.06 GB baseline (measured: parent stayed at 0.06 GB while the transient child peaked at ~0.63 GB, then exited). The payload is passed to the child over stdin (nothing sensitive touches disk). Cost: a ~3-5s model load per captured chat, which is fine for background, occasional live capture. Toggle with `MEMEX_INGEST_EMBED_IN_SUBPROCESS` (default true); set false to embed in-process for lower per-capture latency at a higher steady footprint.
+
 ## [0.2.1] - 2026-06-12
 
 Security patch from a fourth adversarial red-team round (four parallel attackers, focused on data theft: secrets leaking to the cloud and reading chats from outside). The remote connector and the local surface held with no data-exposure finding; the fixes below close redaction bypasses found by executing real attacks, plus minor hardening.
