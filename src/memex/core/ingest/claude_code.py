@@ -136,7 +136,12 @@ def parse_session_file(path: Path | str) -> ParsedSession | None:
 
     created = first_dt or _EPOCH
     updated = last_dt or created
-    title = ai_title or _derive_title(first_user_text, cwd)
+    # Redact the title too: it is the one ingested field that does not already
+    # flow through the redactor. `aiTitle` is model-generated from the chat and
+    # can quote a secret; the cwd-derived fallback can embed one in a path. The
+    # title is stored and surfaced by every tool (and fed to the summarizer), so
+    # an unredacted secret here leaks to search, get_chat, and the connector.
+    title = redact_secrets(ai_title or _derive_title(first_user_text, cwd))
 
     conv = Conversation(
         uuid=session_id,

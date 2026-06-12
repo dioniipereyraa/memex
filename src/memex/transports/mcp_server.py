@@ -80,7 +80,10 @@ def _get_summarizer() -> Summarizer | None:
 
 
 def _serialize(result: dict[str, Any]) -> str:
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    # Strip bidi/zero-width control chars from every string before it reaches
+    # the consuming agent (defense-in-depth against disguised prompt injection
+    # in stored chat text). Covers all tools, both stdio and the remote app.
+    return json.dumps(tools._sanitize_untrusted(result), ensure_ascii=False, indent=2)
 
 
 def search_chats(

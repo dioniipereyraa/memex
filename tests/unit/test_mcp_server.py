@@ -109,6 +109,19 @@ class TestCallToolFlow:
         assert "error" in payload
 
 
+class TestSerializeSanitizes:
+    def test_strips_bidi_and_zero_width(self) -> None:
+        # Disguise chars in stored chat text must not reach the agent.
+        result = {"title": "hello‮evil‬", "snippet": "ok​﻿"}
+        out = mcp_server._serialize(result)
+        for ch in ("‮", "‬", "​", "﻿"):
+            assert ch not in out
+
+    def test_keeps_normal_text(self) -> None:
+        out = mcp_server._serialize({"title": "arreglá el login", "n": 5})
+        assert "arreglá el login" in out
+
+
 class TestExceptionHandling:
     @pytest.mark.asyncio
     async def test_unexpected_exception_wrapped_in_error_dict(

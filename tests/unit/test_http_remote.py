@@ -170,6 +170,40 @@ class TestAllowlistReload:
         provider._env_sig = None
         assert provider._current_allowed() == frozenset({"bob"})
 
+    def _provider(self, env):
+        return AllowlistGitHubProvider(
+            allowed=frozenset({"alice"}),
+            env_path=env,
+            client_id="Iv1.fake-client-id",
+            client_secret="fake-secret-long-enough-for-jwt",
+            base_url="https://my-mac.tail1234.ts.net",
+        )
+
+    def test_prefix_key_does_not_hijack(self, tmp_path):
+        # A backup key with the allow-list name as a PREFIX must not be read.
+        env = tmp_path / ".env"
+        env.write_text(
+            "MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS_OLD=evil\n"
+            "MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=alice\n",
+            encoding="utf-8",
+        )
+        assert self._provider(env)._current_allowed() == frozenset({"alice"})
+
+    def test_last_assignment_wins(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text(
+            "MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=first\nMEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=second\n",
+            encoding="utf-8",
+        )
+        assert self._provider(env)._current_allowed() == frozenset({"second"})
+
+    def test_inline_comment_and_export_handled(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text(
+            "export MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS=bob # my login\n", encoding="utf-8"
+        )
+        assert self._provider(env)._current_allowed() == frozenset({"bob"})
+
     def test_empty_env_keeps_last_good(self, tmp_path):
         # A transient empty/truncated .env must NOT fail open to an empty list.
         env = tmp_path / ".env"

@@ -214,6 +214,42 @@ class TestParseSessionFile:
         assert "[REDACTED:" in joined
         assert all(m.raw_content is None for m in parsed.messages)
 
+    def test_ai_title_with_secret_is_redacted(self, tmp_path):
+        # The model-generated title can quote a secret; it must be redacted
+        # before it reaches the stored/searchable title (and the summarizer).
+        ghp = "ghp" + "_abcdefghijklmnopqrstuvwxyz0123456789"  # split: no literal
+        p = write_session(
+            tmp_path,
+            "sess-t",
+            [
+                {
+                    "type": "ai-title",
+                    "aiTitle": f"Debugging why {ghp} is rejected",
+                    "sessionId": "sess-t",
+                },
+                user("ayuda"),
+                assistant([{"type": "text", "text": "ok"}]),
+            ],
+        )
+        parsed = parse_session_file(p)
+        assert ghp not in parsed.conversation.title
+        assert "[REDACTED" in parsed.conversation.title
+
+    def test_cwd_derived_title_with_secret_is_redacted(self, tmp_path):
+        # No ai-title, first turn is a tool_result -> title falls back to the
+        # cwd basename, which could embed a secret. Must be redacted.
+        akia = "AKI" + "A1234567890ABCDEF"
+        p = write_session(
+            tmp_path,
+            "sess-c",
+            [
+                user([{"type": "tool_result", "content": "x"}], uuid="u1", cwd=f"/home/u/{akia}"),
+                assistant([{"type": "text", "text": "ok"}], uuid="a1", cwd=f"/home/u/{akia}"),
+            ],
+        )
+        parsed = parse_session_file(p)
+        assert akia not in parsed.conversation.title
+
     def test_empty_session_returns_none(self, tmp_path):
         p = write_session(
             tmp_path,

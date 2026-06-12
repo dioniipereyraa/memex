@@ -60,6 +60,34 @@ REPO_BOOST_OVERSAMPLE = 5
 # message). We cap the embedded text to keep latency bounded and to stay
 # well inside the embedding model's context window.
 FIND_RELATED_MAX_INPUT_CHARS = 4000
+SEARCH_QUERY_MAX_CHARS = 4000
+
+# Unicode bidi/zero-width control chars an attacker could use to visually
+# disguise injected instructions inside stored chat text. Stripped from every
+# string in a tool result before it reaches the consuming agent.
+_CONTROL_CHARS = dict.fromkeys(
+    [*range(0x202A, 0x2030), *range(0x2066, 0x206A), 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0xFEFF]
+)
+
+
+def _strip_control_chars(s: str) -> str:
+    return s.translate(_CONTROL_CHARS)
+
+
+def _sanitize_untrusted(obj: Any) -> Any:
+    """Recursively strip bidi/control chars from every string in a result.
+
+    Dates and uuids contain no such chars, so this is a no-op for them and
+    only neutralizes disguise attempts in title/summary/snippet/message text.
+    """
+    if isinstance(obj, str):
+        return _strip_control_chars(obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_untrusted(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_untrusted(v) for v in obj]
+    return obj
+
 
 # Every tool returns stored chat content (title/summary/snippet/text) that is
 # attacker-influenceable: anything the user ever pasted into or received from a
@@ -122,6 +150,9 @@ def search_chats(
     q = query.strip()
     if not q:
         return {"error": "Query cannot be empty."}
+    # Cap the query length before embedding (parity with find_related): a huge
+    # query just burns tokenizer CPU; the embedding model truncates anyway.
+    q = q[:SEARCH_QUERY_MAX_CHARS]
 
     if mode not in VALID_SEARCH_MODES:
         return {

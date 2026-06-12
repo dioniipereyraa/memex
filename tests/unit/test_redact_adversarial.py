@@ -59,6 +59,18 @@ MUST_REDACT = [
         "Xq7Zm2Vp9Lr4Ks8Tn3Wj6Yb1Dc5Fg0Hh4Jk8Mn2Pq6Rs0Tv4Wx8Zy2Bc6Df0Gh4Jl8Np2Qr6St0Uv4Wx8Yz2Ab6Cd0Ef4Gh8Ij2Kl6Mn0Op4Qr8Su2",
         "session Xq7Zm2Vp9Lr4Ks8Tn3Wj6Yb1Dc5Fg0Hh4Jk8Mn2Pq6Rs0Tv4Wx8Zy2Bc6Df0Gh4Jl8Np2Qr6St0Uv4Wx8Yz2Ab6Cd0Ef4Gh8Ij2Kl6Mn0Op4Qr8Su2 ok",
     ),
+    # round 2: AWS secret access key (40 base64 chars, contains /) bare
+    (
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "use the key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY now",
+    ),
+    # round 2: short secret with a space-separated label
+    ("Hk7Lp2Qr9Xt4Yw1Zb6Nm3", "Your token is Hk7Lp2Qr9Xt4Yw1Zb6Nm3 ok"),
+    # round 2: alg:none JWT (empty signature)
+    (
+        "eyJhbGciOiJub25lIn0.eyJ1c2VyIjoiYWRtaW4ifQ.",
+        "cookie eyJhbGciOiJub25lIn0.eyJ1c2VyIjoiYWRtaW4ifQ. set",
+    ),
 ]
 
 # Non-secret content that must NOT be mangled.
@@ -76,7 +88,31 @@ MUST_PRESERVE = [
     "arreglá el login y corré los tests, el bug está en el parser de sesiones",
     "mode=dev",
     "import { defineConfig } from 'vite'",
+    # round 2: long code identifiers must survive (search usefulness)
+    "class UserAccountManagementServiceImplementationFactory extends Base",
+    "const thisIsAVeryLongCamelCaseIdentifierForSomeReactComponentPropName = 1",
+    "def findAllActiveAccountsByOrganizationIdAndStatus(self, org):",
+    "new AbstractSingletonProxyFactoryBeanInitializer()",
+    # round 2: Go module hash (public content hash)
+    "golang.org/x/text v0.3.7 h1:olpwvP2KacW1ZWvsR7uQhoyTYvKAupfQrRGBFM3p6kw=",
 ]
+
+
+class TestPerfQuadraticRegression:
+    def test_single_line_packed_tokens_fast(self):
+        # Many high-entropy tokens on ONE line (no newlines) must stay linear:
+        # the digest-context look-back is windowed, not a full back-scan.
+        import random
+        import string
+
+        rng = random.Random(0)
+        one_line = " ".join(
+            "".join(rng.choice(string.ascii_letters + string.digits) for _ in range(40))
+            for _ in range(8000)
+        )  # ~320 KB single line
+        start = time.perf_counter()
+        redact_secrets(one_line)
+        assert time.perf_counter() - start < 1.0
 
 
 class TestMustRedact:

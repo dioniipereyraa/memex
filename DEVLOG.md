@@ -29,6 +29,17 @@ Connector (second pass): no auth bypass, no exfiltration; TrustedHost-outermost 
 
 **GitHub push protection gotcha:** the push was blocked (GH013) because the redaction tests held realistic fake secrets (Twilio SID, New Relic key) — secret-scanning matches by shape. Fix: build vendor-shaped test secrets from fragments joined with `+` (adjacent string literals get re-merged by ruff format, so `+` is required). Logged in CLAUDE.md.
 
+**Red-team round 2 (4 attackers) + fixes (2026-06-11, after the pause):**
+
+Re-attacked with the round-1 vectors (regression) + new ones. All round-1 fixes held. New findings, all fixed (467 tests green):
+
+- **End-to-end (highest value, only visible tracing the full path):** the conversation TITLE was the one ingested `claude_code` field that bypassed redaction — `aiTitle` (model-generated, can quote a secret), the cwd-derived fallback, and from there the summarizer forwarded it to the Anthropic API and re-stored it in the retrievable `summary`. One fix: `title = redact_secrets(...)` in `parse_session_file` closes all three.
+- **Performance O(n^2) I introduced in round 1:** `_line_before` did an unbounded back-scan per candidate token; a 199 KB single-line minified bundle took 11 s. Bounded the look-back to a 160-char window (markers sit right before the token) — 7300 ms → 28 ms, identical output. Regression test added.
+- **New redaction leaks:** AWS secret access key (40 base64 chars with `/`, split by the no-`/` token charset) → dedicated `b64-key` rule gated on mixed-class + not-a-path; short secrets with a space-separated label ("token is X") → labeled-value rule lowering the floor only in that context; `alg:none` JWT (empty signature) → third segment `{0,..}`.
+- **New false positives fixed:** long PascalCase/camelCase code identifiers (length-tiered entropy: 40+ alpha-only needs ≥4.6, NOT a flat bump that would leak 32-char alpha secrets); Go module `h1:` hashes (added to integrity markers).
+- **Connector:** `.env` allow-list parser used `startswith` (a bug I introduced) — `..._OLD=evil` could hijack the allow-list; now exact-key match, last-wins, strips `export`/inline-comments. `search_chats` query length capped (parity with find_related). Bidi/zero-width control chars stripped from every tool result string in `_serialize` (defense-in-depth vs disguised injection). Consent-stays-enabled + reload tests confirmed meaningful.
+- **Left as documented/deferred:** DCR `/register` disk-growth (LOW, bounded by disk + TrustedHost; third-party fastmcp, no cleanup hook); nonce-fenced per-field injection delimiters (the `_meta` note + bidi strip are the current mitigation; full fencing is a larger change for marginal gain on a model-level problem).
+
 **PAUSED here (2026-06-11). Picking up next:**
 - Rotate the GitHub OAuth client secret (user action: GitHub > Developer settings > OAuth Apps > regenerate; then update `.env` + restart the connector). The current secret appeared in audit logs.
 - Re-pair the Chrome extension with the rotated ingest token `EaMGdsZcvv0RjuCaC-DQFztCx5wrV6eMgb653Gv5KJk` (or run `memex token`).

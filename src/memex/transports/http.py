@@ -94,18 +94,37 @@ class AllowlistGitHubProvider(GitHubProvider):
             )
 
     def _read_allowed_from_env_file(self) -> frozenset[str]:
-        """Parse the allow-list line directly from the watched `.env` file."""
+        """Parse the allow-list line directly from the watched `.env` file.
+
+        Matches the EXACT key (an `=` boundary), so a prefix key like
+        `MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS_OLD` cannot hijack the allow-list.
+        Last assignment wins (matching dotenv/pydantic semantics). Handles an
+        optional `export ` prefix, surrounding quotes, and an inline `#` comment.
+        """
         if self._env_path is None:
             return frozenset()
+        result: frozenset[str] = frozenset()
         try:
             for raw in self._env_path.read_text(encoding="utf-8").splitlines():
                 line = raw.strip()
-                if line.startswith("MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS"):
-                    _, _, value = line.partition("=")
-                    return parse_allowed_logins(value.strip().strip("\"'"))
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].lstrip()
+                key, sep, value = line.partition("=")
+                if sep != "=" or key.strip() != "MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS":
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+                    value = value[1:-1]  # quoted: take literal contents
+                else:
+                    inline = value.find(" #")  # strip an inline comment
+                    if inline != -1:
+                        value = value[:inline]
+                result = parse_allowed_logins(value)  # keep scanning: last wins
         except OSError:
             logger.warning("Could not reload allow-list from %s; keeping previous.", self._env_path)
-        return frozenset()
+        return result
 
     def _current_allowed(self) -> frozenset[str]:
         if self._env_path is None:
