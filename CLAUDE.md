@@ -62,11 +62,12 @@ src/memex/
 
 **Dependency rule:** `core/` does not import from `transports/` or `cli/`. Arrows point inward.
 
-**State as of 2026-06-11 (Phase 4 closed, Phase 6 code complete):**
-- Phases 0 to 4 closed with audit; 0.1.0 on PyPI, 0.1.1 security hardening shipped.
-- Phase 6: local Claude Code / terminal sessions are ingested into the same store (`memex ingest-claude-code`, source `claude_code`) via `core/ingest/claude_code.py`. One search spans claude.ai chats and Claude Code work. The `conversations.source` CHECK was widened with a table-recreation migration in `storage/db.py`.
+**State as of 2026-06-12 (Phases 0 to 4 and 6 closed; 0.2.2 in main, CI green):**
+- 0.1.0/0.1.1 → 0.2.0 (Phase 4 remote connector + Phase 6 Claude Code ingestion + resource hardening) → 0.2.1 (red-team round 4 redaction-bypass patch, PUBLISHED on PyPI) → 0.2.2 (capture server embeds in a subprocess; in main + CI green, NOT yet published to PyPI). 496 tests green.
+- Phase 6: local Claude Code / terminal sessions are ingested into the same store (`memex ingest-claude-code`, source `claude_code`) via `core/ingest/claude_code.py`. One search spans claude.ai chats and Claude Code work. The `conversations.source` CHECK was widened with a table-recreation migration in `storage/db.py`. Secrets on this path are redacted (`core/ingest/redact.py`).
 - `vector_search`, `text_search`, and `hybrid_search` live in `core/storage/repo.py`. The `core/retrieval/` directory was removed (it was empty); if retrieval logic grows (re-ranking, complex filters), it gets recreated with real content.
-- Remote MCP (`memex serve-remote`): loopback bind behind a tunnel (Tailscale Funnel) publishing `MEMEX_REMOTE_BASE_URL`; auth is a GitHub OAuth proxy with a username allow-list enforced per request (claude.ai only supports authless or full OAuth, never pasted tokens). Pending: real end-to-end validation from claude.ai + phase-close audit. Live capture uses `transports/http_ingest.py` (a different local server, not the MCP).
+- Remote MCP (`memex serve-remote`): loopback bind behind a tunnel (Tailscale Funnel) publishing `MEMEX_REMOTE_BASE_URL`; auth is a GitHub OAuth proxy with a username/id allow-list enforced per request (claude.ai only supports authless or full OAuth, never pasted tokens). Validated end-to-end from claude.ai and held across 4 red-team rounds. Live capture uses `transports/http_ingest.py` (a different local server, not the MCP); it embeds each chat in a short-lived subprocess (`transports/ingest_worker.py`) so the always-on server stays at baseline RSS.
+- Detailed/residual security internals are in `docs/internal/security-notes.md` (gitignored). The cross-session handoff is `handoff.md` (gitignored). Public docs stay high-level.
 
 ## Common commands
 

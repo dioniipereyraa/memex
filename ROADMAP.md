@@ -2,7 +2,7 @@
 
 > Last updated: 2026-06-11
 
-**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.2.1` on PyPI (2026-06-12; 0.2.0 shipped both phases plus the security/resource hardening, 0.2.1 is a redaction-bypass patch from a fourth data-theft-focused red-team round); Chrome extension submitted to the Web Store. Remaining Phase 5 items are non-blocking (screencast, Discord post). **493 tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.2.1` on PyPI (2026-06-12; 0.2.0 shipped both phases plus the security/resource hardening, 0.2.1 a redaction-bypass patch from a fourth data-theft red-team round). **0.2.2 is in main + CI green but NOT yet published** (the capture server now embeds in a subprocess so the always-on process stays at ~0.06 GB instead of ~0.5 GB). The Chrome extension is live on the Web Store (chromewebstore.google.com/detail/memex-live-capture/bncngnabecfilefblppkolhdnaelibnb, Unlisted). Remaining Phase 5 items are non-blocking (screencast, Discord post, Windows auto-sync hook). **496 tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
@@ -118,8 +118,11 @@ The context Claude.ai has should be available to Claude Code, and the context Cl
 - [x] README quickstart revised for installable alpha (`pip install memex-chats` / `uvx --from memex-chats memex` path first, source path second). Autostart section unified across Windows + Linux + macOS placeholder. (Distribution renamed to `memex-chats` after `memex-mcp` turned out to be claimed on PyPI by an unrelated project; CLI commands `memex` and `memex-mcp` are unchanged.)
 - [x] **PyPI publish.** `memex-chats 0.1.0` live at https://pypi.org/project/memex-chats/ (2026-05-25). First publish attempt under `memex-mcp` failed with HTTP 403 because that name had been claimed earlier the same day by an unrelated MCP project; renamed the distribution to `memex-chats` (CLI commands unchanged, no breaking change for existing `.mcp.json` configs). Wheel + sdist uploaded with an explicit file list to `uv publish` after a stray Chrome ext ZIP in `dist/` confused the tool the first time; layout fixed afterwards by moving Web Store artifacts to `chrome-extension/dist/`.
 - [x] **Chrome Web Store submission.** `memex-live-capture 0.1.0` submitted on 2026-05-25 with `Unlisted` visibility for alpha. Listing copy, screenshots, permissions justifications, and the `PRIVACY.md` URL provided per the checklist. In review (typical first-pass: 5 to 10 business days).
+- [x] **Chrome Web Store: published** (2026-06-12). Live at chromewebstore.google.com/detail/memex-live-capture/bncngnabecfilefblppkolhdnaelibnb (Unlisted). Listing copy version bumped to 0.2.1; a 0.2.1 submission ZIP is built at `chrome-extension/dist/` if a resubmit is wanted.
 - [ ] Screencast / demo video (nice to have, not blocking).
-- [ ] Update Discord post and gather feedback (planned after the Web Store approval, so the install link is in the post).
+- [ ] Discord: an update post is drafted (announcing 0.2.x, the connector, Claude Code ingestion, the security work) with the Web Store link; a second "finished" post is planned. Not yet posted by the maintainer.
+- [ ] Windows auto-sync: a PowerShell equivalent of the SessionEnd hook (the bash hook is macOS/Linux only).
+- [ ] Add a `SECURITY.md`-driven private disclosure flow: DONE (SECURITY.md shipped); maintainer must enable GitHub "Private vulnerability reporting" in repo settings for the button to appear.
 - [x] macOS launchd support. Shipped in 0.2.0: plist templates + daemon scripts for `serve`, `serve-remote`, and the scheduled ingest, documented in the README "Running always-on (macOS)" section. The `install-service` CLI on macOS points there. (2026-06-11)
 
 ---
