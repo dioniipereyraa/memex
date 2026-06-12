@@ -49,13 +49,17 @@ class Settings(BaseSettings):
     #    spawns a thread per core, 10+, each with its own arena).
     #  - `embed_batch_size` caps the onnxruntime per-batch arena, which is the
     #    real memory driver and scales with batch_size * sequence_length. At the
-    #    default 500-token chunk size, measured peak tree RSS is ~0.7 GB at
-    #    batch=1, ~1.0 GB at batch=2, ~1.6 GB at batch=4, ~2.4 GB at batch=8.
+    #    default 500-token chunk size, measured peak RSS is ~0.67 GB at batch=1,
+    #    ~0.97 GB at batch=2, ~1.56 GB at batch=4, ~2.4 GB at batch=8.
     #    The embedder runs inference inline (`parallel=None`), so there is no
-    #    extra per-worker model copy (a subprocess would add ~0.6 GB). batch=4
-    #    is the default: a safe background footprint with good throughput.
+    #    extra per-worker model copy (a subprocess would add ~0.6 GB).
+    #    batch=2 is the default. Because `embed_threads` caps parallelism at 2,
+    #    a larger batch buys NO throughput (measured ~45 s for 200 chunks at
+    #    batch 1/2/4 alike), it only inflates the arena; so a small batch is a
+    #    near-free RAM win for a background ingest. Drop to 1 (~0.67 GB) to
+    #    minimize RAM further; raise it only if you also raise `embed_threads`.
     embed_threads: int = Field(default=2, alias="MEMEX_EMBED_THREADS", ge=1, le=64)
-    embed_batch_size: int = Field(default=4, alias="MEMEX_EMBED_BATCH_SIZE", ge=1, le=256)
+    embed_batch_size: int = Field(default=2, alias="MEMEX_EMBED_BATCH_SIZE", ge=1, le=256)
 
     # Ollama-specific config (only used if embed_backend == "ollama").
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")

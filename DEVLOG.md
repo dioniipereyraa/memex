@@ -24,6 +24,8 @@ User asked for one more big adversarial verification focused on what matters mos
 
 **State:** 493 tests green (+16 round-4 corpus/perf guards), ruff + format + mypy clean. Shipping as 0.2.1.
 
+**RAM optimization (same session, user reported ~4 GB across memex processes):** measured the real driver instead of guessing. The persistent servers are cheap (serve ~0.17 GB, connector ~0.03 GB, each MCP ~0.1-0.25 GB, one per open Claude Code session, model loaded lazily on first search); the heavy process is the ingest's embedder. Benchmarked the embedder on 200 realistic 500-token chunks (threads=2, peak RUSAGE): batch=4 → 1556 MB / 45.6 s, batch=2 → 969 MB / 44.8 s, batch=1 → 671 MB / 44.7 s. Throughput is batch-independent because threads=2 caps parallelism, so a larger batch only inflates the onnxruntime per-batch arena. Also tested fastembed's `enable_cpu_mem_arena=False` (it exposes it via kwargs): it made things WORSE (batch=4 went 1556 → 2291 MB), so the arena stays on. Lowered the default `embed_batch_size` 4 → 2 (≈ -38% RAM, no speed cost) and set this machine's `.env` to `MEMEX_EMBED_BATCH_SIZE=1` (≈ 0.67 GB embedder peak; real ingest adds pipeline + longer chunks on top, so the live process lands around half of the old ~2.2 GB). Takes effect on the next ingest (uv run reads `.env` fresh); no restart needed.
+
 Next: publish 0.2.1 to PyPI (maintainer token), tag, push. Repackage the Chrome ext (0.2.1) if resubmitting.
 
 ---
