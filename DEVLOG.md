@@ -6,6 +6,19 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-12: credential rotation + 0.2.0 release
+
+Closed the pending security actions and shipped the release.
+
+- **GitHub OAuth client secret rotated** (it had appeared in audit logs). New secret in `.env`, connector restarted via `launchctl kickstart`. Side effect understood and verified: the restart invalidated the token claude.ai had stored (401 `invalid_token` in `serve-remote.log`), fixed by re-authorizing the connector from claude.ai; the log then shows the full OAuth dance (authorize, consent, callback, token) and a stream of 200s on `/mcp`. Rotation validated end to end.
+- **Chrome extension re-paired** with the rotated capture token. Verified live: opening a chat on claude.ai produced `POST /ingest/conversation` 200s and the new messages were retrievable via MCP seconds later.
+- **0.2.0 released.** CHANGELOG: `[Unreleased]` promoted to `[0.2.0]` and completed with the missing entries (auto-sync hook + backstop, always-on launchd agents, installers, process naming, embed settings, the flock, and a full Security section covering the audit + three red-team rounds). pyproject bumped and description updated (the remote connector is no longer "soon"). README: status header, PyPI note (now: package current, but extension/scripts only come with the repo), and the stale `install-service` macOS bullet now points to the launchd section. ROADMAP Phase 5: macOS launchd marked done, status header refreshed. 477 tests green, ruff + format + mypy clean. `uv build` artifacts inspected: wheel is package-only, sdist (112 files) has no `data/`, `.env`, or `MEMEX.md`.
+- **Observation, not a blocker:** the overnight re-population ingest (full corpus re-index with the new redaction) ran ~9 h with a ~2.6 GB peak, above the ~1.6 GB expected at batch=4. It finished clean (0 errors) and freed the RAM on exit. If a routine incremental ingest ever shows that footprint again, profile it; for the one-off full re-index it is tolerable.
+
+Next: publish to PyPI (maintainer token), tag `v0.2.0`, push.
+
+---
+
 ## 2026-06-11 (resource audit, round 3): embedder respawn + redaction O(n^2)
 
 Third-round performance/resource audit after the user hit a 20 GB RAM / machine-freeze during ingest. Measured everything for real (`uv run python`, peak tree-RSS polled across the whole process tree, `/usr/bin/time`-style accounting).

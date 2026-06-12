@@ -6,7 +6,7 @@
 
 Local-first MCP server that indexes your Claude.ai chat history AND your local Claude Code / terminal sessions, and exposes them both to Claude Code (stdio) and to Claude.ai (remote MCP connector). The goal: one memory, reachable from wherever you talk to Claude.
 
-**Status:** alpha. Phases 0 to 4 and 6 closed. `0.1.0` on PyPI (predates the remote connector and Claude Code ingestion, so install from source for those, see below). Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), and Claude Code / terminal ingestion with secret redaction and automatic sync.
+**Status:** alpha, `0.2.0` on PyPI. Phases 0 to 4 and 6 closed, security-audited (plus three adversarial red-team rounds) before this release. Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), and Claude Code / terminal ingestion with secret redaction and automatic sync.
 
 ![Session memory check](docs/screenshots/session-memory-check.jpeg)
 
@@ -45,9 +45,10 @@ Embeddings work **out of the box**: by default Memex uses
 130 MB model the first time you ingest. No Ollama, no API key, no extra setup.
 (Ollama is optional, see [Embeddings backend](#embeddings-backend) below.)
 
-> Note: the published PyPI package (`memex-chats 0.1.0`) predates the
-> claude.ai remote connector and the Claude Code ingestion. Until the next
-> release is published, install from source (below) to get those features.
+> Note: a PyPI install gives you the CLI and the MCP servers, but the
+> live-capture Chrome extension, the autostart scripts, and the
+> launchd/systemd templates only come with the repo, so installing from
+> source (below) is still the recommended path.
 
 ### macOS / Linux
 
@@ -369,7 +370,7 @@ The CLI dispatches to the right installer for your OS:
 
 - **Windows**: registers a Scheduled Task (`MemexServe`) that runs `uv run memex serve` at logon. No admin required, no console window, survives VS Code close. Logs at `%LOCALAPPDATA%\Memex\serve.log`. Auto-restarts up to 3 times if the wrapper dies.
 - **Linux**: writes a systemd user unit at `~/.config/systemd/user/memex-serve.service`, enables it, and starts it now. Logs at `~/.local/state/memex/serve.log`. To keep it running across logout: `loginctl enable-linger $USER`. Status: `systemctl --user status memex-serve`.
-- **macOS**: not implemented yet in 0.1.0. The command prints manual start instructions (`nohup uv run memex serve > ~/memex-serve.log 2>&1 &`). Tracked for 0.2.0.
+- **macOS**: the command prints manual start instructions; the supported path is the launchd agents from [Running always-on (macOS)](#running-always-on-macos), which cover `serve`, `serve-remote`, and the scheduled ingest in one go.
 
 ### Making Claude use Memex proactively
 

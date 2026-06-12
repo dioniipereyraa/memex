@@ -2,7 +2,7 @@
 
 > Last updated: 2026-06-11
 
-**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.1.0` on PyPI; Chrome extension submitted to the Web Store. Remaining Phase 5 items are non-blocking (screencast, Discord post, macOS launchd in 0.2.0). **396 unit tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.2.0` on PyPI (2026-06-12, includes both phases plus the security/red-team and resource hardening); Chrome extension submitted to the Web Store. Remaining Phase 5 items are non-blocking (screencast, Discord post). **477 tests green**, CI green, `ruff` + `mypy` clean.
 
 ## Guiding principle
 
@@ -120,7 +120,7 @@ The context Claude.ai has should be available to Claude Code, and the context Cl
 - [x] **Chrome Web Store submission.** `memex-live-capture 0.1.0` submitted on 2026-05-25 with `Unlisted` visibility for alpha. Listing copy, screenshots, permissions justifications, and the `PRIVACY.md` URL provided per the checklist. In review (typical first-pass: 5 to 10 business days).
 - [ ] Screencast / demo video (nice to have, not blocking).
 - [ ] Update Discord post and gather feedback (planned after the Web Store approval, so the install link is in the post).
-- [ ] macOS launchd support (deferred to 0.2.0).
+- [x] macOS launchd support. Shipped in 0.2.0: plist templates + daemon scripts for `serve`, `serve-remote`, and the scheduled ingest, documented in the README "Running always-on (macOS)" section. The `install-service` CLI on macOS points there. (2026-06-11)
 
 ---
 
