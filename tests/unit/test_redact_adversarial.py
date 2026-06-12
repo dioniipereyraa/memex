@@ -144,6 +144,11 @@ MUST_PRESERVE = [
 ]
 
 
+# These guard against O(n^2) / ReDoS regressions, which on these inputs blow up
+# to ~9-67 s. The redactor is linear (~0.5-0.8 s for 2 MB on a dev box). The
+# thresholds are deliberately generous because shared CI runners are 2-3x slower
+# than a dev box (a tight ~1 s bound was flaky there); a generous bound still
+# cleanly separates linear (~2-2.5 s on CI) from a quadratic blowup (9 s+).
 class TestPerfQuadraticRegression:
     def test_single_line_packed_tokens_fast(self):
         # Many high-entropy tokens on ONE line (no newlines) must stay linear:
@@ -158,7 +163,7 @@ class TestPerfQuadraticRegression:
         )  # ~320 KB single line
         start = time.perf_counter()
         redact_secrets(one_line)
-        assert time.perf_counter() - start < 1.0
+        assert time.perf_counter() - start < 3.0
 
     def test_packed_unterminated_pem_markers_fast(self):
         # Round 4: a packed run of `-----BEGIN ... PRIVATE KEY-----` with no
@@ -168,7 +173,7 @@ class TestPerfQuadraticRegression:
         blob = "-----BEGIN A PRIVATE KEY-----" * 100000  # ~2.9 MB, no newlines
         start = time.perf_counter()
         redact_secrets(blob)
-        assert time.perf_counter() - start < 2.0
+        assert time.perf_counter() - start < 6.0
 
 
 class TestMustRedact:
@@ -188,11 +193,12 @@ class TestMustPreserve:
 
 class TestPerformance:
     def test_linear_on_large_inputs(self):
-        # 2 MB realistic-ish mixed content must stay well under a second.
+        # 2 MB realistic-ish mixed content must stay linear (see the threshold
+        # note on TestPerfQuadraticRegression for why the bound is generous).
         blob = "path/to/file_0.js const x = 'abc'; " * 40000
         start = time.perf_counter()
         redact_secrets(blob)
-        assert time.perf_counter() - start < 1.0
+        assert time.perf_counter() - start < 5.0
 
     def test_linear_on_single_line_hex64_blob(self):
         # Many 64-hex tokens on ONE line (no newlines) must stay linear. The
@@ -200,7 +206,7 @@ class TestPerformance:
         # that scans to the start of a newline-free line is O(pos) per call and
         # O(n^2) overall (a single-line JSON array of git object hashes, an
         # `npm ls` dump). The back-scan must be window-bounded. A ~2 MB blob
-        # took ~9 s before the fix; it must finish in well under a second.
+        # took ~9 s before the fix; linear now (well under the generous bound).
         import random
 
         rng = random.Random(0)
@@ -209,4 +215,4 @@ class TestPerformance:
         )  # ~2 MB single line of 64-hex tokens
         start = time.perf_counter()
         redact_secrets(one_line)
-        assert time.perf_counter() - start < 1.5
+        assert time.perf_counter() - start < 5.0
