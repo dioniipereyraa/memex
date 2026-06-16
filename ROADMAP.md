@@ -1,8 +1,8 @@
 # Roadmap
 
-> Last updated: 2026-06-11
+> Last updated: 2026-06-16
 
-**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.2.1` on PyPI (2026-06-12; 0.2.0 shipped both phases plus the security/resource hardening, 0.2.1 a redaction-bypass patch from a fourth data-theft red-team round). **0.2.2 published on PyPI** (2026-06-12; the capture server now embeds in a subprocess so the always-on process stays at ~0.06 GB instead of ~0.5 GB). The Chrome extension is live on the Web Store (chromewebstore.google.com/detail/memex-live-capture/bncngnabecfilefblppkolhdnaelibnb, Unlisted). Remaining Phase 5 items are non-blocking (screencast, Discord post, Windows auto-sync hook). **496 tests green**, CI green, `ruff` + `mypy` clean.
+**Current state:** Phases 0 to 4 and 6 closed. **Phase 4 (remote transport): CLOSED** (2026-06-11), validated end-to-end from claude.ai and audited. **Phase 6 (Claude Code / terminal ingestion): CLOSED** (2026-06-11), bulk-ingested, unified search validated, audited (shipping-blocker bug fixed + secret redaction added). **Phase 5 essentially done:** `memex-chats 0.2.1` on PyPI (2026-06-12; 0.2.0 shipped both phases plus the security/resource hardening, 0.2.1 a redaction-bypass patch from a fourth data-theft red-team round). **0.2.2 published on PyPI** (2026-06-12; the capture server now embeds in a subprocess so the always-on process stays at ~0.06 GB instead of ~0.5 GB). The Chrome extension is live on the Web Store (chromewebstore.google.com/detail/memex-live-capture/bncngnabecfilefblppkolhdnaelibnb, Unlisted). Remaining Phase 5 items are non-blocking (Discord post, Windows auto-sync hook). **0.2.3 published on PyPI** (2026-06-16; README now leads with the pain and shows a live demo GIF, plus a `server.json` + `mcp-name` marker so Memex is listed in the official MCP Registry as `io.github.dioniipereyraa/memex`, and submitted to mcp.so). **496 tests green**, CI green, `ruff` + `mypy` clean. **Phase 7 (frictionless onboarding / claude.ai auto-backfill) is planned, not started** (see below); it is the gate before the Hacker News launch.
 
 ## Guiding principle
 
@@ -160,6 +160,31 @@ Deferred follow-ups (low severity, tracked here):
 - [ ] Keep-fresh automation (periodic launchd scan or a Claude Code SessionEnd hook). MVP is the manual command; deferred.
 
 **Phase 6 CLOSED (2026-06-11).** One unified store searchable from claude.ai (remote connector) and Claude Code (stdio), covering both halves of the history.
+
+---
+
+## Phase 7: frictionless onboarding — auto-backfill of claude.ai history (PLANNED)
+
+**Why:** the demo magic (recall an old claude.ai chat from Claude Code) only lands if the user's full history is already indexed on first run. Today it is not. The Chrome extension is purely passive: it monkey-patches claude.ai's `fetch` and keeps only the responses the site itself makes (`GET /chat_conversations/{id}` when you open a chat, `POST /chat_conversations` when you create one; see `chrome-extension/src/inject.js`). So old chats enter Memex only via a manual export zip or by opening each chat by hand. A new user installs Memex and finds an empty store, which kills the first impression. This phase makes "install -> full history searchable" the default path. It is the gate before the Hacker News launch.
+
+**Architectural constraint (do not forget this):** Claude Code / the terminal has NO access to the user's claude.ai account (no cookies, no API token; Anthropic exposes no history API). The backfill therefore CANNOT be triggered from a Claude Code `SessionStart` hook, however intuitive that sounds. The only contexts that hold the claude.ai session are (a) the browser, where the extension already runs in claude.ai's MAIN world with the user's cookies, or (b) a manually supplied `sessionKey` cookie. The pull must originate in one of those.
+
+**Approach A (default): active backfill in the extension.** `inject.js` already lives in the page with the session and a patched `fetch`; extend it from passive interception to active pull.
+- [ ] Identify and verify claude.ai's conversation-list endpoint + pagination (expected `GET /api/organizations/{org_uuid}/chat_conversations`; org uuid from the bootstrap `/api/organizations` call). Confirm the current shape, do not assume.
+- [ ] On first connect with a paired token, and via an explicit "Backfill history" button in the popup, page through the full list, fetch each conversation's full content (the existing `conv-full` shape), and push it through the existing pipe (postMessage -> content.js -> background -> `POST /ingest/conversation`).
+- [ ] Throttle + incremental + resumable: skip conversations already indexed (server dedups by uuid/content_hash), bound concurrency, persist progress so a closed tab resumes. Hundreds of chats = many requests + many embeds; lean on the subprocess-embed path (0.2.2).
+- [ ] Progress UI in the popup (N/total, errors).
+- [ ] Periodic re-list (not just live capture) so chats created on other devices also land.
+
+**Approach B (fallback, power user): `memex pull --session-key <cookie>`.** Headless CLI that hits the same internal API directly with a pasted `sessionKey`. One-time paste, then schedulable. Caveats: ToS-grey, the cookie rotates/expires, brittle to API changes. Not the default; documented as the option for users who will not install the extension.
+
+**Provenance:** ties into the deferred 0.1.1 item (a column distinguishing live-captured / exported / backfilled chats, surfaced as `unverified`). Backfilled chats should be tagged so the source stays auditable.
+
+**Close criterion:** a brand-new user, after install + extension pair (or one `memex pull`), has their full claude.ai history searchable from Claude Code with no manual export and no opening chats by hand. The demo GIF reproduces on a fresh machine.
+
+**Risks:** depends on claude.ai's internal, unofficial API, so it can break when Anthropic changes it (but the extension already depends on that API, so it is more surface, not new surface). ToS: same posture as the existing capture (publish openly with a disclaimer). Volume/rate: throttle to avoid hammering claude.ai.
+
+**Estimated duration:** ~1 to 1.5 weeks.
 
 ---
 
