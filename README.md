@@ -4,7 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 
-Local-first MCP server that indexes your Claude.ai chat history AND your local Claude Code / terminal sessions, and exposes them both to Claude Code (stdio) and to Claude.ai (remote MCP connector). The goal: one memory, reachable from wherever you talk to Claude.
+**Your Claude.ai chats and your Claude Code sessions live in two worlds that never talk. Memex makes them one memory you can search from both.**
+
+Local-first MCP server that indexes your Claude.ai chat history and your local Claude Code / terminal sessions, and exposes them to Claude Code (stdio) and Claude.ai (remote MCP connector).
 
 **Status:** alpha, `0.2.2` on PyPI. Phases 0 to 4 and 6 closed, security-audited (plus four adversarial red-team rounds). Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), and Claude Code / terminal ingestion with secret redaction and automatic sync.
 
