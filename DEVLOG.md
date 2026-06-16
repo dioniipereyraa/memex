@@ -6,6 +6,16 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-16: 0.2.3, list in the MCP registries
+
+Distribution work, no code change. Added the official MCP Registry publishing artifacts: a `server.json` at the repo root (name `io.github.dioniipereyraa/memex`, pypi package `memex-chats`, stdio transport) and an `mcp-name: io.github.dioniipereyraa/memex` HTML-comment marker at the top of the README so the registry can verify the PyPI package is ours. The marker only lands on PyPI with a new release, so bumped to 0.2.3 (README leads with the pain now, not the architecture).
+
+Publish runbook (manual, needs credentials / interactive auth): build + `twine upload` the 0.2.3 dist, then `mcp-publisher login github` + `mcp-publisher publish`. Glama auto-indexes from GitHub (no action). mcp.so and PulseMCP are manual web submissions.
+
+Next step: cut the 0.2.3 PyPI release, publish to the official registry, submit to mcp.so + PulseMCP.
+
+---
+
 ## 2026-06-12: capture server embeds in a subprocess (0.2.2)
 
 Closed the capture-server RSS issue properly. The earlier in-process idle-release was reverted because `del + gc` does not return the onnxruntime arena to the OS on macOS (measured). The only reliable fix is to embed in a process that exits, so the OS reclaims everything. User pushed for it: ~0.5 GB resident is a real cost for low-RAM users of an always-on local tool.

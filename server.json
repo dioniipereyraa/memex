@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.dioniipereyraa/memex",
+  "description": "Local MCP server that indexes your Claude.ai chats and your Claude Code sessions, and exposes them to Claude Code (stdio) and to Claude.ai (remote MCP connector).",
+  "repository": {
+    "url": "https://github.com/dioniipereyraa/memex",
+    "source": "github"
+  },
+  "version": "0.2.3",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "memex-chats",
+      "version": "0.2.3",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
