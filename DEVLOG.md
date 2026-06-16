@@ -6,6 +6,19 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-16 (later): demo GIF, registry published, Phase 7 planned, redaction verified
+
+Distribution + launch session. Built on the 0.2.3 prep below.
+
+- **Published to the official MCP Registry.** Installed `mcp-publisher`, `mcp-publisher validate` flagged the `server.json` description was over the 100-char limit (shortened it), then `mcp-publisher login github` + `publish`. Live as `io.github.dioniipereyraa/memex`, `status: active`. Learned the registry has no per-server web page (404); only the API responds, so the `io.github...` name is an identifier, not a link. Also submitted to mcp.so (status `created`, pending review). Glama/PulseMCP auto-index, no action.
+- **0.2.3 to PyPI.** `uv build` + `uv publish`. Confirmed the `mcp-name` marker is in the published PyPI description (the registry needs it to verify package ownership). `uv.lock` synced.
+- **Demo GIF in the README.** User recorded a screen capture, converted to GIF (ffmpeg palettegen/paletteuse path explored; the user's own 800x518 / 2.5 MB GIF was the one shipped). Replaced the static `session-memory-check.jpeg` reference; rewrote the caption to match (claude.ai recall from Claude Code). README opener also rewritten to lead with the pain, not the architecture.
+- **Planned Phase 7 (claude.ai auto-backfill).** The product gap: a new user's claude.ai history is empty until a manual export, so the demo does not reproduce on a fresh install. Root cause confirmed by reading `chrome-extension/src/inject.js`: it is a passive `fetch` interceptor (keeps only `conv-full` / `conv-create` responses the app already makes), never backfills. Architectural constraint logged: the terminal cannot reach claude.ai, so the backfill must come from the extension (MAIN-world session) or a pasted `sessionKey`, NOT a Claude Code hook. Full milestone plan (M1 discovery -> M5 docs/e2e) is in `handoff.md`. Gate before Hacker News.
+- **Verified `redact.py` covers PyPI tokens.** The user pasted a real PyPI token in chat; confirmed the dedicated `pypi-token` vendor rule (plus the assignment + labeled-value rules) masks it. Live check with a synthetic token: bare `pypi-...` -> `[REDACTED:pypi-token]`. Masked in the Memex index; the raw `.jsonl`/transcript still hold it, so revoking remains a user TODO.
+- **Distribution reality:** Reddit direct posting is karma-gated (r/ClaudeAI, r/mcp, r/SideProject all blocked); got one showcase comment up. Plan: earn karma, then post for real with the backfill shipped. Discord + registries are the channels that worked.
+
+---
+
 ## 2026-06-16: 0.2.3, list in the MCP registries
 
 Distribution work, no code change. Added the official MCP Registry publishing artifacts: a `server.json` at the repo root (name `io.github.dioniipereyraa/memex`, pypi package `memex-chats`, stdio transport) and an `mcp-name: io.github.dioniipereyraa/memex` HTML-comment marker at the top of the README so the registry can verify the PyPI package is ours. The marker only lands on PyPI with a new release, so bumped to 0.2.3 (README leads with the pain now, not the architecture).
