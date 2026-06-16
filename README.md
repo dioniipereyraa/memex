@@ -12,9 +12,9 @@ Local-first MCP server that indexes your Claude.ai chat history and your local C
 
 **Status:** alpha, `0.2.3` on PyPI. Phases 0 to 4 and 6 closed, security-audited (plus four adversarial red-team rounds). Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), and Claude Code / terminal ingestion with secret redaction and automatic sync.
 
-![Session memory check](docs/screenshots/session-memory-check.jpeg)
+![Memex recalling a claude.ai chat from Claude Code](docs/screenshots/demo.gif)
 
-*End-to-end demo: a chat on claude.ai captured seconds earlier by the Chrome extension, recalled from Claude Code via `list_recent_chats` and `get_chat`. No extra prompting, no manual context handoff.*
+*End-to-end demo: from Claude Code, you ask about something you discussed on claude.ai. Memex searches your chat history (`search_chats`) and Claude answers from the real conversation. No copy-paste, no manual context handoff.*
 
 ## The problem
 
