@@ -21,11 +21,49 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || data.source !== "memex-inject") return;
   const payload = data.payload;
+  if (!payload || typeof payload !== "object") return;
+
+  // Backfill orchestration messages carry a `control` field; the capture path
+  // carries a `kind`. The two are disjoint, so the capture validation below is
+  // untouched. A control message is still untrusted page-world input, and
+  // background treats it as such (it relays a manifest to the server, which
+  // returns only the to-fetch subset, plus cosmetic progress; no new
+  // exfiltration the page could not already do itself).
+  if (typeof payload.control === "string") {
+    handleControl(payload);
+    return;
+  }
+
   // Forma esperada: un objeto con un `kind` conocido. Descarta basura/forjados
   // mal formados sin pretender que esto sea una frontera de seguridad fuerte.
-  if (!payload || typeof payload !== "object" || !KNOWN_KINDS.has(payload.kind)) return;
+  if (!KNOWN_KINDS.has(payload.kind)) return;
   chrome.runtime.sendMessage({ type: "capture", payload }).catch(() => {
     // El service worker puede estar dormido; ignoramos el error y se reintenta
     // en el próximo evento (chrome reactiva al recibir el message).
   });
 });
+
+// Relay backfill control messages between the page world (inject.js) and the
+// background service worker, the only context that can reach the local Memex
+// server. `backfill-plan` is request/response (the reply is posted back to the
+// page, correlated by reqId); `backfill-progress` is fire-and-forget.
+function handleControl(payload) {
+  if (payload.control === "backfill-plan" && typeof payload.reqId === "string") {
+    chrome.runtime.sendMessage({ type: "backfill-plan", body: payload.body }, (resp) => {
+      void chrome.runtime.lastError; // swallow "no receiver" noise if SW asleep
+      window.postMessage(
+        {
+          source: "memex-content",
+          kind: "reply",
+          reqId: payload.reqId,
+          result: resp || null,
+        },
+        window.location.origin,
+      );
+    });
+  } else if (payload.control === "backfill-progress") {
+    chrome.runtime
+      .sendMessage({ type: "backfill-progress", progress: payload.body })
+      .catch(() => {});
+  }
+}

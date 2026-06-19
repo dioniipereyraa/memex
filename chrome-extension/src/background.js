@@ -6,6 +6,7 @@
 const DEFAULT_SERVER_URL = "http://127.0.0.1:5777";
 const INGEST_PATH = "/ingest/conversation";
 const HEALTH_PATH = "/health";
+const PLAN_PATH = "/ingest/plan";
 const RECENT_ERRORS_MAX = 5;
 
 // Retry para network errors. El primer POST después de un `memex serve` fresh
@@ -38,6 +39,7 @@ const getStats = async () => {
       failed: 0,
       lastIngest: null,
       recentErrors: [],
+      backfill: null,
     },
   });
   return stats;
@@ -141,6 +143,44 @@ const handleCapture = async (payload) => {
   await recordIngestSuccess(data.uuid || body.uuid, body.name, data.chunks);
 };
 
+// ---------- history backfill (Phase 7 M3) ----------
+
+// Ask the local server which conversations from the page's manifest
+// ({uuid, updated_at}[]) are new or changed. The server compares against its
+// indexed set and returns only the uuids to fetch; the indexed set never leaves
+// the server. A POST is used so the request reliably carries the extension
+// Origin (a cross-origin GET may omit it). Any failure (no token, server down,
+// bad response) falls back to "fetch everything"; the server dedups on ingest,
+// so correctness never depends on this optimization.
+const planBackfill = async (body) => {
+  const conversations = body && Array.isArray(body.conversations) ? body.conversations : [];
+  const all = conversations.map((c) => c && c.uuid).filter(Boolean);
+
+  const { serverUrl, token } = await getConfig();
+  if (!token) return { toFetch: all };
+
+  try {
+    const response = await fetch(`${serverUrl}${PLAN_PATH}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Memex-Token": token },
+      body: JSON.stringify({ conversations }),
+    });
+    if (!response.ok) return { toFetch: all };
+    const data = await response.json();
+    if (data && Array.isArray(data.toFetch)) return { toFetch: data.toFetch };
+    return { toFetch: all };
+  } catch (_) {
+    return { toFetch: all };
+  }
+};
+
+const recordBackfillProgress = async (progress) => {
+  if (!progress || typeof progress !== "object") return;
+  const stats = await getStats();
+  stats.backfill = { ...progress, at: Date.now() };
+  await setStats(stats);
+};
+
 // ---------- runtime messaging ----------
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -150,6 +190,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     handleCapture(msg.payload)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true; // async response
+  }
+
+  if (msg.type === "backfill-plan") {
+    planBackfill(msg.body)
+      .then((result) => sendResponse(result))
+      // On an unexpected failure, reply null so the page falls back to
+      // fetching everything (never an empty list, which would skip all).
+      .catch(() => sendResponse(null));
+    return true; // async response
+  }
+
+  if (msg.type === "backfill-progress") {
+    recordBackfillProgress(msg.progress)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true; // async response
   }
 
@@ -218,6 +274,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         failed: 0,
         lastIngest: null,
         recentErrors: [],
+        backfill: null,
       },
     }, () => sendResponse({ ok: true }));
     return true;

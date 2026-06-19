@@ -67,6 +67,26 @@ const render = ({ stats, config }) => {
       errorsEl.appendChild(div);
     }
   }
+
+  const bf = stats?.backfill;
+  const bfEl = $("backfill-status");
+  if (!bf || !bf.phase) {
+    bfEl.hidden = true;
+  } else {
+    bfEl.hidden = false;
+    bfEl.textContent = fmtBackfill(bf);
+  }
+};
+
+const fmtBackfill = (bf) => {
+  if (bf.phase === "error") return `Backfill error: ${bf.error || "unknown"}`;
+  const skipped = bf.skipped ? `, ${bf.skipped} up to date` : "";
+  if (bf.phase === "done") {
+    const failed = bf.failed ? `, ${bf.failed} failed` : "";
+    return `Backfill done: ${bf.done}/${bf.toFetch} fetched${skipped}${failed}`;
+  }
+  if (bf.phase === "start") return `Backfill starting: ${bf.toFetch} to fetch${skipped}`;
+  return `Backfilling ${bf.done}/${bf.toFetch}...${skipped}`;
 };
 
 const refresh = async () => {
@@ -101,5 +121,41 @@ $("reset").addEventListener("click", async () => {
   refresh();
 });
 
-// Initial refresh + ping when the popup opens.
+// Trigger the history backfill. The work runs in the claude.ai page (it needs
+// the user's session + the patched fetch), so we inject a one-shot call to
+// `window.__memexBackfill` (defined by inject.js) into the active tab's MAIN
+// world. It is fire-and-forget: progress flows back through background into the
+// stats this popup polls, so closing the popup does not stop the run.
+async function startBackfill() {
+  const status = $("backfill-status");
+  status.hidden = false;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.url || !tab.url.startsWith("https://claude.ai/")) {
+    status.textContent = "Open a claude.ai tab, then click Backfill.";
+    return;
+  }
+  status.textContent = "Starting backfill...";
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: () => {
+        if (typeof window.__memexBackfill === "function") {
+          window.__memexBackfill();
+        } else {
+          throw new Error("Memex is not loaded on this page; reload claude.ai.");
+        }
+      },
+    });
+    status.textContent = "Backfill running... (you can close this popup)";
+  } catch (e) {
+    status.textContent = `Could not start: ${e && e.message ? e.message : e}`;
+  }
+}
+
+$("backfill").addEventListener("click", startBackfill);
+
+// Initial refresh + ping when the popup opens, then poll so backfill progress
+// updates live while the popup stays open.
 chrome.runtime.sendMessage({ type: "ping-server" }).finally(refresh);
+setInterval(refresh, 1500);

@@ -316,3 +316,50 @@ class TestSubprocessPath:
         monkeypatch.setattr(http_ingest, "_ingest_in_subprocess", boom)
         r = http_client.post("/ingest/conversation", json=VALID_PAYLOAD, headers=AUTH)
         assert r.status_code == 503
+
+
+class TestBackfillPlan:
+    """`POST /ingest/plan`: the incremental-backfill filter (returns to-fetch)."""
+
+    def test_requires_origin(self, http_client: TestClient) -> None:
+        r = http_client.post("/ingest/plan", json={"conversations": []})
+        assert r.status_code == 403
+
+    def test_requires_token(self, http_client: TestClient) -> None:
+        r = http_client.post(
+            "/ingest/plan", json={"conversations": []}, headers={"Origin": CHROME_ORIGIN}
+        )
+        assert r.status_code == 401
+
+    def test_bad_body_returns_400(self, http_client: TestClient) -> None:
+        r = http_client.post("/ingest/plan", json={"nope": 1}, headers=AUTH)
+        assert r.status_code == 400
+
+    def test_unknown_conversation_is_to_fetch(self, http_client: TestClient) -> None:
+        r = http_client.post(
+            "/ingest/plan",
+            json={"conversations": [{"uuid": "never-seen", "updated_at": "2026-05-19T10:00:00Z"}]},
+            headers=AUTH,
+        )
+        assert r.status_code == 200
+        assert r.json()["toFetch"] == ["never-seen"]
+
+    def test_indexed_unchanged_is_skipped_changed_is_fetched(
+        self, http_client: TestClient
+    ) -> None:
+        http_client.post("/ingest/conversation", json=VALID_PAYLOAD, headers=AUTH)
+        uuid = VALID_PAYLOAD["uuid"]
+        # Same instant (different fractional-second precision) -> skipped. The
+        # ingest normalizes `.000Z` to `.000000Z`, so this also proves the
+        # compare is by instant, not string.
+        same = {"uuid": uuid, "updated_at": VALID_PAYLOAD["updated_at"]}
+        # A newer updated_at -> must be re-fetched.
+        newer = {"uuid": uuid, "updated_at": "2030-01-01T00:00:00.000000Z"}
+        r = http_client.post(
+            "/ingest/plan", json={"conversations": [same]}, headers=AUTH
+        )
+        assert r.json()["toFetch"] == []
+        r = http_client.post(
+            "/ingest/plan", json={"conversations": [newer]}, headers=AUTH
+        )
+        assert r.json()["toFetch"] == [uuid]

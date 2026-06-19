@@ -44,6 +44,7 @@ import os
 import secrets
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -307,6 +308,78 @@ async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "uuid": payload.get("uuid"), **counts})
 
 
+def _instant(value: object) -> float:
+    """Parse a claude.ai ISO timestamp to epoch seconds (-inf if unparseable).
+
+    The ingest normalizes fractional seconds (`.000Z` -> `.000000Z`), so a raw
+    string compare would be wrong; compare by instant. An unparseable value
+    sorts oldest, so the conversation is re-fetched (fail safe toward keeping the
+    index complete rather than skipping a possibly-changed chat).
+    """
+    if not isinstance(value, str):
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return float("-inf")
+
+
+async def backfill_plan_endpoint(request: Request) -> JSONResponse:
+    """Return the subset of a conversation manifest that is new or changed.
+
+    POST body `{"conversations": [{"uuid", "updated_at"}, ...]}` (the claude.ai
+    list). Compares each item's `updated_at` against what is indexed and returns
+    `{"toFetch": [uuid, ...]}` for the new or changed ones, so the extension's
+    backfill skips conversations already stored unchanged. The indexed set is
+    computed and compared here and never leaves the server.
+
+    Same auth as `/ingest` (Origin + token): it reveals which conversations are
+    indexed, so it must not be reachable by a visited web page or an unpaired
+    local process. `claude_code` sessions are excluded (backfill is claude.ai
+    only). A POST is used (not GET) so the request reliably carries the
+    extension Origin, matching the proven `/ingest/conversation` path.
+    """
+    if not _origin_allowed(request):
+        return JSONResponse({"error": "Origin not allowed"}, status_code=403)
+    if not _token_valid(request):
+        return JSONResponse(
+            {"error": "Missing or invalid access token."}, status_code=401
+        )
+
+    raw = await _read_body_capped(request, settings.ingest_max_body_bytes)
+    if raw is None:
+        return JSONResponse({"error": "Payload too large."}, status_code=413)
+    try:
+        body: Any = json.loads(raw)
+    except ValueError:
+        return JSONResponse({"error": "Body is not valid JSON"}, status_code=400)
+    conversations = body.get("conversations") if isinstance(body, dict) else None
+    if not isinstance(conversations, list):
+        return JSONResponse(
+            {"error": "Expected {'conversations': [{uuid, updated_at}, ...]}"},
+            status_code=400,
+        )
+
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT uuid, updated_at FROM conversations WHERE source != ?",
+        (Source.CLAUDE_CODE.value,),
+    ).fetchall()
+    known = {row["uuid"]: row["updated_at"] for row in rows}
+
+    to_fetch: list[str] = []
+    for item in conversations:
+        if not isinstance(item, dict):
+            continue
+        uuid = item.get("uuid")
+        if not uuid:
+            continue
+        stored = known.get(uuid)
+        if stored is None or _instant(stored) < _instant(item.get("updated_at")):
+            to_fetch.append(uuid)
+    return JSONResponse({"toFetch": to_fetch})
+
+
 def _allowed_hosts() -> list[str]:
     hosts = [h.strip() for h in settings.ingest_allowed_hosts.split(",") if h.strip()]
     return hosts or ["127.0.0.1", "localhost"]
@@ -326,6 +399,7 @@ def build_app() -> Starlette:
                 ingest_conversation_endpoint,
                 methods=["POST"],
             ),
+            Route("/ingest/plan", backfill_plan_endpoint, methods=["POST"]),
         ],
     )
 
