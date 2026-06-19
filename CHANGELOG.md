@@ -4,6 +4,16 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [Unreleased]
+
+### Added
+- **`memex setup`: one-command onboarding.** Wires Memex into Claude Code end to end in a single idempotent command: registers the MCP server (`claude mcp add`), installs the always-on live-capture service, indexes local Claude Code sessions, and prints the extension pairing token. Each step degrades to a warning instead of aborting the rest. Flags: `--no-mcp` / `--no-autostart` / `--no-ingest` / `--remote` / `-y`.
+- **Cross-platform autostart on macOS.** `memex install-service` now has a real launchd backend (it was a print-only stub), so install / uninstall / status work on macOS (launchd), Linux (systemd user unit), and Windows (Scheduled Task) alike. Default agents are the live-capture server plus the 15-minute Claude Code ingest backstop; the claude.ai connector is opt-in via `--remote` (it crash-loops without `MEMEX_REMOTE_*` config, so it is no longer installed by default).
+- **One-click claude.ai history backfill (Chrome extension `0.2.4`).** A "Backfill claude.ai history" button in the popup imports your entire chat history into Memex with no manual export. It enumerates your conversations, asks the server which are new or changed (incremental), and fetches only those through the existing capture pipe, with live progress in the popup. Re-running is cheap (already-indexed, unchanged chats are skipped) and an interrupted run resumes on the next click. Adds the `scripting` permission to trigger the pull in the page.
+
+### Server
+- **`POST /ingest/plan`**: takes a conversation manifest (`{uuid, updated_at}`) and returns only the new or changed uuids, comparing by instant (the ingest normalizes fractional seconds, so a string compare would be wrong). Same Origin + token auth as `/ingest/conversation`; the indexed set is compared server-side and never leaves the machine. A POST (not GET) so the cross-origin request reliably carries the extension Origin.
+
 ## [0.2.2] - 2026-06-12
 
 ### Performance

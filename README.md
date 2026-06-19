@@ -402,13 +402,15 @@ So that new Claude.ai chats land in Memex without asking for a manual export:
 
 3. **Pair the extension with the access token.** Run `uv run memex token`, copy the value, paste it into the extension popup's token field, and click **Save token**. This is a one-time step per machine (the token lives user-only next to your DB). Without it, ingest requests are rejected with `401`.
 
-4. **Use claude.ai normally.** Every chat you open or create is ingested automatically. Verify with `memex stats` or by calling `search_chats` from Claude Code.
+4. **Import your full history (one click).** With a claude.ai tab open, click **Backfill claude.ai history** in the popup. It pages through your entire chat list and pulls every conversation into Memex, skipping the ones already indexed and unchanged (so re-running is cheap and a closed tab just resumes on the next click). Progress shows in the popup. This is what makes a fresh install searchable without a manual export.
+
+5. **Then just use claude.ai.** Every new chat you open or create is ingested automatically. Verify with `memex stats` or by calling `search_chats` from Claude Code.
 
 Details in [chrome-extension/README.md](chrome-extension/README.md).
 
-#### Autostart (Windows + Linux)
+#### Autostart (macOS + Windows + Linux)
 
-So you do not have to run `memex serve` by hand every time you log in:
+So you do not have to run `memex serve` by hand every time you log in (this is also what `memex setup` does for you):
 
 ```bash
 memex install-service          # default action: install
@@ -418,9 +420,9 @@ memex install-service uninstall
 
 The CLI dispatches to the right installer for your OS:
 
+- **macOS**: writes launchd agents for `serve` + the 15-minute Claude Code ingest backstop, and `launchctl load`s them. Logs at `data/serve.log`. Add `--remote` to also run the claude.ai connector (needs the `MEMEX_REMOTE_*` config). See [Running always-on](#running-always-on).
 - **Windows**: registers a Scheduled Task (`MemexServe`) that runs `uv run memex serve` at logon. No admin required, no console window, survives VS Code close. Logs at `%LOCALAPPDATA%\Memex\serve.log`. Auto-restarts up to 3 times if the wrapper dies.
 - **Linux**: writes a systemd user unit at `~/.config/systemd/user/memex-serve.service`, enables it, and starts it now. Logs at `~/.local/state/memex/serve.log`. To keep it running across logout: `loginctl enable-linger $USER`. Status: `systemctl --user status memex-serve`.
-- **macOS**: the command prints manual start instructions; the supported path is the launchd agents from [Running always-on (macOS)](#running-always-on-macos), which cover `serve`, `serve-remote`, and the scheduled ingest in one go.
 
 ### Making Claude use Memex proactively
 
