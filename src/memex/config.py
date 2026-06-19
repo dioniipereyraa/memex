@@ -7,6 +7,8 @@ Default values are safe for local development.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,6 +16,39 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _platform_data_dir() -> Path:
+    """Per-user data directory for the DB and exports on a wheel/PyPI install.
+
+    Follows each OS convention: macOS `~/Library/Application Support`, Windows
+    `%LOCALAPPDATA%`, and the XDG `~/.local/share` elsewhere. Used only when
+    Memex is not running from a cloned repo (see `_default_data_dir`).
+    """
+    home = Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "memex"
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        return (Path(base) if base else home / "AppData" / "Local") / "memex"
+    base = os.environ.get("XDG_DATA_HOME")
+    return (Path(base) if base else home / ".local" / "share") / "memex"
+
+
+def _default_data_dir() -> Path:
+    """Directory for the DB and exports when neither is set in the environment.
+
+    From a cloned or editable repo (a `pyproject.toml` + `scripts/` two levels
+    up from this file), use `<repo>/data` so existing installs are unchanged,
+    resolved absolutely rather than relative to the current working directory.
+    From a wheel/PyPI install (no repo alongside the package), use the
+    platform's per-user data directory, so the DB has a stable home no matter
+    where the `memex` command is run from.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / "pyproject.toml").is_file() and (repo_root / "scripts").is_dir():
+        return repo_root / "data"
+    return _platform_data_dir()
 
 
 class Settings(BaseSettings):
@@ -64,8 +99,12 @@ class Settings(BaseSettings):
     # Ollama-specific config (only used if embed_backend == "ollama").
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
 
-    db_path: Path = Field(default=Path("./data/memex.db"), alias="MEMEX_DB_PATH")
-    exports_dir: Path = Field(default=Path("./data/exports"), alias="MEMEX_EXPORTS_DIR")
+    db_path: Path = Field(
+        default_factory=lambda: _default_data_dir() / "memex.db", alias="MEMEX_DB_PATH"
+    )
+    exports_dir: Path = Field(
+        default_factory=lambda: _default_data_dir() / "exports", alias="MEMEX_EXPORTS_DIR"
+    )
 
     chunk_size: int = Field(default=500, alias="MEMEX_CHUNK_SIZE", ge=64, le=4096)
     chunk_overlap: int = Field(default=50, alias="MEMEX_CHUNK_OVERLAP", ge=0, le=512)

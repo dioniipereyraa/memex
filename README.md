@@ -126,6 +126,13 @@ uv run memex stats
 (If you installed with a script, the commands above work as written. If you
 installed the published PyPI package instead, drop the `uv run` prefix.)
 
+> **Where your data lives.** From a cloned repo, the database and exports stay
+> in `<repo>/data`. From a `uvx`/`pip` install, they go to your OS data
+> directory (`~/Library/Application Support/memex` on macOS,
+> `%LOCALAPPDATA%\memex` on Windows, `~/.local/share/memex` elsewhere). Override
+> with `MEMEX_DB_PATH` / `MEMEX_EXPORTS_DIR`. `memex doctor` prints the resolved
+> path.
+
 ## Embeddings backend
 
 Default is fastembed (zero-config). To route through a local Ollama instead
