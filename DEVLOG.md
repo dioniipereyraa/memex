@@ -16,7 +16,9 @@ Frictionless-onboarding work. Mapped the real new-user critical path (~9 steps, 
 - **M1 (backfill endpoint discovery) done.** Verified live in claude.ai devtools: org-with-`chat` from `/api/organizations`, conversation list `GET .../chat_conversations?limit=&offset=` (flat array, offset pagination, `limit=1000` returns all), items carry `uuid` + `updated_at`, full conv via `?tree=True&rendering_mode=messages&render_all_tools=true`. The existing `inject.js` hook captures the backfill fetch (classifies by path), so M2 needs no pipe changes. Recorded in ROADMAP + `handoff.md`.
 - **Tests:** rewrote the two macOS `install-service` tests (behavior changed from print to launchctl) and added hermetic coverage for launchd install/status/no-repo, `services.render_agent`, and `setup` (all-skipped prints token, MCP calls `claude mcp add`, missing `claude` CLI warns). 503 passed (+1 skipped), `ruff` clean.
 
-Decision: split "simpler install" into onboarding (this) + auto-backfill (next). Next step: **Phase 7 M2** (the `backfill()` in `inject.js`), now unblocked by M1.
+Decision: split "simpler install" into onboarding (this) + auto-backfill (next).
+
+**Then M2 (active backfill), same day, verified live.** Added `window.__memexBackfill()` to `chrome-extension/src/inject.js`: it reads the chat org from `/api/organizations` (the one with the `chat` capability), pages the conversation list, and fetches each full conversation through the already-patched `fetch`, so the existing capture pipe ingests it with ZERO changes to content.js/background/server. Concurrency 3 + 200 ms throttle + re-entrancy guard; org/list calls use `originalFetch` (not conversations, must not be captured), conv-full uses `patchedFetch` (captured). Reuses the claude.ai (no-redact) path by construction. Tested against the real DB: 94/94 fetched, 0 failed, claude.ai `conversations` 93 -> 98 (+5 brand-new chats pulled in, the rest deduped by uuid/content_hash). No automated test (extension JS is outside the pytest harness); `node --check` only. Next: M3 (incremental, skip-unchanged via a `GET /ingest/known`) and M4 (popup button + progress + resumability).
 
 ---
 

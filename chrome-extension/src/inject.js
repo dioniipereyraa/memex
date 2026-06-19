@@ -73,7 +73,7 @@
     }
   };
 
-  window.fetch = async function patchedFetch(input, init) {
+  const patchedFetch = async function (input, init) {
     const url = safeUrl(input);
     const method = (init && init.method) || (input instanceof Request ? input.method : "GET");
 
@@ -110,5 +110,102 @@
     return response;
   };
 
-  console.log(TAG, "fetch hooked (v0.2.1)");
+  window.fetch = patchedFetch;
+
+  // ---- Active backfill (Phase 7 M2) ----
+  // Pull the user's full claude.ai history into Memex on demand. Runs here in
+  // the page (the user's cookies + the patched fetch), enumerates the chat
+  // org's conversations, and fetches each FULL conversation through
+  // `patchedFetch`, so the existing capture pipe (postMessage -> content.js ->
+  // background -> POST /ingest/conversation) ingests them with no extra wiring.
+  // The org/list calls go through `originalFetch` (they are not conversations,
+  // so they must not be captured). claude.ai chats are intentionally NOT
+  // redacted; this reuses the live-capture path, so that posture is preserved.
+  // The server dedups by uuid/content_hash, so re-running is idempotent.
+  let backfillRunning = false;
+
+  const fetchJson = async (url) => {
+    const response = await originalFetch(url, { headers: { accept: "application/json" } });
+    if (!response.ok) throw new Error(`${response.status} for ${url}`);
+    return response.json();
+  };
+
+  const chatOrgId = async () => {
+    const orgs = await fetchJson("/api/organizations");
+    const list = Array.isArray(orgs) ? orgs : [];
+    // The chat org is the one whose capabilities include "chat". A separate
+    // "api" org (capabilities like ["api", "api_individual"]) also exists and
+    // is the wrong one to enumerate.
+    const org = list.find((o) => (o.capabilities || []).includes("chat")) || list[0];
+    if (!org || !org.uuid) throw new Error("no claude.ai chat organization found");
+    return org.uuid;
+  };
+
+  const listConversations = async (orgId) => {
+    // Flat array, offset pagination (verified: limit=1000 returns all, no
+    // page overlap). Page in chunks so very large accounts stay bounded.
+    const PAGE = 100;
+    const all = [];
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await fetchJson(
+        `/api/organizations/${orgId}/chat_conversations?limit=${PAGE}&offset=${offset}`,
+      );
+      const rows = Array.isArray(page) ? page : [];
+      all.push(...rows);
+      if (rows.length < PAGE) break;
+    }
+    return all;
+  };
+
+  const memexBackfill = async ({ concurrency = 3, delayMs = 200 } = {}) => {
+    if (backfillRunning) {
+      console.log(TAG, "backfill already running, ignoring");
+      return { skipped: true };
+    }
+    backfillRunning = true;
+    try {
+      const orgId = await chatOrgId();
+      const convs = await listConversations(orgId);
+      const total = convs.length;
+      console.log(TAG, `backfill: ${total} conversations to pull`);
+      let done = 0;
+      let failed = 0;
+      const queue = convs.slice();
+      const worker = async () => {
+        while (queue.length) {
+          const conv = queue.shift();
+          const url =
+            `/api/organizations/${orgId}/chat_conversations/${conv.uuid}` +
+            "?tree=True&rendering_mode=messages&render_all_tools=true";
+          try {
+            // The patched fetch captures this conv-full response and posts it
+            // through the existing pipe; we do not read the body ourselves.
+            await patchedFetch(url, { headers: { accept: "application/json" } });
+          } catch (err) {
+            failed += 1;
+            console.warn(TAG, "backfill fetch failed for", conv.uuid, String(err));
+          }
+          done += 1;
+          if (done % 10 === 0 || done === total) {
+            console.log(TAG, `backfill progress ${done}/${total}`);
+          }
+          // Gentle throttle so claude.ai and the local ingest are not hammered.
+          if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      };
+      const workers = Math.max(1, Math.min(concurrency, total || 1));
+      await Promise.all(Array.from({ length: workers }, worker));
+      console.log(TAG, `backfill complete: ${done}/${total} fetched, ${failed} failed`);
+      return { total, done, failed };
+    } finally {
+      backfillRunning = false;
+    }
+  };
+
+  // Exposed for a manual trigger from the claude.ai console (M2):
+  //   await window.__memexBackfill()
+  // The popup button, progress UI, and resumability come in M4.
+  window.__memexBackfill = memexBackfill;
+
+  console.log(TAG, "fetch hooked + backfill ready (M2)");
 })();
