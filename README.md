@@ -431,6 +431,8 @@ The CLI dispatches to the right installer for your OS:
 - **Windows**: registers a Scheduled Task (`MemexServe`) that runs `uv run memex serve` at logon. No admin required, no console window, survives VS Code close. Logs at `%LOCALAPPDATA%\Memex\serve.log`. Auto-restarts up to 3 times if the wrapper dies.
 - **Linux**: writes a systemd user unit at `~/.config/systemd/user/memex-serve.service`, enables it, and starts it now. Logs at `~/.local/state/memex/serve.log`. To keep it running across logout: `loginctl enable-linger $USER`. Status: `systemctl --user status memex-serve`.
 
+From a `pip`/`pipx` install (no cloned repo), `memex install-service` still works on macOS and Linux: it generates a self-contained agent that runs the installed `memex serve` directly, with the database in your per-user data directory. Use `pipx` (not transient `uvx`) so the service has a stable interpreter to launch at boot. Windows autostart currently still needs the cloned repo.
+
 ### Making Claude use Memex proactively
 
 By default, LLMs are conservative with tools: they prefer to ask before invoking anything. If you say *"remember we talked about X?"*, Claude tends to answer *"I don't recall"* instead of searching.

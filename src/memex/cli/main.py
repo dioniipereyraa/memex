@@ -859,86 +859,36 @@ def install_service(
 def _run_install_service(action: str, remote: bool = False) -> int:
     """Dispatch an install-service action to the host OS; return an exit code.
 
-    Shared by the `install-service` command and `setup`. Windows/Linux shell
-    out to the scripts in `scripts/` (which manage the live-capture unit only,
-    so `remote` is a no-op there with a note). macOS uses the launchd helpers
-    in `cli.services`.
+    Shared by the `install-service` command and `setup`. From a cloned repo it
+    uses the proven repo paths (Windows/Linux shell scripts, macOS plist
+    templates). From a wheel/PyPI install (no `scripts/`), `cli.services`
+    generates self-contained launchd (macOS) / systemd (Linux) definitions that
+    run the installed CLI directly; Windows wheel autostart is not generated yet.
+    `remote` (the claude.ai connector agent) is macOS-only.
     """
+    import contextlib
     import platform
     import shutil
     import subprocess
     import sys as _sys
 
-    # Repo root is three levels up from this file (src/memex/cli/main.py).
-    repo_root = Path(__file__).resolve().parents[3]
-    scripts_dir = repo_root / "scripts"
+    from memex.cli import services
 
+    repo_root = services.source_repo_root()
+    scripts_dir = (repo_root / "scripts") if repo_root else None
     system = platform.system()
 
-    if system == "Windows":
-        ps1 = scripts_dir / "install-autostart.ps1"
-        if not ps1.is_file():
-            console.print(f"[red]Missing installer script:[/red] {ps1}")
-            return 1
-        if remote:
-            console.print(
-                "[yellow]Note:[/yellow] --remote is macOS-only; the Windows task "
-                "manages the live-capture server only."
-            )
-        flag = {"install": "-Install", "uninstall": "-Uninstall", "status": "-Status"}[action]
-        powershell = shutil.which("powershell") or "powershell.exe"
-        result = subprocess.run(
-            [
-                powershell,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(ps1),
-                flag,
-            ],
-            check=False,
-        )
-        return result.returncode
-
-    if system == "Linux":
-        sh = scripts_dir / "install-autostart.sh"
-        if not sh.is_file():
-            console.print(f"[red]Missing installer script:[/red] {sh}")
-            return 1
-        if remote:
-            console.print(
-                "[yellow]Note:[/yellow] --remote is macOS-only; the systemd unit "
-                "manages the live-capture server only."
-            )
-        # Make sure the script is executable (matters on fresh clones).
-        # Best effort: if chmod fails (read-only FS, etc.), bash will still
-        # run the script directly via the explicit `bash` invocation below.
-        import contextlib
-
-        with contextlib.suppress(OSError):
-            sh.chmod(sh.stat().st_mode | 0o111)
-        bash = shutil.which("bash") or "/bin/bash"
-        result = subprocess.run([bash, str(sh), action], check=False)
-        return result.returncode
-
     if system == "Darwin":
-        from memex.cli import services
-
-        root = services.source_repo_root()
-        if root is None:
-            console.print(
-                "[yellow]Autostart needs a cloned repo for now.[/yellow] Clone "
-                "https://github.com/dioniipereyraa/memex and run "
-                "`memex install-service` from there. (PyPI-first autostart is planned.)"
-            )
-            return 1
         svc_list = list(services.DEFAULT_SERVICES)
         if remote:
             svc_list.append(services.REMOTE)
         try:
             if action == "install":
-                lines = services.macos_install(root, svc_list)
+                lines = (
+                    services.macos_install(repo_root, svc_list)
+                    if repo_root
+                    else services.macos_install_wheel(svc_list)
+                )
             elif action == "uninstall":
                 lines = services.macos_uninstall(svc_list)
             else:
@@ -951,11 +901,65 @@ def _run_install_service(action: str, remote: bool = False) -> int:
         for line in lines:
             console.print(f"  {line}")
         if action == "install":
+            logs = (repo_root / "data") if repo_root else services.data_dir()
             console.print(
-                "\nThe agents start with your Mac and restart if they crash. Logs in "
-                "[cyan]data/serve.log[/cyan] and [cyan]data/scheduled-ingest.log[/cyan]."
+                "\nThe agents start with your Mac and restart if they crash. "
+                f"Logs in [cyan]{logs}[/cyan]."
             )
         return 0
+
+    if system == "Linux":
+        if remote:
+            console.print(
+                "[yellow]Note:[/yellow] --remote is macOS-only; the systemd unit "
+                "manages the live-capture server only."
+            )
+        if repo_root is None:
+            try:
+                lines = services.linux_install_wheel(action)
+            except OSError as e:
+                console.print(f"[red]Service {action} failed:[/red] {e}")
+                return 1
+            console.print(f"[bold]systemd --user {action}[/bold]:")
+            for line in lines:
+                console.print(f"  {line}")
+            return 0
+        sh = scripts_dir / "install-autostart.sh"
+        if not sh.is_file():
+            console.print(f"[red]Missing installer script:[/red] {sh}")
+            return 1
+        # Make sure the script is executable (matters on fresh clones). Best
+        # effort: if chmod fails, bash still runs it via the explicit invocation.
+        with contextlib.suppress(OSError):
+            sh.chmod(sh.stat().st_mode | 0o111)
+        bash = shutil.which("bash") or "/bin/bash"
+        result = subprocess.run([bash, str(sh), action], check=False)
+        return result.returncode
+
+    if system == "Windows":
+        if remote:
+            console.print(
+                "[yellow]Note:[/yellow] --remote is macOS-only; the Windows task "
+                "manages the live-capture server only."
+            )
+        if repo_root is None:
+            console.print(
+                "[yellow]Autostart on Windows currently needs the cloned repo.[/yellow] "
+                "Run `memex serve` manually, or clone "
+                "https://github.com/dioniipereyraa/memex and run `memex install-service` there."
+            )
+            return 1
+        ps1 = scripts_dir / "install-autostart.ps1"
+        if not ps1.is_file():
+            console.print(f"[red]Missing installer script:[/red] {ps1}")
+            return 1
+        flag = {"install": "-Install", "uninstall": "-Uninstall", "status": "-Status"}[action]
+        powershell = shutil.which("powershell") or "powershell.exe"
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1), flag],
+            check=False,
+        )
+        return result.returncode
 
     console.print(
         f"[red]Unsupported platform:[/red] {system!r} ({_sys.platform}). "

@@ -14,9 +14,14 @@ gracefully.
 
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
+import sys
 from collections.abc import Iterable
 from pathlib import Path
+
+from memex.config import settings
 
 # launchd labels for the agents Memex can run. `serve` (live capture) and
 # `ingest-claude-code` (the 15-minute backstop to the SessionEnd hook) are the
@@ -137,4 +142,199 @@ def macos_status(services: Iterable[str]) -> list[str]:
         )
         state = "loaded" if result.returncode == 0 else "installed, not loaded"
         lines.append(f"{label}: {state}")
+    return lines
+
+
+# ---------- wheel/PyPI install (no repo) ----------
+#
+# A wheel install ships only `src/memex` (no `scripts/`, no plist templates),
+# so the repo-anchored agents above do not apply. These generate self-contained
+# service definitions that run the installed CLI via
+# `sys.executable -m memex.cli.main ...`, which depends on neither the repo nor a
+# console script on PATH at boot. The DB/exports live in the per-user data dir
+# (config._default_data_dir on a wheel install); the resolved `MEMEX_DB_PATH` is
+# pinned into the service so it matches what the user's CLI sees even if they set
+# it in their shell. Persistent autostart wants a `pip`/`pipx` install (a stable
+# `sys.executable`); transient `uvx` runs are not a good autostart target.
+
+# CLI subcommand each agent runs.
+_SERVICE_CLI_ARGS: dict[str, tuple[str, ...]] = {
+    SERVE: ("serve",),
+    INGEST: ("ingest-claude-code",),
+    REMOTE: ("serve-remote",),
+}
+
+LINUX_UNIT_NAME = "memex-serve.service"
+
+
+def module_command(*cli_args: str) -> list[str]:
+    """Invoke the installed Memex CLI without depending on PATH.
+
+    Uses the running interpreter and the package module (`memex.cli.main` has a
+    `__main__` guard), so the absolute `sys.executable` makes the service work at
+    boot for a pip/pipx install regardless of shell PATH.
+    """
+    return [sys.executable, "-m", "memex.cli.main", *cli_args]
+
+
+def _xml_escape(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def data_dir() -> Path:
+    """Directory holding the DB; service logs go alongside it."""
+    return settings.db_path.parent
+
+
+def render_wheel_plist(service: str, log_dir: Path | None = None) -> str:
+    """Generate a launchd plist for a wheel install (no `__REPO__` template)."""
+    if service not in AGENT_LABELS:
+        raise ValueError(f"unknown service {service!r}")
+    label = AGENT_LABELS[service]
+    logs = log_dir if log_dir is not None else data_dir()
+    log = logs / f"{label}.log"
+    args = module_command(*_SERVICE_CLI_ARGS[service])
+    program = "\n".join(f"        <string>{_xml_escape(a)}</string>" for a in args)
+    # The ingest backstop runs on an interval; serve / serve-remote stay alive.
+    cadence = (
+        "    <key>StartInterval</key>\n    <integer>900</integer>"
+        if service == INGEST
+        else "    <key>KeepAlive</key>\n    <true/>"
+    )
+    db_path = _xml_escape(str(settings.db_path))
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+{program}
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MEMEX_DB_PATH</key>
+        <string>{db_path}</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>{_xml_escape(str(logs))}</string>
+    <key>RunAtLoad</key>
+    <true/>
+{cadence}
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>StandardOutPath</key>
+    <string>{_xml_escape(str(log))}</string>
+    <key>StandardErrorPath</key>
+    <string>{_xml_escape(str(log))}</string>
+</dict>
+</plist>
+"""
+
+
+def macos_install_wheel(services: Iterable[str]) -> list[str]:
+    """Write and (re)load self-contained launchd agents for a wheel install."""
+    LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    logs = data_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    for service in services:
+        label = AGENT_LABELS[service]
+        dest = _plist_dest(label)
+        subprocess.run(
+            ["launchctl", "unload", str(dest)], check=False, capture_output=True
+        )
+        dest.write_text(render_wheel_plist(service, logs), encoding="utf-8")
+        result = subprocess.run(
+            ["launchctl", "load", str(dest)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            lines.append(f"loaded {label}")
+        else:
+            detail = (result.stderr or "").strip() or f"exit {result.returncode}"
+            lines.append(f"FAILED {label}: {detail}")
+    return lines
+
+
+def _systemd_user_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base) if base else Path.home() / ".config") / "systemd" / "user"
+
+
+def render_systemd_unit(log_dir: Path | None = None) -> str:
+    """Generate a systemd user unit running the installed `memex serve`."""
+    logs = log_dir if log_dir is not None else data_dir()
+    log = logs / "serve.log"
+    exec_start = " ".join(shlex.quote(a) for a in module_command("serve"))
+    db_path = settings.db_path
+    return f"""[Unit]
+Description=Memex live-capture HTTP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="MEMEX_DB_PATH={db_path}"
+ExecStart={exec_start}
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:{log}
+StandardError=append:{log}
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def linux_install_wheel(action: str) -> list[str]:
+    """install/uninstall/status the systemd user unit for a wheel install."""
+    unit_dir = _systemd_user_dir()
+    unit_path = unit_dir / LINUX_UNIT_NAME
+
+    if action == "uninstall":
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", LINUX_UNIT_NAME],
+            check=False,
+            capture_output=True,
+        )
+        if unit_path.exists():
+            unit_path.unlink()
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+            )
+            return [f"removed {LINUX_UNIT_NAME}"]
+        return [f"{LINUX_UNIT_NAME} not installed"]
+
+    if action == "status":
+        if not unit_path.exists():
+            return [f"{LINUX_UNIT_NAME}: not installed"]
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", LINUX_UNIT_NAME],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return [f"{LINUX_UNIT_NAME}: {result.stdout.strip() or 'unknown'}"]
+
+    # install
+    logs = data_dir()
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    logs.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(render_systemd_unit(logs), encoding="utf-8")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)
+    result = subprocess.run(
+        ["systemctl", "--user", "enable", "--now", LINUX_UNIT_NAME],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    lines = [f"installed {LINUX_UNIT_NAME}", f"log: {logs / 'serve.log'}"]
+    if result.returncode != 0:
+        lines.append(f"systemctl enable failed: {(result.stderr or '').strip()}")
     return lines

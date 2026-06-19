@@ -218,17 +218,40 @@ class TestInstallServiceCommand:
         # launchctl load was invoked once per default agent (serve + ingest).
         assert sum(1 for c in calls if "load" in c) == 2
 
-    def test_macos_no_repo_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_macos_wheel_install(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No repo (wheel install) -> self-contained launchd agents are generated."""
         import platform
+        import subprocess
+        import sys as _sys
 
         from memex.cli import services
+        from memex.config import settings
+
+        agents = tmp_path / "LaunchAgents"
+        monkeypatch.setattr(services, "source_repo_root", lambda: None)
+        monkeypatch.setattr(services, "LAUNCH_AGENTS_DIR", agents)
+        monkeypatch.setattr(settings, "db_path", tmp_path / "data" / "memex.db")
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(services, "source_repo_root", lambda: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
         result = runner.invoke(app, ["install-service", "install"])
-        # No cloned repo -> autostart cannot be wired (Phase B); clean WARN exit.
-        assert result.exit_code == 1
-        assert "cloned repo" in result.output.lower()
+        assert result.exit_code == 0
+        assert "com.memex.serve" in result.output
+        plist = (agents / "com.memex.serve.plist").read_text()
+        assert "__REPO__" not in plist
+        assert _sys.executable in plist  # runs the installed interpreter
+        assert "memex.cli.main" in plist
+        assert str(tmp_path / "data" / "memex.db") in plist  # pinned MEMEX_DB_PATH
+        assert sum(1 for c in calls if "load" in c) == 2
 
     def test_macos_status_reports_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -293,6 +316,50 @@ class TestServices:
         (tmp_path / "scripts").mkdir()
         with pytest.raises(FileNotFoundError):
             services.render_agent(tmp_path, "serve")
+
+    def test_render_wheel_plist_serve(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys as _sys
+
+        from memex.cli import services
+        from memex.config import settings
+
+        monkeypatch.setattr(settings, "db_path", tmp_path / "memex.db")
+        xml = services.render_wheel_plist("serve", tmp_path)
+        assert "__REPO__" not in xml
+        assert _sys.executable in xml
+        assert "memex.cli.main" in xml
+        assert "<string>serve</string>" in xml
+        assert str(tmp_path / "memex.db") in xml  # MEMEX_DB_PATH pinned
+        assert "KeepAlive" in xml  # serve stays alive
+
+    def test_render_wheel_plist_ingest_is_interval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from memex.cli import services
+        from memex.config import settings
+
+        monkeypatch.setattr(settings, "db_path", tmp_path / "memex.db")
+        xml = services.render_wheel_plist("ingest-claude-code", tmp_path)
+        assert "StartInterval" in xml
+        assert "<string>ingest-claude-code</string>" in xml
+
+    def test_render_systemd_unit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys as _sys
+
+        from memex.cli import services
+        from memex.config import settings
+
+        db = tmp_path / "memex.db"
+        monkeypatch.setattr(settings, "db_path", db)
+        unit = services.render_systemd_unit(tmp_path)
+        assert "ExecStart=" in unit
+        assert _sys.executable in unit
+        assert "memex.cli.main" in unit
+        assert f'Environment="MEMEX_DB_PATH={db}"' in unit
 
 
 class _FakeEmbedder:
