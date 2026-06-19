@@ -828,29 +828,48 @@ def install_service(
             help="Action: install, uninstall, or status.",
         ),
     ] = "install",
+    remote: Annotated[
+        bool,
+        typer.Option(
+            "--remote",
+            help="(macOS) also manage the claude.ai remote connector agent. It "
+            "needs the MEMEX_REMOTE_* config in .env, or it will crash-loop.",
+        ),
+    ] = False,
 ) -> None:
     """Register Memex live-capture as an OS service so it starts on login.
 
-    Cross-platform dispatcher that calls the right installer for the host
-    OS. Today: Windows (Scheduled Task via PowerShell) and Linux (systemd
-    user unit). macOS is not implemented yet; the command prints manual
-    start instructions on that platform.
+    Cross-platform dispatcher that calls the right installer for the host OS:
+    Windows (Scheduled Task via PowerShell), Linux (systemd user unit), and
+    macOS (launchd agents). On macOS it manages the live-capture server plus
+    the 15-minute Claude Code ingest backstop; pass --remote to also manage
+    the claude.ai connector.
 
     Examples:
       memex install-service           # default: install
       memex install-service status    # show current state
       memex install-service uninstall # remove the service
     """
+    if action not in ("install", "uninstall", "status"):
+        console.print(f"[red]Invalid action:[/red] {action!r}. Use install, uninstall, or status.")
+        raise typer.Exit(code=2)
+    raise typer.Exit(code=_run_install_service(action, remote=remote))
+
+
+def _run_install_service(action: str, remote: bool = False) -> int:
+    """Dispatch an install-service action to the host OS; return an exit code.
+
+    Shared by the `install-service` command and `setup`. Windows/Linux shell
+    out to the scripts in `scripts/` (which manage the live-capture unit only,
+    so `remote` is a no-op there with a note). macOS uses the launchd helpers
+    in `cli.services`.
+    """
     import platform
     import shutil
     import subprocess
     import sys as _sys
 
-    if action not in ("install", "uninstall", "status"):
-        console.print(f"[red]Invalid action:[/red] {action!r}. Use install, uninstall, or status.")
-        raise typer.Exit(code=2)
-
-    # Repo root is two levels up from this file (src/memex/cli/main.py).
+    # Repo root is three levels up from this file (src/memex/cli/main.py).
     repo_root = Path(__file__).resolve().parents[3]
     scripts_dir = repo_root / "scripts"
 
@@ -860,7 +879,12 @@ def install_service(
         ps1 = scripts_dir / "install-autostart.ps1"
         if not ps1.is_file():
             console.print(f"[red]Missing installer script:[/red] {ps1}")
-            raise typer.Exit(code=1)
+            return 1
+        if remote:
+            console.print(
+                "[yellow]Note:[/yellow] --remote is macOS-only; the Windows task "
+                "manages the live-capture server only."
+            )
         flag = {"install": "-Install", "uninstall": "-Uninstall", "status": "-Status"}[action]
         powershell = shutil.which("powershell") or "powershell.exe"
         result = subprocess.run(
@@ -875,13 +899,18 @@ def install_service(
             ],
             check=False,
         )
-        raise typer.Exit(code=result.returncode)
+        return result.returncode
 
     if system == "Linux":
         sh = scripts_dir / "install-autostart.sh"
         if not sh.is_file():
             console.print(f"[red]Missing installer script:[/red] {sh}")
-            raise typer.Exit(code=1)
+            return 1
+        if remote:
+            console.print(
+                "[yellow]Note:[/yellow] --remote is macOS-only; the systemd unit "
+                "manages the live-capture server only."
+            )
         # Make sure the script is executable (matters on fresh clones).
         # Best effort: if chmod fails (read-only FS, etc.), bash will still
         # run the script directly via the explicit `bash` invocation below.
@@ -891,29 +920,251 @@ def install_service(
             sh.chmod(sh.stat().st_mode | 0o111)
         bash = shutil.which("bash") or "/bin/bash"
         result = subprocess.run([bash, str(sh), action], check=False)
-        raise typer.Exit(code=result.returncode)
+        return result.returncode
 
     if system == "Darwin":
-        console.print(
-            "On macOS, install the launchd agents (serve, serve-remote, ingest) "
-            "with the one-liner from the README section [bold]Running always-on "
-            "(macOS)[/bold]:"
-        )
-        console.print(
-            "  [bold]for svc in serve serve-remote ingest-claude-code; do\n"
-            '    sed "s|__REPO__|$(pwd)|g" "scripts/com.memex.$svc.plist.template" '
-            "> ~/Library/LaunchAgents/com.memex.$svc.plist\n"
-            "    launchctl load ~/Library/LaunchAgents/com.memex.$svc.plist\n"
-            "  done[/bold]"
-        )
-        console.print("\nThey start with your Mac and restart if they crash.")
-        raise typer.Exit(code=0)
+        from memex.cli import services
+
+        root = services.source_repo_root()
+        if root is None:
+            console.print(
+                "[yellow]Autostart needs a cloned repo for now.[/yellow] Clone "
+                "https://github.com/dioniipereyraa/memex and run "
+                "`memex install-service` from there. (PyPI-first autostart is planned.)"
+            )
+            return 1
+        svc_list = list(services.DEFAULT_SERVICES)
+        if remote:
+            svc_list.append(services.REMOTE)
+        try:
+            if action == "install":
+                lines = services.macos_install(root, svc_list)
+            elif action == "uninstall":
+                lines = services.macos_uninstall(svc_list)
+            else:
+                lines = services.macos_status(svc_list)
+        except (OSError, ValueError) as e:
+            console.print(f"[red]Service {action} failed:[/red] {e}")
+            return 1
+        labels = ", ".join(services.AGENT_LABELS[s] for s in svc_list)
+        console.print(f"[bold]launchd {action}[/bold] ({labels}):")
+        for line in lines:
+            console.print(f"  {line}")
+        if action == "install":
+            console.print(
+                "\nThe agents start with your Mac and restart if they crash. Logs in "
+                "[cyan]data/serve.log[/cyan] and [cyan]data/scheduled-ingest.log[/cyan]."
+            )
+        return 0
 
     console.print(
         f"[red]Unsupported platform:[/red] {system!r} ({_sys.platform}). "
-        "Memex install-service supports Windows and Linux."
+        "Memex install-service supports Windows, Linux, and macOS."
     )
-    raise typer.Exit(code=2)
+    return 2
+
+
+# ---------- one-command setup ----------
+
+# Chrome Web Store listing for the live-capture extension. Surfaced by `setup`
+# as the one manual step left (a browser extension cannot be installed from a
+# terminal).
+_EXTENSION_URL = (
+    "https://chromewebstore.google.com/detail/"
+    "memex-live-capture/bncngnabecfilefblppkolhdnaelibnb"
+)
+
+
+def _setup_mcp() -> tuple[str, str, str]:
+    """Register the stdio MCP server with Claude Code (user scope).
+
+    Idempotent: if a `memex` server is already registered, it is left as is.
+    If the `claude` CLI is not on PATH, prints the manual command and reports a
+    WARN (nothing else in setup depends on it). Returns a (step, status,
+    detail) row for the summary table.
+    """
+    import shutil
+    import subprocess
+
+    from memex.cli import services
+
+    root = services.source_repo_root()
+    if root is not None:
+        # Cloned repo: run through uv so the pinned .venv is used.
+        invocation = ["uv", "run", "--directory", str(root), "memex-mcp"]
+    else:
+        # Wheel install (PyPI/uvx): the console script is on PATH.
+        invocation = ["memex-mcp"]
+
+    claude = shutil.which("claude")
+    if claude is None:
+        console.print(
+            "[yellow]`claude` CLI not found.[/yellow] Register the MCP server manually:"
+        )
+        console.print(f"  claude mcp add --scope user memex -- {' '.join(invocation)}")
+        return ("MCP server", "WARN", "claude CLI not found; manual command printed")
+
+    listed = subprocess.run(
+        [claude, "mcp", "list"], check=False, capture_output=True, text=True
+    )
+    if listed.returncode == 0 and "memex" in listed.stdout:
+        return ("MCP server", "OK", "already registered")
+
+    added = subprocess.run(
+        [claude, "mcp", "add", "--scope", "user", "memex", "--", *invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if added.returncode == 0:
+        return ("MCP server", "OK", "registered (user scope)")
+    detail = (added.stderr or added.stdout or "claude mcp add failed").strip()
+    return ("MCP server", "WARN", detail[:80])
+
+
+def _setup_ingest() -> tuple[str, str, str]:
+    """Index local Claude Code sessions so search has content immediately.
+
+    Incremental and lazy (unchanged sessions skipped, the model loads only if
+    there is something new), so re-running setup is cheap. Never aborts setup:
+    any failure is reported as a WARN row.
+    """
+    root = Path.home() / ".claude" / "projects"
+    if not root.exists():
+        return ("Claude Code index", "WARN", f"{root} not found; nothing to index yet")
+    try:
+        conn = connect_and_init(None)
+        try:
+            embedder = LazyEmbedder(get_default_embedder)
+            with console.status(
+                "[yellow]Indexing local Claude Code sessions "
+                "(first run downloads the embedding model)...[/yellow]"
+            ):
+                summary = ingest_claude_code_sessions(conn, embedder, root)
+        finally:
+            conn.close()
+    except Exception as e:
+        # Setup must never crash on ingest; report it as a warning instead.
+        return ("Claude Code index", "WARN", f"{type(e).__name__}: {e}")
+    detail = (
+        f"{summary.conversations} new, "
+        f"{summary.skipped_unchanged_conversations} unchanged"
+    )
+    return ("Claude Code index", "OK", detail)
+
+
+@app.command("setup")
+def setup(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Accept defaults and skip the confirmation prompt."),
+    ] = False,
+    mcp: Annotated[
+        bool,
+        typer.Option("--mcp/--no-mcp", help="Register the MCP server with Claude Code."),
+    ] = True,
+    autostart: Annotated[
+        bool,
+        typer.Option(
+            "--autostart/--no-autostart",
+            help="Install the always-on live-capture service.",
+        ),
+    ] = True,
+    ingest: Annotated[
+        bool,
+        typer.Option(
+            "--ingest/--no-ingest", help="Index your local Claude Code sessions now."
+        ),
+    ] = True,
+    remote: Annotated[
+        bool,
+        typer.Option(
+            "--remote",
+            help="Also install the claude.ai remote connector agent (needs .env config).",
+        ),
+    ] = False,
+) -> None:
+    """Wire Memex into Claude Code end to end, in one command.
+
+    Registers the MCP server, installs the always-on live-capture service,
+    indexes your local Claude Code sessions, and prints the pairing token plus
+    the Chrome extension steps. Every step is idempotent, so this is safe to
+    re-run. Each step degrades to a warning instead of aborting the rest, so a
+    missing `claude` CLI or a non-repo install still gets you as far as it can.
+    """
+    from memex.transports import http_ingest
+
+    console.print("[bold]Memex setup[/bold]\n")
+    planned = []
+    if mcp:
+        planned.append("register the MCP server with Claude Code")
+    if autostart:
+        planned.append("install the always-on live-capture service")
+    if ingest:
+        planned.append("index your local Claude Code sessions")
+    planned.append("show the Chrome extension pairing token")
+    console.print("This will:")
+    for item in planned:
+        console.print(f"  - {item}")
+    console.print()
+    if not yes and not typer.confirm("Proceed?", default=True):
+        raise typer.Exit(code=0)
+
+    results: list[tuple[str, str, str]] = []
+
+    # 1. Embedder health (cheap: the model itself loads lazily on first embed).
+    try:
+        embedder = get_default_embedder()
+        results.append(("Embedder", "OK", f"{settings.embed_backend} ({embedder.model_name})"))
+    except Exception as e:
+        # Report, never crash setup.
+        results.append(("Embedder", "WARN", f"{type(e).__name__}: {e}"))
+
+    # 2. MCP wiring.
+    if mcp:
+        results.append(_setup_mcp())
+
+    # 3. Autostart service.
+    if autostart:
+        code = _run_install_service("install", remote=remote)
+        results.append(
+            (
+                "Autostart",
+                "OK" if code == 0 else "WARN",
+                "installed" if code == 0 else "see messages above",
+            )
+        )
+
+    # 4. Index local Claude Code sessions.
+    if ingest:
+        results.append(_setup_ingest())
+
+    # 5. Pairing token (created on first call if missing).
+    token = http_ingest.load_or_create_ingest_token()
+
+    table = Table(title="Memex setup", show_header=True, header_style="bold")
+    table.add_column("Step", style="bold")
+    table.add_column("Status", justify="center")
+    table.add_column("Detail")
+    status_style = {
+        "OK": "[green]OK[/green]",
+        "WARN": "[yellow]WARN[/yellow]",
+        "FAIL": "[red]FAIL[/red]",
+    }
+    for name, status, detail in results:
+        table.add_row(name, status_style[status], detail)
+    console.print(table)
+
+    console.print(
+        "\n[bold]Last step: the Chrome extension[/bold] (captures your claude.ai chats):"
+    )
+    console.print(f"  1. Install it: [cyan]{_EXTENSION_URL}[/cyan]")
+    console.print("  2. Open the extension popup and paste this access token:")
+    console.print(f"     [bold cyan]{token}[/bold cyan]")
+    console.print(
+        "\n[dim]Re-run `memex token` to see the token again, or `memex doctor` to "
+        "check everything is healthy.[/dim]"
+    )
 
 
 # ---------- diagnostics ----------

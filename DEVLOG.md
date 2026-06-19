@@ -6,6 +6,20 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-19: one-command `memex setup` + cross-platform autostart (Phase 7 onboarding, Phase A)
+
+Frictionless-onboarding work. Mapped the real new-user critical path (~9 steps, one of them an async export of hours, one a token copy-paste between two installables) and attacked the install half of Phase 7.
+
+- **New `memex setup` command** (`src/memex/cli/main.py`). One idempotent command that: checks the embedder, runs `claude mcp add --scope user memex -- ...` (or prints the manual command if the `claude` CLI is absent), installs the autostart service, indexes local Claude Code sessions, and prints the extension pairing token + Web Store link. Each step degrades to a WARN row instead of aborting the rest. Flags: `--no-mcp` / `--no-autostart` / `--no-ingest` / `--remote` / `-y`. Detects repo vs wheel install and builds the MCP invocation accordingly (`uv run --directory <repo> memex-mcp` vs bare `memex-mcp`).
+- **macOS launchd implementation for `install-service`** (new `src/memex/cli/services.py`). The Darwin branch was a print-only stub; it now renders the plist templates (substituting `__REPO__`), writes them to `~/Library/LaunchAgents`, and `launchctl load`s them, with `uninstall` / `status` to match Linux/Windows. Default agents are `serve` + the ingest backstop; the remote connector is opt-in via `--remote` (it crash-loops without the `MEMEX_REMOTE_*` config, so installing it by default — as the old README one-liner did — was a latent bug, now fixed).
+- **Design decision: Phase A is repo-anchored, deliberately.** The agents still run from the cloned repo and the DB default is still CWD-relative (`config.py:67`). Making a pure `uvx`/PyPI install self-sufficient (ship templates in the wheel + a stable user data dir) is **Phase B**, deferred because it changes the DB default and would move existing users' databases. `services.source_repo_root()` returns None on a wheel install so `setup` degrades (MCP + ingest + token work; autostart warns).
+- **M1 (backfill endpoint discovery) done.** Verified live in claude.ai devtools: org-with-`chat` from `/api/organizations`, conversation list `GET .../chat_conversations?limit=&offset=` (flat array, offset pagination, `limit=1000` returns all), items carry `uuid` + `updated_at`, full conv via `?tree=True&rendering_mode=messages&render_all_tools=true`. The existing `inject.js` hook captures the backfill fetch (classifies by path), so M2 needs no pipe changes. Recorded in ROADMAP + `handoff.md`.
+- **Tests:** rewrote the two macOS `install-service` tests (behavior changed from print to launchctl) and added hermetic coverage for launchd install/status/no-repo, `services.render_agent`, and `setup` (all-skipped prints token, MCP calls `claude mcp add`, missing `claude` CLI warns). 503 passed (+1 skipped), `ruff` clean.
+
+Decision: split "simpler install" into onboarding (this) + auto-backfill (next). Next step: **Phase 7 M2** (the `backfill()` in `inject.js`), now unblocked by M1.
+
+---
+
 ## 2026-06-16 (later): demo GIF, registry published, Phase 7 planned, redaction verified
 
 Distribution + launch session. Built on the 0.2.3 prep below.

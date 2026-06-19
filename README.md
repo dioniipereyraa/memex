@@ -90,6 +90,26 @@ uv run memex doctor   # verify
 
 ## First run
 
+The fast path is one command:
+
+```bash
+uv run memex setup
+```
+
+`memex setup` wires everything end to end and is safe to re-run: it registers
+the MCP server with Claude Code (`claude mcp add`), installs the always-on
+live-capture service (launchd on macOS, systemd on Linux, a Scheduled Task on
+Windows), indexes your local Claude Code sessions, and prints the access token
+to paste into the Chrome extension. Each step degrades to a warning instead of
+aborting the rest. Flags: `--no-mcp`, `--no-autostart`, `--no-ingest`,
+`--remote` (also install the claude.ai connector agent), `-y` (no prompt).
+
+After that, the only manual step left is installing the
+[Chrome extension](#live-capture-phase-2) and pasting the token, so new chats
+are captured as you go.
+
+### Manual steps (if you prefer to run them yourself)
+
 ```bash
 # 1. Request your official Claude.ai export (Settings → Privacy → Export data),
 #    then ingest it (first run downloads the embedding model, ~30s):
@@ -244,21 +264,47 @@ These sessions are stored under the `claude_code` source, searchable like any ot
    ```
    It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. On Linux, run the same script from a systemd user timer or cron; the script is OS-agnostic. (On Windows, the hook needs a PowerShell equivalent of `session-end-hook.sh`, not yet included; until then, schedule `memex ingest-claude-code` with Task Scheduler.)
 
-## Running always-on (macOS)
+## Running always-on
 
-`memex serve` (claude.ai capture) and `memex serve-remote` (the claude.ai connector) are long-lived servers. To have them start with your Mac and stay up (restarting if they crash), install them as launchd agents. Idle cost is low: neither loads the embedding model until there is real work.
+`memex serve` (claude.ai capture) is a long-lived server, and the Claude Code
+ingest backstop runs on a schedule. To have them start on login and stay up
+(restarting if they crash), let `memex setup` install the service, or call it
+directly on any OS:
+
+```bash
+memex install-service            # install (launchd / systemd / Scheduled Task)
+memex install-service status     # show what is registered
+memex install-service uninstall  # remove it
+```
+
+This is cross-platform: launchd agents on macOS, a systemd user unit on Linux,
+a Scheduled Task on Windows. By default it manages the live-capture server plus
+the 15-minute Claude Code ingest backstop. Idle cost is low: neither loads the
+embedding model until there is real work. The agents are anchored to the cloned
+repo, so run it from your checkout (a PyPI/uvx install can wire the MCP server
+and ingest, but the always-on service still needs the repo for now).
+
+To also run the claude.ai remote connector as a service, pass `--remote`
+(macOS): `memex install-service --remote`. It only makes sense once the
+`MEMEX_REMOTE_*` config is in `.env` and the Tailscale Funnel is up on the same
+port (`tailscale funnel --bg 8377`), otherwise the agent crash-loops; that is
+why it is opt-in.
+
+<details>
+<summary>Manual launchd setup (macOS, if you prefer explicit steps)</summary>
 
 ```bash
 cd /path/to/memex
-for svc in serve serve-remote ingest-claude-code; do
+for svc in serve ingest-claude-code; do
   sed "s|__REPO__|$(pwd)|g" "scripts/com.memex.$svc.plist.template" \
     > ~/Library/LaunchAgents/com.memex.$svc.plist
   launchctl load ~/Library/LaunchAgents/com.memex.$svc.plist
 done
-launchctl list | grep memex      # all three at status 0
+launchctl list | grep memex
 ```
 
-`serve-remote` needs the Tailscale Funnel up on the same port (`tailscale funnel --bg 8377`); the Funnel persists across reboots. To stop a service: `launchctl unload ~/Library/LaunchAgents/com.memex.<name>.plist`. (On Linux, run the daemon scripts from systemd user units instead; on Windows, use `scripts/install-autostart.ps1` for the capture server.)
+To stop a service: `launchctl unload ~/Library/LaunchAgents/com.memex.<name>.plist`.
+</details>
 
 ## Auto-summaries (Phase 3, optional)
 

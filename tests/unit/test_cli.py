@@ -174,22 +174,87 @@ class TestInstallServiceCommand:
         assert any("install-autostart.sh" in part for part in cmd)
         assert "status" in cmd
 
-    def test_macos_prints_launchd_instructions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_macos_repo(self, tmp_path: Path) -> Path:
+        """Build a throwaway repo with the two default launchd templates."""
+        repo = tmp_path / "repo"
+        scripts = repo / "scripts"
+        scripts.mkdir(parents=True)
+        (repo / "pyproject.toml").write_text("")
+        for svc in ("serve", "ingest-claude-code"):
+            (scripts / f"com.memex.{svc}.plist.template").write_text(
+                f"<plist>__REPO__/scripts/{svc}.sh log __REPO__/data/{svc}.log</plist>"
+            )
+        return repo
+
+    def test_macos_install_loads_agents(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import platform
+        import subprocess
+
+        from memex.cli import services
+
+        repo = self._fake_macos_repo(tmp_path)
+        agents = tmp_path / "LaunchAgents"
+        monkeypatch.setattr(services, "source_repo_root", lambda: repo)
+        monkeypatch.setattr(services, "LAUNCH_AGENTS_DIR", agents)
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
         result = runner.invoke(app, ["install-service", "install"])
-        # macOS now points at the shipped launchd agents (clean exit).
         assert result.exit_code == 0
-        assert "launchd" in result.output
-        assert "com.memex" in result.output
+        assert "com.memex.serve" in result.output
+        # The plist landed with __REPO__ replaced by the absolute repo path.
+        written = (agents / "com.memex.serve.plist").read_text()
+        assert "__REPO__" not in written
+        assert str(repo) in written
+        # launchctl load was invoked once per default agent (serve + ingest).
+        assert sum(1 for c in calls if "load" in c) == 2
 
-    def test_macos_status_is_clean_exit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_macos_no_repo_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import platform
 
+        from memex.cli import services
+
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(services, "source_repo_root", lambda: None)
+        result = runner.invoke(app, ["install-service", "install"])
+        # No cloned repo -> autostart cannot be wired (Phase B); clean WARN exit.
+        assert result.exit_code == 1
+        assert "cloned repo" in result.output.lower()
+
+    def test_macos_status_reports_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import platform
+        import subprocess
+
+        from memex.cli import services
+
+        repo = self._fake_macos_repo(tmp_path)
+        agents = tmp_path / "LaunchAgents"
+        agents.mkdir()
+        # Only the serve agent is installed; ingest is absent.
+        (agents / "com.memex.serve.plist").write_text("<plist/>")
+        monkeypatch.setattr(services, "source_repo_root", lambda: repo)
+        monkeypatch.setattr(services, "LAUNCH_AGENTS_DIR", agents)
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )
         result = runner.invoke(app, ["install-service", "status"])
         assert result.exit_code == 0
+        assert "com.memex.serve" in result.output
+        assert "not installed" in result.output
 
     def test_unknown_platform(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import platform
@@ -198,6 +263,111 @@ class TestInstallServiceCommand:
         result = runner.invoke(app, ["install-service", "install"])
         assert result.exit_code == 2
         assert "Unsupported" in result.output
+
+
+class TestServices:
+    """Pure helpers in `memex.cli.services` (no OS calls)."""
+
+    def test_render_agent_substitutes_repo(self, tmp_path: Path) -> None:
+        from memex.cli import services
+
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "com.memex.serve.plist.template").write_text(
+            "head __REPO__/data/serve.log tail"
+        )
+        label, xml = services.render_agent(tmp_path, "serve")
+        assert label == "com.memex.serve"
+        assert "__REPO__" not in xml
+        assert str(tmp_path) in xml
+
+    def test_render_agent_unknown_service(self, tmp_path: Path) -> None:
+        from memex.cli import services
+
+        with pytest.raises(ValueError):
+            services.render_agent(tmp_path, "bogus")
+
+    def test_render_agent_missing_template(self, tmp_path: Path) -> None:
+        from memex.cli import services
+
+        (tmp_path / "scripts").mkdir()
+        with pytest.raises(FileNotFoundError):
+            services.render_agent(tmp_path, "serve")
+
+
+class _FakeEmbedder:
+    """Stand-in so `setup` does not construct a real fastembed embedder."""
+
+    model_name = "fake-model"
+
+
+class TestSetupCommand:
+    """`memex setup` orchestration, with every external call mocked.
+
+    None of these touch the real service manager, the `claude` CLI, the
+    embedder, or the token file on disk.
+    """
+
+    def _stub_token(self, monkeypatch: pytest.MonkeyPatch, value: str = "TESTTOKEN123") -> None:
+        from memex.transports import http_ingest
+
+        monkeypatch.setattr(http_ingest, "load_or_create_ingest_token", lambda: value)
+
+    def _stub_embedder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from memex.cli import main as climain
+
+        monkeypatch.setattr(climain, "get_default_embedder", lambda: _FakeEmbedder())
+
+    def test_all_skipped_prints_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._stub_token(monkeypatch)
+        self._stub_embedder(monkeypatch)
+        result = runner.invoke(
+            app, ["setup", "-y", "--no-mcp", "--no-autostart", "--no-ingest"]
+        )
+        assert result.exit_code == 0
+        assert "TESTTOKEN123" in result.output
+        assert "chromewebstore" in result.output
+
+    def test_mcp_calls_claude_add(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import shutil
+        import subprocess
+
+        from memex.cli import services
+
+        self._stub_token(monkeypatch)
+        self._stub_embedder(monkeypatch)
+        # PyPI path -> invocation is the bare console script.
+        monkeypatch.setattr(services, "source_repo_root", lambda: None)
+        monkeypatch.setattr(
+            shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+        )
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = runner.invoke(app, ["setup", "-y", "--no-autostart", "--no-ingest"])
+        assert result.exit_code == 0
+        add_calls = [c for c in calls if "add" in c]
+        assert add_calls
+        assert "memex" in add_calls[0]
+        assert "memex-mcp" in add_calls[0]
+
+    def test_mcp_no_claude_cli_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import shutil
+
+        from memex.cli import services
+
+        self._stub_token(monkeypatch)
+        self._stub_embedder(monkeypatch)
+        monkeypatch.setattr(services, "source_repo_root", lambda: None)
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        result = runner.invoke(app, ["setup", "-y", "--no-autostart", "--no-ingest"])
+        assert result.exit_code == 0
+        assert "claude mcp add" in result.output
 
 
 class TestStatsCommand:

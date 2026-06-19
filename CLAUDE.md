@@ -62,7 +62,8 @@ src/memex/
 
 **Dependency rule:** `core/` does not import from `transports/` or `cli/`. Arrows point inward.
 
-**State as of 2026-06-16 (Phases 0 to 4 and 6 closed; 0.2.3 in main, CI green; Phase 7 planned not started):**
+**State as of 2026-06-19 (Phases 0 to 4 and 6 closed; 0.2.3 in main, CI green; Phase 7 onboarding shipped, auto-backfill next):**
+- **Phase 7 onboarding (Phase A), 2026-06-19:** `memex setup` (one command: MCP wiring via `claude mcp add`, autostart, ingest-claude-code, prints the pairing token) and a real macOS launchd backend for `memex install-service` (was a print-only stub) live in `src/memex/cli/main.py` + new `src/memex/cli/services.py`. Autostart is cross-platform now; default agents are `serve` + ingest, remote connector opt-in via `--remote`. Phase A is repo-anchored on purpose; **Phase B (PyPI-first: ship templates in the wheel + a stable user data dir, touches the `config.py:67` DB default)** is the deferred next step. Backfill **M1 verified** (claude.ai endpoints/pagination in ROADMAP + `handoff.md`); **M2** (`backfill()` in `inject.js`) is next and needs no pipe changes.
 - 0.1.0/0.1.1 → 0.2.0 (Phase 4 remote connector + Phase 6 Claude Code ingestion + resource hardening) → 0.2.1 (red-team round 4 redaction-bypass patch) → 0.2.2 (capture server embeds in a subprocess) → 0.2.3 (README hook + demo GIF + MCP-registry `server.json`/`mcp-name` marker). All PUBLISHED on PyPI. 496 tests green.
 - **Listed in the official MCP Registry** as `io.github.dioniipereyraa/memex` (status active; `server.json` at repo root; the registry has no per-server web page, the name is an identifier not a link). Submitted to mcp.so; Glama/PulseMCP auto-index.
 - **Phase 7 (frictionless onboarding / claude.ai auto-backfill)** is planned in ROADMAP, implementation plan + milestones in `handoff.md`. It is the gate before a Hacker News launch. The Chrome extension is a passive `fetch` interceptor today (`chrome-extension/src/inject.js`), so a new user's claude.ai history is empty until a manual export; Phase 7 adds an active backfill. The terminal cannot reach claude.ai, so the backfill must originate in the extension or a pasted `sessionKey`, never a Claude Code hook.
@@ -81,6 +82,8 @@ uv run ruff check src tests   # lint
 uv run ruff format src tests  # format
 uv run mypy src/memex/core    # type check (strict in core)
 uv run memex --help           # CLI (ingest, search, stats, serve, reindex-fts)
+uv run memex setup            # one command: MCP wiring + autostart + ingest + token
+uv run memex install-service  # autostart service (launchd / systemd / Scheduled Task)
 uv run memex-mcp              # stdio MCP server (for Claude Code / Desktop)
 uv run memex serve            # local HTTP server for live capture from Chrome ext
 uv run memex serve-remote     # remote MCP (Streamable HTTP + OAuth) for claude.ai connectors
