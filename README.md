@@ -39,20 +39,39 @@ Design: pure core (storage, ingest, embeddings, retrieval) decoupled from transp
 
 ## Installation
 
-Memex is a Python package. You do not need to install Python yourself: the
-installer below uses [uv](https://docs.astral.sh/uv/), which downloads the
-right Python (3.13) and all dependencies into a local environment. The only
-thing you need beforehand is [git](https://git-scm.com/downloads).
+### Quick install (one command)
 
-Embeddings work **out of the box**: by default Memex uses
-[fastembed](https://github.com/qdrant/fastembed), which downloads a quantized
-130 MB model the first time you ingest. No Ollama, no API key, no extra setup.
-(Ollama is optional, see [Embeddings backend](#embeddings-backend) below.)
+Installs [uv](https://docs.astral.sh/uv/) if needed (it brings the right
+Python), installs Memex from PyPI, and runs `memex setup` to wire it into Claude
+Code (MCP server + always-on capture service + local session indexing + the
+pairing token). No git clone required.
 
-> Note: a PyPI install gives you the CLI and the MCP servers, but the
-> live-capture Chrome extension, the autostart scripts, and the
-> launchd/systemd templates only come with the repo, so installing from
-> source (below) is still the recommended path.
+```bash
+# macOS / Linux
+curl -LsSf https://raw.githubusercontent.com/dioniipereyraa/memex/main/scripts/install-pypi.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/dioniipereyraa/memex/main/scripts/install-pypi.ps1 | iex"
+```
+
+The only step a terminal cannot do is the browser one: install the
+[Chrome extension](#live-capture-phase-2), paste the token the installer prints,
+and click "Backfill claude.ai history" to import your history. Embeddings work
+out of the box (a quantized 130 MB [fastembed](https://github.com/qdrant/fastembed)
+model downloads on first ingest; no Ollama, no API key).
+
+> A plain `pipx install memex-chats` (or `uv tool install memex-chats`) followed
+> by `memex setup` does the same thing in two steps. The autostart service is
+> generated for the wheel install too (launchd / systemd / a logon Scheduled
+> Task), so no clone is needed for it.
+
+### From source (for development)
+
+Clone the repo to get an editable install plus the extension source and service
+templates. You need [git](https://git-scm.com/downloads); the script installs uv
+and the pinned Python for you.
 
 ### macOS / Linux
 
