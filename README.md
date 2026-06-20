@@ -10,11 +10,27 @@
 
 Local-first MCP server that indexes your Claude.ai chat history and your local Claude Code / terminal sessions, and exposes them to Claude Code (stdio) and Claude.ai (remote MCP connector).
 
-**Status:** alpha, `0.2.3` on PyPI. Phases 0 to 4 and 6 closed, security-audited (plus four adversarial red-team rounds). Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), and Claude Code / terminal ingestion with secret redaction and automatic sync.
+**Status:** alpha, `0.3.1` on PyPI. Phases 0 to 7 closed, security-audited (plus four adversarial red-team rounds). Shipped: hybrid search, live capture, auto-summaries, chat ↔ repo association, the Claude.ai remote connector (GitHub OAuth), Claude Code / terminal ingestion with secret redaction, one-command setup, cross-platform autostart, and one-click claude.ai history backfill.
 
 ![Memex recalling a claude.ai chat from Claude Code](docs/screenshots/demo.gif)
 
 *End-to-end demo: from Claude Code, you ask about something you discussed on claude.ai. Memex searches your chat history (`search_chats`) and Claude answers from the real conversation. No copy-paste, no manual context handoff.*
+
+## Install
+
+One command installs uv + Memex and runs `memex setup` (registers the MCP server, installs the always-on capture service, indexes your local sessions, prints the pairing token):
+
+```bash
+# macOS / Linux
+curl -LsSf https://raw.githubusercontent.com/dioniipereyraa/memex/main/scripts/install-pypi.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/dioniipereyraa/memex/main/scripts/install-pypi.ps1 | iex"
+```
+
+Then the one browser step a terminal cannot do: install the [Chrome extension](#live-capture-phase-2), paste the token it printed, and click "Backfill claude.ai history". Other paths (pipx, `uv tool install`, from source) are under [Installation](#installation).
 
 ## The problem
 
