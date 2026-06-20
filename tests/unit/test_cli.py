@@ -9,6 +9,7 @@ Tests that need real ingest (embedder + populated DB) live in
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -396,6 +397,40 @@ class TestServices:
         ET.fromstring(x)  # well-formed XML
         assert "<Arguments>-m memex.cli.main serve</Arguments>" in x
         assert "<LogonTrigger>" in x
+
+
+class TestHeadlessStreams:
+    """`serve` must survive pythonw, where sys.stdout/stderr are None."""
+
+    def test_redirect_reopens_streams_to_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys as _sys
+
+        from memex.cli import main as climain
+        from memex.config import settings
+
+        monkeypatch.setattr(settings, "db_path", tmp_path / "memex.db")
+        monkeypatch.setattr(_sys, "stderr", None)
+        monkeypatch.setattr(_sys, "stdout", None)
+
+        climain._redirect_streams_if_headless()
+
+        assert _sys.stdout is not None
+        assert _sys.stderr is not None
+        assert (tmp_path / "serve.log").is_file()
+        # Close the file we opened so monkeypatch can restore the real streams.
+        with contextlib.suppress(Exception):
+            _sys.stdout.close()
+
+    def test_noop_when_console_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys as _sys
+
+        from memex.cli import main as climain
+
+        before = _sys.stdout  # pytest's capture object, not None
+        climain._redirect_streams_if_headless()
+        assert _sys.stdout is before
 
 
 class _FakeEmbedder:

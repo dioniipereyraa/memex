@@ -4,6 +4,11 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [0.3.1] - 2026-06-20
+
+### Fixed
+- **Windows autostart: the live-capture server crashed instantly under the logon Scheduled Task.** The task runs `pythonw` (no console window), where `sys.stdout` / `sys.stderr` are `None`, so the server's startup console output and its `isatty()` check raised before it could bind the port (the task fired but nothing listened on 5777). `memex serve` now reopens the streams to a `serve.log` in the data dir when there is no console, so the Windows task starts the server, and Windows finally gets capture-server logs. The Scheduled Task definition is unchanged; only `serve` was hardened.
+
 ## [0.3.0] - 2026-06-20
 
 ### Added

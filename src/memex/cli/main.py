@@ -303,6 +303,30 @@ def stats(
     console.print(table)
 
 
+def _redirect_streams_if_headless() -> None:
+    """If running without a console (Windows `pythonw`), reopen std streams.
+
+    Under `pythonw.exe` (the interpreter the Windows logon Scheduled Task uses,
+    to avoid a console window) `sys.stdout`/`sys.stderr` are `None`. Any
+    `console.print(...)`, `isatty()` check, or uvicorn log write then raises and
+    the server dies before it binds. Reopen the streams to a `serve.log` in the
+    data dir so output goes somewhere valid (and Windows finally gets logs).
+    No-op when a console is present.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log = Path(settings.db_path).parent / "serve.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        stream = open(log, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+    except OSError:
+        return
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 @app.command()
 def serve(
     host: Annotated[
@@ -327,6 +351,9 @@ def serve(
 
     Sharing the SQLite DB with the MCP server is safe: both use WAL mode.
     """
+    # pythonw (the Windows logon task) has no console: reopen std streams to a
+    # log file first, or the console output below crashes the server on None.
+    _redirect_streams_if_headless()
     set_process_title("Memex capture")
     import uvicorn
 
@@ -354,7 +381,7 @@ def serve(
     # Only echo the token to an interactive terminal. Under a daemon (launchd)
     # stdout is redirected to a file that may be world-readable, so printing the
     # token there would leak it; direct non-interactive users to `memex token`.
-    if sys.stdout.isatty():
+    if sys.stdout is not None and sys.stdout.isatty():
         console.print("Pair the extension with this access token (paste it in the popup):")
         console.print(f"  [bold cyan]{token}[/bold cyan]")
     else:
