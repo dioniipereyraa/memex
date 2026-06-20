@@ -14,10 +14,12 @@ gracefully.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -338,3 +340,121 @@ def linux_install_wheel(action: str) -> list[str]:
     if result.returncode != 0:
         lines.append(f"systemctl enable failed: {(result.stderr or '').strip()}")
     return lines
+
+
+WINDOWS_TASK_NAME = "MemexServe"
+
+
+def _windows_python_for_service() -> str:
+    """Path to the windowless interpreter (pythonw.exe) next to sys.executable.
+
+    pythonw runs the server with no console window. Falls back to the regular
+    interpreter if pythonw is not present (a non-standard install layout).
+    """
+    candidate = Path(sys.executable).with_name("pythonw.exe")
+    return str(candidate if candidate.exists() else Path(sys.executable))
+
+
+def render_windows_task_xml() -> str:
+    """Task Scheduler XML for a wheel install: run `memex serve` at logon.
+
+    Registered with `schtasks /Create /XML`, which takes Command and Arguments
+    as separate elements and so avoids the `/TR` quoting pitfalls. Runs
+    `pythonw -m memex.cli.main serve` (no console window, no repo, no PATH
+    dependency). The DB resolves to the per-user data dir from the installed
+    package, so the task and the user's CLI share it without pinning an env var.
+    Restarts up to 3 times on failure; no execution time limit (a long server).
+    """
+    command = _xml_escape(_windows_python_for_service())
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Memex live-capture server</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>-m memex.cli.main serve</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def windows_install_wheel(action: str) -> list[str]:
+    """install/uninstall/status the logon Scheduled Task for a wheel install.
+
+    No admin needed (the task runs in the user's context). Output is not
+    captured: pythonw has no console, so for live logs run `memex serve` by hand.
+    """
+    if action == "uninstall":
+        result = subprocess.run(
+            ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return [f"removed task {WINDOWS_TASK_NAME}"]
+        return [f"{WINDOWS_TASK_NAME} not installed"]
+
+    if action == "status":
+        result = subprocess.run(
+            ["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return [f"{WINDOWS_TASK_NAME}: {'registered' if result.returncode == 0 else 'not installed'}"]
+
+    # install: write the task XML to a temp file (UTF-16, as Task Scheduler
+    # expects) and register it, replacing any existing task with /F.
+    xml_path = ""
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".xml", encoding="utf-16", delete=False
+    ) as handle:
+        handle.write(render_windows_task_xml())
+        xml_path = handle.name
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Create", "/TN", WINDOWS_TASK_NAME, "/XML", xml_path, "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(xml_path)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return [f"FAILED to create task {WINDOWS_TASK_NAME}: {detail}"]
+    # The trigger fires at logon; start it once now so it is up immediately.
+    subprocess.run(
+        ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME], check=False, capture_output=True
+    )
+    return [f"installed task {WINDOWS_TASK_NAME}", "runs: pythonw -m memex.cli.main serve"]

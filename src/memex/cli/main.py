@@ -862,9 +862,9 @@ def _run_install_service(action: str, remote: bool = False) -> int:
     Shared by the `install-service` command and `setup`. From a cloned repo it
     uses the proven repo paths (Windows/Linux shell scripts, macOS plist
     templates). From a wheel/PyPI install (no `scripts/`), `cli.services`
-    generates self-contained launchd (macOS) / systemd (Linux) definitions that
-    run the installed CLI directly; Windows wheel autostart is not generated yet.
-    `remote` (the claude.ai connector agent) is macOS-only.
+    generates self-contained definitions that run the installed CLI directly: a
+    launchd plist (macOS), a systemd user unit (Linux), or a logon Scheduled
+    Task (Windows). `remote` (the claude.ai connector agent) is macOS-only.
     """
     import contextlib
     import platform
@@ -943,12 +943,15 @@ def _run_install_service(action: str, remote: bool = False) -> int:
                 "manages the live-capture server only."
             )
         if repo_root is None:
-            console.print(
-                "[yellow]Autostart on Windows currently needs the cloned repo.[/yellow] "
-                "Run `memex serve` manually, or clone "
-                "https://github.com/dioniipereyraa/memex and run `memex install-service` there."
-            )
-            return 1
+            try:
+                lines = services.windows_install_wheel(action)
+            except OSError as e:
+                console.print(f"[red]Service {action} failed:[/red] {e}")
+                return 1
+            console.print(f"[bold]Scheduled Task {action}[/bold] ({services.WINDOWS_TASK_NAME}):")
+            for line in lines:
+                console.print(f"  {line}")
+            return 1 if any(line.startswith("FAILED") for line in lines) else 0
         ps1 = scripts_dir / "install-autostart.ps1"
         if not ps1.is_file():
             console.print(f"[red]Missing installer script:[/red] {ps1}")

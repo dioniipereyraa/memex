@@ -6,7 +6,13 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
-## 2026-06-19: one-command `memex setup` + cross-platform autostart (Phase 7 onboarding, Phase A)
+## 2026-06-20: verification pass, 0.3.0 release prep, Windows wheel autostart
+
+Validation + finishing Phase B. Ran a full verification of yesterday's work and closed the last wheel-autostart gap.
+
+- **Verification pass.** Full suite green; `memex doctor` all OK (DB at the new absolute path, 148 convs); ran `memex setup -y` end to end on the repo install for the first time (idempotent: MCP "already registered", autostart reloaded, ingest "2 new / 37 unchanged", token printed). Built the wheel and installed it in an isolated venv to confirm the PyPI-first path: `source_repo_root()` -> None, `db_path` -> `~/Library/Application Support/memex` (not the repo), the generated plist runs the venv's python, `python -m memex.cli.main` + the `memex` console script work. No stray state left.
+- **0.3.0 release prep.** Bumped `memex-chats` 0.2.3 -> 0.3.0 (additive features since 0.2.3), synced `server.json` + `uv.lock`, dated the CHANGELOG. The published PyPI build is still 0.2.3, so a plain `pipx install memex-chats` gets the old one; testing uses the local `0.3.0` wheel (or a real publish, user's token, done in the terminal, never pasted in chat). Not published yet.
+- **Windows wheel autostart (closes Phase B step 2).** Considered (and rejected) auto-cloning the repo from the installer (version skew vs the pinned wheel, a `git` dependency, running unaudited code). Instead implemented the native path, matching mac/linux: `cli.services.windows_install_wheel` generates a logon Scheduled Task via `schtasks /Create /XML` (XML avoids `/TR` quoting pitfalls) running `pythonw -m memex.cli.main serve` (no console window, no repo, no PATH dep). `_run_install_service` now dispatches the Windows wheel branch to it. The DB resolves to `%LOCALAPPDATA%\memex` from the installed package, so the task and the CLI share it without pinning. Verified by parsing the generated XML with `ElementTree`; not live-tested here (no Windows). 518 tests. Next: the user tests the `pipx install <wheel> && memex setup` flow live on Windows + Linux.
 
 Frictionless-onboarding work. Mapped the real new-user critical path (~9 steps, one of them an async export of hours, one a token copy-paste between two installables) and attacked the install half of Phase 7.
 

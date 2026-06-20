@@ -279,6 +279,32 @@ class TestInstallServiceCommand:
         assert "com.memex.serve" in result.output
         assert "not installed" in result.output
 
+    def test_windows_wheel_install_creates_task(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No repo on Windows -> a logon Scheduled Task is registered via schtasks."""
+        import platform
+        import subprocess
+
+        from memex.cli import services
+
+        monkeypatch.setattr(services, "source_repo_root", lambda: None)
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = runner.invoke(app, ["install-service", "install"])
+        assert result.exit_code == 0
+        assert "MemexServe" in result.output
+        create = [c for c in calls if "/Create" in c]
+        assert create and "/XML" in create[0] and "MemexServe" in create[0]
+
     def test_unknown_platform(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import platform
 
@@ -360,6 +386,16 @@ class TestServices:
         assert _sys.executable in unit
         assert "memex.cli.main" in unit
         assert f'Environment="MEMEX_DB_PATH={db}"' in unit
+
+    def test_render_windows_task_xml(self) -> None:
+        import xml.etree.ElementTree as ET
+
+        from memex.cli import services
+
+        x = services.render_windows_task_xml()
+        ET.fromstring(x)  # well-formed XML
+        assert "<Arguments>-m memex.cli.main serve</Arguments>" in x
+        assert "<LogonTrigger>" in x
 
 
 class _FakeEmbedder:
