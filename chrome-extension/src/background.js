@@ -183,8 +183,23 @@ const recordBackfillProgress = async (progress) => {
 
 // ---------- runtime messaging ----------
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== "object") return false;
+
+  // Trust split by sender. Page-relayed kinds (capture / backfill) must come
+  // from a claude.ai content script (a tab on claude.ai); config/admin kinds
+  // must come from the extension's own popup (no tab). A claude.ai page-world
+  // script can already forge the page-relayed kinds (accepted residual), but it
+  // must never reach set-token / set-server-url to hijack where data is sent.
+  const fromClaudeTab =
+    !!sender.tab &&
+    typeof sender.url === "string" &&
+    sender.url.startsWith("https://claude.ai/");
+  const fromPopup = sender.id === chrome.runtime.id && !sender.tab;
+  const PAGE_MSGS = ["capture", "backfill-plan", "backfill-progress"];
+  const ADMIN_MSGS = ["set-token", "set-server-url", "reset-stats", "get-status", "ping-server"];
+  if (PAGE_MSGS.includes(msg.type) && !fromClaudeTab) return false;
+  if (ADMIN_MSGS.includes(msg.type) && !fromPopup) return false;
 
   if (msg.type === "capture") {
     handleCapture(msg.payload)

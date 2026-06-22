@@ -379,6 +379,22 @@ class TestServices:
         assert _sys.executable in unit
         assert "memex.cli.main" in unit
         assert f'Environment="MEMEX_DB_PATH={db}"' in unit
+        # The log file must be created user-only (no world-readable daemon log).
+        assert "UMask=0077" in unit
+
+    def test_render_systemd_unit_rejects_unsafe_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from memex.cli import services
+        from memex.config import settings
+
+        # A newline in the DB path would inject extra systemd directives (e.g. an
+        # ExecStartPre that runs at boot); the renderer must refuse, not write it.
+        monkeypatch.setattr(
+            settings, "db_path", Path("/tmp/x\nExecStartPre=/bin/sh -c evil/memex.db")
+        )
+        with pytest.raises(ValueError, match="refusing to write a systemd unit"):
+            services.render_systemd_unit(tmp_path)
 
     def test_render_windows_task_xml(self) -> None:
         import xml.etree.ElementTree as ET

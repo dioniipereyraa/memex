@@ -263,12 +263,27 @@ def _systemd_user_dir() -> Path:
     return (Path(base) if base else Path.home() / ".config") / "systemd" / "user"
 
 
+def _systemd_safe_path(p: Path, what: str) -> str:
+    r"""Reject a path that would break or subvert the (line-oriented) unit file.
+
+    A systemd unit has no escape for a newline, so a `\n` in a value starts a new
+    directive (e.g. an injected `ExecStartPre=` that would run at boot); a `"`
+    breaks the quoted `Environment=` value. Both are rejected rather than written
+    into an exploitable or broken unit. Normal filesystem paths contain neither.
+    """
+    s = str(p)
+    bad = next((c for c in ("\n", "\r", '"') if c in s), None)
+    if bad is not None:
+        raise ValueError(f"refusing to write a systemd unit: {what} contains {bad!r}: {s!r}")
+    return s
+
+
 def render_systemd_unit(log_dir: Path | None = None) -> str:
     """Generate a systemd user unit running the installed `memex serve`."""
     logs = log_dir if log_dir is not None else data_dir()
-    log = logs / "serve.log"
+    log = _systemd_safe_path(logs / "serve.log", "log path")
     exec_start = " ".join(shlex.quote(a) for a in module_command("serve"))
-    db_path = settings.db_path
+    db_path = _systemd_safe_path(settings.db_path, "MEMEX_DB_PATH")
     return f"""[Unit]
 Description=Memex live-capture HTTP server
 After=network-online.target
@@ -280,6 +295,7 @@ Environment="MEMEX_DB_PATH={db_path}"
 ExecStart={exec_start}
 Restart=on-failure
 RestartSec=5
+UMask=0077
 StandardOutput=append:{log}
 StandardError=append:{log}
 

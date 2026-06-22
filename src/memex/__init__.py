@@ -1,3 +1,8 @@
-"""Memex: servidor MCP local que indexa tus chats de Claude.ai."""
+"""Memex: local MCP server that indexes your Claude.ai chats."""
 
-__version__ = "0.0.1"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("memex-chats")
+except PackageNotFoundError:  # running from a source tree without installed metadata
+    __version__ = "0+unknown"

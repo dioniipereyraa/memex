@@ -164,7 +164,11 @@ def search_chats(
     return _serialize(result)
 
 
-def get_chat(uuid: str, messages_limit: int = 20, messages_offset: int = 0) -> str:
+def get_chat(
+    uuid: str,
+    messages_limit: int = tools.GET_CHAT_MESSAGES_LIMIT_DEFAULT,
+    messages_offset: int = 0,
+) -> str:
     """Fetch a specific conversation from history by uuid (with pagination).
 
     USE when:

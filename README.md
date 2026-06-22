@@ -48,7 +48,7 @@ Memex fills that gap: runs locally, indexes the entire corpus of your chats, and
                           [core: storage + retrieval]
                                     ↓
                   [MCP stdio]  ───→  Claude Code, Claude Desktop
-                  [MCP SSE/HTTP] ──→ Claude.ai (coming soon)
+                  [MCP Streamable HTTP] ─→ Claude.ai connector
 ```
 
 Design: pure core (storage, ingest, embeddings, retrieval) decoupled from transport. The same engine serves both stdio and remote MCP without a rewrite.
@@ -202,7 +202,7 @@ Then confirm the right binary: `which memex` (macOS/Linux) or `where memex` (Win
 
 **The autostart service did not come up.** Check its status, then read its log:
 - **Linux**: `systemctl --user status memex-serve`; log at `~/.local/share/memex/serve.log`. `Failed to connect to bus` means there is no user systemd manager for this session (common over plain SSH): run `loginctl enable-linger "$USER"`, make sure `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, then re-run `memex install-service`.
-- **macOS**: `launchctl list | grep memex`; log in the data dir (`~/Library/Application Support/memex/` on a PyPI install, `<repo>/data/` from source).
+- **macOS**: `launchctl list | grep memex`; log in the data dir (`~/Library/Application Support/memex/com.memex.serve.log` on a PyPI install, `<repo>/data/serve.log` from source).
 - **Windows**: Task Scheduler, or `schtasks /Query /TN MemexServe /V`; log at `%LOCALAPPDATA%\memex\serve.log`. If an older install left a task with the same name, it can silently mask the new one: delete it (`schtasks /Delete /TN MemexServe /F`) and re-run `memex install-service`.
 
 **Autostart does not survive logout or reboot (Linux).** A systemd *user* unit is torn down when your session ends unless lingering is enabled: `loginctl enable-linger "$USER"`.
@@ -493,7 +493,7 @@ memex install-service uninstall
 
 The CLI dispatches to the right installer for your OS:
 
-- **macOS**: writes launchd agents for `serve` + the 15-minute Claude Code ingest backstop, and `launchctl load`s them. Logs at `data/serve.log`. Add `--remote` to also run the claude.ai connector (needs the `MEMEX_REMOTE_*` config). See [Running always-on](#running-always-on).
+- **macOS**: writes launchd agents for `serve` + the 15-minute Claude Code ingest backstop, and `launchctl load`s them. Logs in the data dir (`<repo>/data/serve.log` from a clone, `~/Library/Application Support/memex/com.memex.serve.log` from a PyPI install). Add `--remote` to also run the claude.ai connector (needs the `MEMEX_REMOTE_*` config). See [Running always-on](#running-always-on).
 - **Windows**: registers a Scheduled Task (`MemexServe`) that runs `memex serve` at logon. No admin required, no console window, survives VS Code close. Logs at `%LOCALAPPDATA%\memex\serve.log`. Auto-restarts up to 3 times if it dies.
 - **Linux**: writes a systemd user unit at `~/.config/systemd/user/memex-serve.service`, enables it, and starts it now. Logs at `~/.local/share/memex/serve.log`. To keep it running across logout: `loginctl enable-linger $USER`. Status: `systemctl --user status memex-serve`.
 
@@ -503,12 +503,12 @@ From a `pip`/`pipx` install (no cloned repo), `memex install-service` works on m
 
 By default, LLMs are conservative with tools: they prefer to ask before invoking anything. If you say *"remember we talked about X?"*, Claude tends to answer *"I don't recall"* instead of searching.
 
-The docstrings of the 3 tools already include "USE PROACTIVELY" instructions, but you can reinforce it by adding this snippet to your `CLAUDE.md` (global at `~/.claude/CLAUDE.md` for every session, or local at `<project>/CLAUDE.md` for a specific one):
+The docstrings of the 4 tools already include "USE PROACTIVELY" instructions, but you can reinforce it by adding this snippet to your `CLAUDE.md` (global at `~/.claude/CLAUDE.md` for every session, or local at `<project>/CLAUDE.md` for a specific one):
 
 ```markdown
 ## Memex: persistent memory of Claude.ai chats
 
-There is an MCP server `memex` with 3 tools: `search_chats`, `get_chat`, `list_recent_chats`.
+There is an MCP server `memex` with 4 tools: `search_chats`, `get_chat`, `list_recent_chats`, `find_related`.
 They index ALL of the user's Claude.ai history, reachable via hybrid search
 (semantic + lexical FTS5).
 

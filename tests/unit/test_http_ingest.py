@@ -357,3 +357,19 @@ class TestBackfillPlan:
         assert r.json()["toFetch"] == []
         r = http_client.post("/ingest/plan", json={"conversations": [newer]}, headers=AUTH)
         assert r.json()["toFetch"] == [uuid]
+
+    def test_too_many_conversations_returns_413(
+        self, http_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The list length is capped independently of the body byte cap, so a
+        # token-holding caller cannot force an unbounded scan/parse loop. Shrink
+        # the cap so the test stays fast.
+        monkeypatch.setattr(http_ingest, "_MAX_PLAN_ITEMS", 2)
+        convs = [{"uuid": f"u{i}", "updated_at": "2026-05-19T10:00:00Z"} for i in range(3)]
+        r = http_client.post("/ingest/plan", json={"conversations": convs}, headers=AUTH)
+        assert r.status_code == 413
+
+    def test_duplicate_uuids_are_deduped(self, http_client: TestClient) -> None:
+        dup = {"uuid": "dup", "updated_at": "2026-05-19T10:00:00Z"}
+        r = http_client.post("/ingest/plan", json={"conversations": [dup, dup, dup]}, headers=AUTH)
+        assert r.json()["toFetch"] == ["dup"]

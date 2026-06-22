@@ -10,6 +10,10 @@ Endpoints:
 - `POST /ingest/conversation`: receives the JSON, parses it with
   `parse_conversation_dict`, ingests via `ingest_single_conversation`,
   returns counts.
+- `POST /ingest/plan`: takes the claude.ai conversation manifest
+  (`{"conversations": [{uuid, updated_at}, ...]}`) and returns the
+  `{"toFetch": [...]}` subset that is new or changed, so the extension's
+  backfill skips already-indexed chats. Same Origin + token auth as ingest.
 
 Lifecycle:
 - SQLite connections and the embedder are created lazily (one process for
@@ -78,6 +82,20 @@ _ALLOWED_ORIGIN_PREFIXES = ("chrome-extension://", "moz-extension://")
 # Case-insensitive header carrying the per-install token.
 _TOKEN_HEADER = "x-memex-token"
 
+# Hard cap on the number of conversations accepted in one /ingest/plan request.
+# The byte cap bounds the payload size, but 16 MB of tiny `{"uuid":...}` objects
+# is ~1M items; without a count cap a token-holding caller could force a
+# full-table scan plus millions of timestamp parses on the event loop. A real
+# claude.ai org has at most a few thousand chats, so 50k is generous.
+_MAX_PLAN_ITEMS = 50_000
+
+# Secrets the short-lived ingest worker never needs. Stripped from its
+# environment (defense in depth: the child must not carry the parent's API
+# keys / OAuth secret, which only the main process uses).
+_WORKER_ENV_DENY = frozenset(
+    {"ANTHROPIC_API_KEY", "MEMEX_GITHUB_CLIENT_SECRET", "MEMEX_GITHUB_CLIENT_ID"}
+)
+
 
 def _get_conn() -> sqlite3.Connection:
     global _conn
@@ -110,7 +128,8 @@ async def _ingest_in_subprocess(payload: dict[str, Any], source: Source) -> dict
     line on stdout. The DB path is passed absolute via the environment so the
     child does not depend on the working directory.
     """
-    env = {**os.environ, "MEMEX_DB_PATH": str(Path(settings.db_path).resolve())}
+    env = {k: v for k, v in os.environ.items() if k not in _WORKER_ENV_DENY}
+    env["MEMEX_DB_PATH"] = str(Path(settings.db_path).resolve())
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -123,8 +142,12 @@ async def _ingest_in_subprocess(payload: dict[str, Any], source: Source) -> dict
     )
     out, err = await proc.communicate(json.dumps(payload).encode())
     if proc.returncode != 0:
+        # Keep the worker's stderr (it may carry the absolute DB path or other
+        # internals) in the server log only; the client gets the return code,
+        # not the detail.
         detail = err.decode(errors="replace").strip()[-500:]
-        raise EmbedderError(f"ingest worker exited {proc.returncode}: {detail}")
+        logger.warning("ingest worker exited %s: %s", proc.returncode, detail)
+        raise EmbedderError(f"ingest worker exited {proc.returncode}")
     lines = [ln for ln in out.decode(errors="replace").splitlines() if ln.strip()]
     if not lines:
         raise EmbedderError("ingest worker produced no output")
@@ -212,9 +235,9 @@ async def _read_body_capped(request: Request, max_bytes: int) -> bytes | None:
 
     body = bytearray()
     async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > max_bytes:
+        if len(body) + len(chunk) > max_bytes:
             return None
+        body.extend(chunk)
     return bytes(body)
 
 
@@ -357,6 +380,14 @@ async def backfill_plan_endpoint(request: Request) -> JSONResponse:
             {"error": "Expected {'conversations': [{uuid, updated_at}, ...]}"},
             status_code=400,
         )
+    if len(conversations) > _MAX_PLAN_ITEMS:
+        return JSONResponse(
+            {"error": f"Too many conversations in one plan request (max {_MAX_PLAN_ITEMS})."},
+            status_code=413,
+        )
+    if not conversations:
+        # Nothing to compare; skip the full-table scan entirely.
+        return JSONResponse({"toFetch": []})
 
     conn = _get_conn()
     rows = conn.execute(
@@ -366,12 +397,14 @@ async def backfill_plan_endpoint(request: Request) -> JSONResponse:
     known = {row["uuid"]: row["updated_at"] for row in rows}
 
     to_fetch: list[str] = []
+    seen: set[str] = set()
     for item in conversations:
         if not isinstance(item, dict):
             continue
         uuid = item.get("uuid")
-        if not uuid:
+        if not uuid or uuid in seen:
             continue
+        seen.add(uuid)
         stored = known.get(uuid)
         if stored is None or _instant(stored) < _instant(item.get("updated_at")):
             to_fetch.append(uuid)

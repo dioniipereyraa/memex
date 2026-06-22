@@ -315,12 +315,20 @@ def _redirect_streams_if_headless() -> None:
     """
     if sys.stdout is not None and sys.stderr is not None:
         return
+    import contextlib
+    import os
+
     log = Path(settings.db_path).parent / "serve.log"
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
-        stream = open(log, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        # 0600: a daemon's log can carry diagnostics; never let another local
+        # user read it. os.open's mode is umask-masked, so chmod to be sure.
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return
+    with contextlib.suppress(OSError):
+        os.chmod(log, 0o600)
+    stream = os.fdopen(fd, "a", encoding="utf-8", buffering=1)
     if sys.stdout is None:
         sys.stdout = stream
     if sys.stderr is None:
@@ -933,7 +941,9 @@ def _run_install_service(action: str, remote: bool = False) -> int:
                 "\nThe agents start with your Mac and restart if they crash. "
                 f"Logs in [cyan]{logs}[/cyan]."
             )
-        return 0
+        # Mirror the Windows branch: a launchd load that printed FAILED is a
+        # non-zero exit, so `setup`'s autostart row reflects the real outcome.
+        return 1 if any(line.startswith("FAILED") for line in lines) else 0
 
     if system == "Linux":
         if remote:
@@ -944,7 +954,9 @@ def _run_install_service(action: str, remote: bool = False) -> int:
         if repo_root is None:
             try:
                 lines = services.linux_install_wheel(action)
-            except OSError as e:
+            except (OSError, ValueError) as e:
+                # ValueError: the systemd path guard rejected an unsafe DB/log
+                # path (newline/quote injection); OSError: write/systemctl failed.
                 console.print(f"[red]Service {action} failed:[/red] {e}")
                 return 1
             console.print(f"[bold]systemd --user {action}[/bold]:")

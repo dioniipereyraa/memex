@@ -59,11 +59,15 @@ class Settings(BaseSettings):
     standard names and are respected as-is.
     """
 
+    # No `populate_by_name`: with it, pydantic-settings ALSO reads each field's
+    # bare snake_case name from the environment (e.g. `db_path`, `anthropic_api_key`,
+    # `ingest_allowed_hosts`), not only the declared `MEMEX_*`/standard aliases. A
+    # generic inherited env var (`DB_PATH`, etc.) could then silently relocate the
+    # DB or weaken a security setting. Only the explicit aliases below are honored.
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-        populate_by_name=True,
     )
 
     # Embeddings backend. Defaults to `fastembed` (zero-config, model is

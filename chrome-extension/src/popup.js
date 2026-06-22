@@ -140,6 +140,13 @@ async function startBackfill() {
       target: { tabId: tab.id },
       world: "MAIN",
       func: () => {
+        // Re-check the origin inside the injected function: the popup's
+        // pre-check races a tab that may have navigated away (TOCTOU), and
+        // host_permissions is the only other guard. Keep the gate with the
+        // code that runs.
+        if (location.origin !== "https://claude.ai") {
+          throw new Error("Memex backfill only runs on a claude.ai tab.");
+        }
         if (typeof window.__memexBackfill === "function") {
           window.__memexBackfill();
         } else {

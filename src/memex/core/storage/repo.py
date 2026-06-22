@@ -97,11 +97,6 @@ def get_project(conn: sqlite3.Connection, uuid: str) -> Project | None:
     return _row_to_project(row) if row else None
 
 
-def list_projects(conn: sqlite3.Connection) -> list[Project]:
-    rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
-    return [_row_to_project(r) for r in rows]
-
-
 def _row_to_project(row: sqlite3.Row) -> Project:
     return Project(
         uuid=row["uuid"],

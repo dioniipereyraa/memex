@@ -6,6 +6,18 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-22: Phase 7 + Phase B close audit (findings fixed)
+
+Ran the owed phase-boundary audit across five dimensions in parallel (install/autostart, HTTP ingest + auth, the Chrome extension, config/data/redaction, and a project-wide dead-code/doc sweep), then verified each finding against the code and implemented the fixes. No critical/high-remote findings; the auth gate held (Origin+token, constant-time compare, 0600 token, TTY-gated print). 523 tests green, ruff + core mypy clean.
+
+- **systemd unit hardening.** `render_systemd_unit` now rejects a DB/log path containing a newline or quote (a newline could inject an `ExecStartPre=` that runs at login) and the unit gets `UMask=0077` (parity with the launchd `Umask`; the wheel systemd log was world-readable). The headless `serve.log` reopen (`_redirect_streams_if_headless`) is now 0600.
+- **`/ingest/plan` amplification.** Added a 50k item cap (the body byte cap bounds bytes, not list length, so a token-holder could force a full-table scan + millions of timestamp parses on the event loop) plus uuid dedupe and an empty-list short-circuit.
+- **Worker env/stderr hygiene.** The short-lived ingest worker no longer inherits `ANTHROPIC_API_KEY` / the GitHub OAuth secret (it never uses them); its stderr (which can carry the absolute DB path) is logged server-side, not returned to the client.
+- **Config env-exposure.** Removed `populate_by_name=True`: it also let every setting be set by its bare snake_case env name (`db_path`, `anthropic_api_key`, ...), not just the `MEMEX_*` alias. Tests now construct `Settings` by alias.
+- **Extension.** `executeScript` self-checks `location.origin === "https://claude.ai"` inside the injected func (TOCTOU on the active tab); `background.js` gates runtime messages by sender so admin kinds (`set-token`/`set-server-url`) only come from the popup; the token field is `type="password"`.
+- **Bugs / dead code.** `get_chat` MCP default 20 -> 10 (matched the pure tool via the shared constant); macOS `install-service` returns non-zero when a launchd load printed FAILED; removed dead `repo.list_projects()` and the stale `__version__ = "0.0.1"` (now resolved from package metadata).
+- **Docs.** README macOS wheel log path (`com.memex.serve.log`), "3 tools" -> 4 (with `find_related`), the "coming soon"/SSE diagram label; `chrome-extension/README.md` (published + token pairing + Backfill); `http_ingest` docstring lists `/ingest/plan`. Added regression tests (the `/ingest/plan` item cap + dedupe, the systemd path guard, the `UMask`). The one live residual (the page-world backfill reply channel is forgeable, integrity-only) is recorded in `docs/internal/security-notes.md`; fixed-issue lessons in CLAUDE.md.
+
 ## 2026-06-22: Linux live test started, fixed the one-liner (dash incompat)
 
 Began the last open Phase B verification: the live Linux/systemd install. Pre-flight reviewed the whole Linux path (`install-pypi.sh` -> `memex setup -y` -> `_run_install_service` Linux/wheel branch -> `linux_install_wheel` -> `render_systemd_unit`) and the wheel data-dir resolution; rendered the exact systemd unit to eyeball it. Code path is correct (ExecStart runs the uv-tool python `-m memex.cli.main serve`, `MEMEX_DB_PATH` pinned to `~/.local/share/memex`, serve on `127.0.0.1:5777`).

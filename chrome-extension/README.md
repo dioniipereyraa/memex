@@ -15,13 +15,19 @@ It does not require modifying anything on claude.ai. It does not send anything t
 
 ## Loading the extension
 
-It is not published on the Chrome Web Store yet (it is local). Manual load:
+Install it from the Chrome Web Store (search "Memex Live Capture"). To run the
+development build from this repo instead, load it unpacked:
 
 1. Open `chrome://extensions/` in Chrome or Edge.
 2. Enable **Developer mode** (toggle top right).
 3. Click **Load unpacked**.
 4. Select the `chrome-extension/` folder from this repo (the one with `manifest.json`).
 5. The extension appears with its icon. To see it always, pin it to the toolbar.
+
+Then pair it (one time): open the popup, paste the access token from
+`memex token` (or the one `memex setup` printed) into the token field, and click
+**Save token**. Without it the server rejects ingests with `401`. To import your
+existing history, open a claude.ai tab and click **Backfill claude.ai history**.
 
 ## Testing it works
 

@@ -23,6 +23,17 @@ from memex.transports.http import (
     parse_allowed_logins,
 )
 
+# Settings fields here carry MEMEX_* aliases; with `populate_by_name` removed
+# (a security fix: it also exposed bare field names to the environment), the
+# constructor must be given the alias names. Map the field names callers use to
+# their aliases so the call sites below stay readable.
+_FIELD_ALIASES = {
+    "remote_base_url": "MEMEX_REMOTE_BASE_URL",
+    "github_client_id": "MEMEX_GITHUB_CLIENT_ID",
+    "github_client_secret": "MEMEX_GITHUB_CLIENT_SECRET",
+    "remote_allowed_github_logins": "MEMEX_REMOTE_ALLOWED_GITHUB_LOGINS",
+}
+
 
 def make_settings(**overrides) -> Settings:
     """Settings isolated from the developer's real `.env`."""
@@ -33,7 +44,7 @@ def make_settings(**overrides) -> Settings:
         "remote_allowed_github_logins": "dioniipereyraa",
     }
     base.update(overrides)
-    return Settings(_env_file=None, **base)
+    return Settings(_env_file=None, **{_FIELD_ALIASES.get(k, k): v for k, v in base.items()})
 
 
 class TestParseAllowedLogins:
