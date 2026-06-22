@@ -4,6 +4,24 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [0.3.2] - 2026-06-22
+
+### Security
+- **Phase 7 + Phase B close audit (findings fixed).** A five-dimension audit at the phase boundary; the auth gate held (Origin + token, constant-time compare, `0600` token, TTY-gated print) and all findings were medium/low.
+  - The generated systemd unit now rejects a DB or log path containing a newline or quote (a newline could inject an extra directive such as an `ExecStartPre=` that runs at login) and sets `UMask=0077`; the headless `serve.log` is created `0600`.
+  - `POST /ingest/plan` caps the conversation list (the request body byte cap does not bound per-item work), dedupes uuids, and short-circuits an empty list.
+  - The short-lived ingest worker subprocess no longer inherits the parent's `ANTHROPIC_API_KEY` / GitHub OAuth secret, and its stderr (which can carry the absolute DB path) is logged server-side instead of returned to the client.
+  - Dropped `populate_by_name` from settings: it also read every setting from its bare field name in the environment (`db_path`, `anthropic_api_key`, ...), not only the documented `MEMEX_*` alias.
+  - Chrome extension: `chrome.scripting.executeScript` self-checks the page origin, the background worker gates runtime messages by sender (config/admin messages only from the popup), and the token field is masked.
+
+### Fixed
+- **`get_chat` over MCP returned 20 messages by default instead of 10**, doubling the worst-case response size that the 10 default exists to keep under the client token cap.
+- **macOS `memex install-service` reported success even when a launchd agent failed to load**; it now returns a non-zero exit code, matching the Windows behavior.
+- **The one-command installer failed under `sh` on Debian/Ubuntu.** `scripts/install-pypi.sh` used a bash-only option while the docs pipe it to `sh` (dash on those systems); it is now POSIX.
+
+### Removed
+- Dead `repo.list_projects()` and a stale `__version__` constant (the version now resolves from the installed package metadata).
+
 ## [0.3.1] - 2026-06-20
 
 ### Fixed
