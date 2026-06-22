@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Memex one-command install from PyPI (no git clone needed).
 #
 # Installs uv (if missing), installs the `memex-chats` tool, and runs
@@ -11,7 +11,10 @@
 # For development (editable, with the extension + service templates), clone the
 # repo and use scripts/install.sh instead.
 
-set -euo pipefail
+# POSIX sh only (no `pipefail`): the docs pipe this to `sh`, which is dash on
+# Debian/Ubuntu and rejects bash-only options. A failed pipe is caught by the
+# `command -v uv` check below instead.
+set -eu
 
 echo "==> Memex install (PyPI)"
 

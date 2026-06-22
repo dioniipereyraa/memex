@@ -186,6 +186,35 @@ none of it.
 
 Run `memex doctor` any time something is not working. It checks Python version, database, embedder, live-capture server, summarizer config, registered repos, and indexed corpus. Reports OK / WARN / FAIL per check.
 
+## Troubleshooting
+
+Start with `memex doctor` (above): most of the issues below also surface there.
+
+**`memex: command not found` right after installing.** The `memex` executable lives in the tool's bin directory, which may not be on your `PATH` in the current shell yet. Open a new terminal, or add it now:
+- macOS / Linux: `export PATH="$HOME/.local/bin:$PATH"`
+- Windows: re-open the terminal so the installer's PATH change takes effect (the bin dir is `%USERPROFILE%\.local\bin` for `uv tool`, or the pipx Scripts dir).
+
+Then confirm the right binary: `which memex` (macOS/Linux) or `where memex` (Windows). It should point at the uv-tool / pipx install, not an old clone.
+
+**The extension shows the server as not responding, or ingest returns `401`.**
+- Is the server up? `curl -s http://127.0.0.1:5777/health` should return JSON. If it does not, start it (`memex serve`) or check the autostart service below.
+- `401` means the pairing token is missing or stale: run `memex token`, copy the value, paste it into the extension popup, and click **Save token**.
+
+**The autostart service did not come up.** Check its status, then read its log:
+- **Linux**: `systemctl --user status memex-serve`; log at `~/.local/share/memex/serve.log`. `Failed to connect to bus` means there is no user systemd manager for this session (common over plain SSH): run `loginctl enable-linger "$USER"`, make sure `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, then re-run `memex install-service`.
+- **macOS**: `launchctl list | grep memex`; log in the data dir (`~/Library/Application Support/memex/` on a PyPI install, `<repo>/data/` from source).
+- **Windows**: Task Scheduler, or `schtasks /Query /TN MemexServe /V`; log at `%LOCALAPPDATA%\memex\serve.log`. If an older install left a task with the same name, it can silently mask the new one: delete it (`schtasks /Delete /TN MemexServe /F`) and re-run `memex install-service`.
+
+**Autostart does not survive logout or reboot (Linux).** A systemd *user* unit is torn down when your session ends unless lingering is enabled: `loginctl enable-linger "$USER"`.
+
+**The one-command installer fails with a shell error.** The installer is POSIX `sh`. If you are on a very old or unusual shell and the pipe fails, fetch and run it with bash instead: `curl -LsSf <url>/install-pypi.sh | bash`.
+
+**The first backfill (or first ingest) is slow.** The first embed downloads a ~130 MB quantized model; that is one-time, later runs are fast. The backfill is incremental and safe to re-run, so a slow or interrupted first pass simply resumes where it left off.
+
+**Ingest uses too much memory.** Peak RAM scales with the embed batch size. Lower it: set `MEMEX_EMBED_BATCH_SIZE=1` (about 0.67 GB peak) in your environment or `.env`.
+
+**Where is my data?** `memex doctor` prints the DB path. By default it is `~/.local/share/memex` (Linux), `~/Library/Application Support/memex` (macOS), or `%LOCALAPPDATA%\memex` (Windows) for a PyPI install, or `<repo>/data` from a clone. Override with `MEMEX_DB_PATH` / `MEMEX_EXPORTS_DIR`.
+
 ## MCP server tools (v1)
 
 - `search_chats(query, limit=5, source?, mode="hybrid", repo?)` searches the corpus. Modes: `hybrid` (default, combines vector search + FTS5 BM25 via Reciprocal Rank Fusion), `semantic` (vectors only), `lexical` (FTS5 only, ideal for proper nouns or exact terms). `source` filters by origin (`conversations`, `design_chat`, `memory`). `repo` boosts results associated to a registered repo (see "Repo associations" below). Deduplicated per conversation.
@@ -322,9 +351,11 @@ memex install-service uninstall  # remove it
 This is cross-platform: launchd agents on macOS, a systemd user unit on Linux,
 a Scheduled Task on Windows. By default it manages the live-capture server plus
 the 15-minute Claude Code ingest backstop. Idle cost is low: neither loads the
-embedding model until there is real work. The agents are anchored to the cloned
-repo, so run it from your checkout (a PyPI/uvx install can wire the MCP server
-and ingest, but the always-on service still needs the repo for now).
+embedding model until there is real work. It works the same from a PyPI / pipx /
+`uv tool` install (a self-contained launchd / systemd / Scheduled Task that runs
+the installed `memex serve` directly) and from a cloned repo. Use a persistent
+install (`pipx` or `uv tool`), not transient `uvx`, so the service has a stable
+interpreter to launch at boot.
 
 To also run the claude.ai remote connector as a service, pass `--remote`
 (macOS): `memex install-service --remote`. It only makes sense once the
@@ -463,8 +494,8 @@ memex install-service uninstall
 The CLI dispatches to the right installer for your OS:
 
 - **macOS**: writes launchd agents for `serve` + the 15-minute Claude Code ingest backstop, and `launchctl load`s them. Logs at `data/serve.log`. Add `--remote` to also run the claude.ai connector (needs the `MEMEX_REMOTE_*` config). See [Running always-on](#running-always-on).
-- **Windows**: registers a Scheduled Task (`MemexServe`) that runs `uv run memex serve` at logon. No admin required, no console window, survives VS Code close. Logs at `%LOCALAPPDATA%\Memex\serve.log`. Auto-restarts up to 3 times if the wrapper dies.
-- **Linux**: writes a systemd user unit at `~/.config/systemd/user/memex-serve.service`, enables it, and starts it now. Logs at `~/.local/state/memex/serve.log`. To keep it running across logout: `loginctl enable-linger $USER`. Status: `systemctl --user status memex-serve`.
+- **Windows**: registers a Scheduled Task (`MemexServe`) that runs `memex serve` at logon. No admin required, no console window, survives VS Code close. Logs at `%LOCALAPPDATA%\memex\serve.log`. Auto-restarts up to 3 times if it dies.
+- **Linux**: writes a systemd user unit at `~/.config/systemd/user/memex-serve.service`, enables it, and starts it now. Logs at `~/.local/share/memex/serve.log`. To keep it running across logout: `loginctl enable-linger $USER`. Status: `systemctl --user status memex-serve`.
 
 From a `pip`/`pipx` install (no cloned repo), `memex install-service` works on macOS, Linux, and Windows alike: it generates a self-contained agent (launchd / systemd / a logon Scheduled Task) that runs the installed `memex serve` directly, with the database in your per-user data directory. Use `pipx` (not transient `uvx`) so the service has a stable interpreter to launch at boot.
 

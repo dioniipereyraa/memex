@@ -6,6 +6,15 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-22: Linux live test started, fixed the one-liner (dash incompat)
+
+Began the last open Phase B verification: the live Linux/systemd install. Pre-flight reviewed the whole Linux path (`install-pypi.sh` -> `memex setup -y` -> `_run_install_service` Linux/wheel branch -> `linux_install_wheel` -> `render_systemd_unit`) and the wheel data-dir resolution; rendered the exact systemd unit to eyeball it. Code path is correct (ExecStart runs the uv-tool python `-m memex.cli.main serve`, `MEMEX_DB_PATH` pinned to `~/.local/share/memex`, serve on `127.0.0.1:5777`).
+
+- **Bug found on the very first command (the point of the live test).** The one-liner `curl ... | sh` failed with `sh: 14: set: Illegal option -o pipefail`: `install-pypi.sh` was `#!/usr/bin/env bash` + `set -euo pipefail`, but piping to `sh` runs it under dash on Debian/Ubuntu, which has no `pipefail`. Slipped past macOS because there `/bin/sh` is bash. Fix: rewrote the script as POSIX (`#!/bin/sh`, `set -eu`); the dropped `pipefail` is covered by the existing `command -v uv` check. Verified clean with `sh -n` and `dash -n`. The script ships from GitHub raw `main` (not the wheel), so a push fixes the live one-liner with no PyPI re-publish. Other repo `.sh` scripts are unaffected (run via shebang or explicit `bash`). Logged in CLAUDE.md mistakes.
+- **Immediate unblock** while the fix lands: re-run with `| bash` instead of `| sh`.
+- **Verified live (2026-06-22).** Re-ran the one-liner with `| bash` on the Linux box; the install completed and the systemd user unit came up (serve active, `/health` ok, DB at `~/.local/share/memex`). **Phase B autostart is now verified live on all three OSes** (macOS launchd, Linux systemd, Windows Scheduled Task). The dash incompatibility above is the only issue found.
+- **Next:** push the `install-pypi.sh` POSIX fix to `main` so the canonical `curl ... | sh` works for everyone (no PyPI re-publish needed, it is served from raw `main`).
+
 ## 2026-06-20: verification pass, 0.3.0 release prep, Windows wheel autostart
 
 Validation + finishing Phase B. Ran a full verification of yesterday's work and closed the last wheel-autostart gap.
