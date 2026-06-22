@@ -1004,8 +1004,7 @@ def _run_install_service(action: str, remote: bool = False) -> int:
 # as the one manual step left (a browser extension cannot be installed from a
 # terminal).
 _EXTENSION_URL = (
-    "https://chromewebstore.google.com/detail/"
-    "memex-live-capture/bncngnabecfilefblppkolhdnaelibnb"
+    "https://chromewebstore.google.com/detail/memex-live-capture/bncngnabecfilefblppkolhdnaelibnb"
 )
 
 
@@ -1032,15 +1031,11 @@ def _setup_mcp() -> tuple[str, str, str]:
 
     claude = shutil.which("claude")
     if claude is None:
-        console.print(
-            "[yellow]`claude` CLI not found.[/yellow] Register the MCP server manually:"
-        )
+        console.print("[yellow]`claude` CLI not found.[/yellow] Register the MCP server manually:")
         console.print(f"  claude mcp add --scope user memex -- {' '.join(invocation)}")
         return ("MCP server", "WARN", "claude CLI not found; manual command printed")
 
-    listed = subprocess.run(
-        [claude, "mcp", "list"], check=False, capture_output=True, text=True
-    )
+    listed = subprocess.run([claude, "mcp", "list"], check=False, capture_output=True, text=True)
     if listed.returncode == 0 and "memex" in listed.stdout:
         return ("MCP server", "OK", "already registered")
 
@@ -1080,10 +1075,7 @@ def _setup_ingest() -> tuple[str, str, str]:
     except Exception as e:
         # Setup must never crash on ingest; report it as a warning instead.
         return ("Claude Code index", "WARN", f"{type(e).__name__}: {e}")
-    detail = (
-        f"{summary.conversations} new, "
-        f"{summary.skipped_unchanged_conversations} unchanged"
-    )
+    detail = f"{summary.conversations} new, {summary.skipped_unchanged_conversations} unchanged"
     return ("Claude Code index", "OK", detail)
 
 
@@ -1106,9 +1098,7 @@ def setup(
     ] = True,
     ingest: Annotated[
         bool,
-        typer.Option(
-            "--ingest/--no-ingest", help="Index your local Claude Code sessions now."
-        ),
+        typer.Option("--ingest/--no-ingest", help="Index your local Claude Code sessions now."),
     ] = True,
     remote: Annotated[
         bool,
@@ -1189,9 +1179,7 @@ def setup(
         table.add_row(name, status_style[status], detail)
     console.print(table)
 
-    console.print(
-        "\n[bold]Last step: the Chrome extension[/bold] (captures your claude.ai chats):"
-    )
+    console.print("\n[bold]Last step: the Chrome extension[/bold] (captures your claude.ai chats):")
     console.print(f"  1. Install it: [cyan]{_EXTENSION_URL}[/cyan]")
     console.print("  2. Open the extension popup and paste this access token:")
     console.print(f"     [bold cyan]{token}[/bold cyan]")

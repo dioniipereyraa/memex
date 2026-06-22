@@ -219,9 +219,7 @@ class TestInstallServiceCommand:
         # launchctl load was invoked once per default agent (serve + ingest).
         assert sum(1 for c in calls if "load" in c) == 2
 
-    def test_macos_wheel_install(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_macos_wheel_install(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """No repo (wheel install) -> self-contained launchd agents are generated."""
         import platform
         import subprocess
@@ -280,9 +278,7 @@ class TestInstallServiceCommand:
         assert "com.memex.serve" in result.output
         assert "not installed" in result.output
 
-    def test_windows_wheel_install_creates_task(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_windows_wheel_install_creates_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No repo on Windows -> a logon Scheduled Task is registered via schtasks."""
         import platform
         import subprocess
@@ -323,9 +319,7 @@ class TestServices:
 
         scripts = tmp_path / "scripts"
         scripts.mkdir()
-        (scripts / "com.memex.serve.plist.template").write_text(
-            "head __REPO__/data/serve.log tail"
-        )
+        (scripts / "com.memex.serve.plist.template").write_text("head __REPO__/data/serve.log tail")
         label, xml = services.render_agent(tmp_path, "serve")
         assert label == "com.memex.serve"
         assert "__REPO__" not in xml
@@ -372,9 +366,7 @@ class TestServices:
         assert "StartInterval" in xml
         assert "<string>ingest-claude-code</string>" in xml
 
-    def test_render_systemd_unit(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_render_systemd_unit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import sys as _sys
 
         from memex.cli import services
@@ -459,9 +451,7 @@ class TestSetupCommand:
     def test_all_skipped_prints_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._stub_token(monkeypatch)
         self._stub_embedder(monkeypatch)
-        result = runner.invoke(
-            app, ["setup", "-y", "--no-mcp", "--no-autostart", "--no-ingest"]
-        )
+        result = runner.invoke(app, ["setup", "-y", "--no-mcp", "--no-autostart", "--no-ingest"])
         assert result.exit_code == 0
         assert "TESTTOKEN123" in result.output
         assert "chromewebstore" in result.output

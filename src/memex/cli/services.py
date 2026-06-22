@@ -95,9 +95,7 @@ def macos_install(repo_root: Path, services: Iterable[str]) -> list[str]:
         label, xml = render_agent(repo_root, service)
         dest = _plist_dest(label)
         # Unload first so a changed plist is picked up; ignore "not loaded".
-        subprocess.run(
-            ["launchctl", "unload", str(dest)], check=False, capture_output=True
-        )
+        subprocess.run(["launchctl", "unload", str(dest)], check=False, capture_output=True)
         dest.write_text(xml, encoding="utf-8")
         result = subprocess.run(
             ["launchctl", "load", str(dest)],
@@ -120,9 +118,7 @@ def macos_uninstall(services: Iterable[str]) -> list[str]:
         label = AGENT_LABELS[service]
         dest = _plist_dest(label)
         if dest.exists():
-            subprocess.run(
-                ["launchctl", "unload", str(dest)], check=False, capture_output=True
-            )
+            subprocess.run(["launchctl", "unload", str(dest)], check=False, capture_output=True)
             dest.unlink()
             lines.append(f"removed {label}")
         else:
@@ -246,9 +242,7 @@ def macos_install_wheel(services: Iterable[str]) -> list[str]:
     for service in services:
         label = AGENT_LABELS[service]
         dest = _plist_dest(label)
-        subprocess.run(
-            ["launchctl", "unload", str(dest)], check=False, capture_output=True
-        )
+        subprocess.run(["launchctl", "unload", str(dest)], check=False, capture_output=True)
         dest.write_text(render_wheel_plist(service, logs), encoding="utf-8")
         result = subprocess.run(
             ["launchctl", "load", str(dest)],
@@ -430,14 +424,14 @@ def windows_install_wheel(action: str) -> list[str]:
             capture_output=True,
             text=True,
         )
-        return [f"{WINDOWS_TASK_NAME}: {'registered' if result.returncode == 0 else 'not installed'}"]
+        return [
+            f"{WINDOWS_TASK_NAME}: {'registered' if result.returncode == 0 else 'not installed'}"
+        ]
 
     # install: write the task XML to a temp file (UTF-16, as Task Scheduler
     # expects) and register it, replacing any existing task with /F.
     xml_path = ""
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".xml", encoding="utf-16", delete=False
-    ) as handle:
+    with tempfile.NamedTemporaryFile("w", suffix=".xml", encoding="utf-16", delete=False) as handle:
         handle.write(render_windows_task_xml())
         xml_path = handle.name
     try:
@@ -454,7 +448,5 @@ def windows_install_wheel(action: str) -> list[str]:
         detail = (result.stderr or result.stdout or "").strip()
         return [f"FAILED to create task {WINDOWS_TASK_NAME}: {detail}"]
     # The trigger fires at logon; start it once now so it is up immediately.
-    subprocess.run(
-        ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME], check=False, capture_output=True
-    )
+    subprocess.run(["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME], check=False, capture_output=True)
     return [f"installed task {WINDOWS_TASK_NAME}", "runs: pythonw -m memex.cli.main serve"]

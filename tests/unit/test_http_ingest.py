@@ -344,9 +344,7 @@ class TestBackfillPlan:
         assert r.status_code == 200
         assert r.json()["toFetch"] == ["never-seen"]
 
-    def test_indexed_unchanged_is_skipped_changed_is_fetched(
-        self, http_client: TestClient
-    ) -> None:
+    def test_indexed_unchanged_is_skipped_changed_is_fetched(self, http_client: TestClient) -> None:
         http_client.post("/ingest/conversation", json=VALID_PAYLOAD, headers=AUTH)
         uuid = VALID_PAYLOAD["uuid"]
         # Same instant (different fractional-second precision) -> skipped. The
@@ -355,11 +353,7 @@ class TestBackfillPlan:
         same = {"uuid": uuid, "updated_at": VALID_PAYLOAD["updated_at"]}
         # A newer updated_at -> must be re-fetched.
         newer = {"uuid": uuid, "updated_at": "2030-01-01T00:00:00.000000Z"}
-        r = http_client.post(
-            "/ingest/plan", json={"conversations": [same]}, headers=AUTH
-        )
+        r = http_client.post("/ingest/plan", json={"conversations": [same]}, headers=AUTH)
         assert r.json()["toFetch"] == []
-        r = http_client.post(
-            "/ingest/plan", json={"conversations": [newer]}, headers=AUTH
-        )
+        r = http_client.post("/ingest/plan", json={"conversations": [newer]}, headers=AUTH)
         assert r.json()["toFetch"] == [uuid]

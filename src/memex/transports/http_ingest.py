@@ -342,9 +342,7 @@ async def backfill_plan_endpoint(request: Request) -> JSONResponse:
     if not _origin_allowed(request):
         return JSONResponse({"error": "Origin not allowed"}, status_code=403)
     if not _token_valid(request):
-        return JSONResponse(
-            {"error": "Missing or invalid access token."}, status_code=401
-        )
+        return JSONResponse({"error": "Missing or invalid access token."}, status_code=401)
 
     raw = await _read_body_capped(request, settings.ingest_max_body_bytes)
     if raw is None:
