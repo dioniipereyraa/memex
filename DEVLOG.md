@@ -6,6 +6,16 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-24: Multi-device sync live cross-device test (Mac -> Linux over Tailscale)
+
+Validated the sync between the two real machines, end to end, together with the user.
+
+- **Setup.** A throwaway test serve on the Mac (`:5901`, isolated DB in a scratch dir, `MEMEX_INGEST_ALLOWED_HOSTS` with the Mac's Tailscale IP, bound `--host 100.122.177.107`), separate from the live capture server on 5777. The client ran on the Linux box against a test DB.
+- **Result: PASS.** `reconcile` reported `pulled 2, pushed 0`, and `memex search "how should the gearbox feel"` on the Linux box returned the conversations seeded on the Mac, ranked by hybrid retrieval. Independently confirmed from the Mac serve log (the Linux IP `100.70.96.57` hit `GET /sync/manifest` 200 then `POST /sync/conversations` 200). Tailscale reachability + bind + Host allow-list + token auth all hold over the real network.
+- **Gotchas worth keeping.** (1) The installed PyPI `memex` (0.3.1) predates the sync feature, so the client had to run from a repo clone (`uv run memex sync ...`); shipping sync for real needs a published bump carrying it. (2) The pairing token's capital `O` got copy-pasted as a `0` (zero), giving a 401; O/0 ambiguity is a real hazard for tokens passed through chat. Fixed by correcting the stored token in `sync_peers.json`.
+- **Not yet live-tested:** PUSH cross-device (the Linux test DB was empty so the reconcile only pulled); it is covered by the local two-instance test + unit tests, and the network path is now proven.
+- **Cleanup.** Test serve down, the live 5777 untouched, Mac test data removed.
+
 ## 2026-06-24: Multi-device sync Phase 2 (bidirectional + auto-trigger)
 
 Continued straight into Phase 2 (same session). Added push + a safe two-way reconcile + opt-in auto-sync, and refactored the wire format into one shared place so the server and client cannot drift.

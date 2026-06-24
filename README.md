@@ -341,8 +341,9 @@ If you run memex on more than one machine (say a laptop and a desktop), `memex
 sync` makes Claude one memory across them: index a chat on one device and search
 it from the other. Each device keeps its own local store and they sync
 peer-to-peer, with no central server and nothing leaving your hardware. This is
-an early, experimental feature: today the sync is a manual, one-directional pull
-and needs both devices powered on and reachable.
+an early, experimental feature that needs both devices powered on and reachable.
+It is available from a recent source build (not yet in the published PyPI
+release), so to use it today run from a clone (`uv run memex sync ...`).
 
 It is off by default and exposes nothing until you opt in on the source device.
 The source must run `memex serve` bound somewhere the other device can reach it

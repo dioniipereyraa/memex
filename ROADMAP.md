@@ -226,6 +226,14 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   without both devices on. Out of scope until the project grows; the local P2P
   mode stays the default/private path.
 
+**Live cross-device test PASSED (2026-06-24):** Mac to Linux over Tailscale, a
+`reconcile` pulled the Mac's conversations into the Linux box and they were
+searchable there with hybrid retrieval (confirmed both client-side and from the
+Mac serve log). PUSH cross-device is not yet live-tested (covered by the local
+two-instance test + unit tests). Shipping sync for real needs a published bump
+carrying it (0.3.1/0.3.2 are pre-sync), so day-to-day cross-device use is gated
+on a `0.4.0`-style release built from `main`.
+
 **Cross-cutting (every phase):** stay token-cheap FOR USERS (dedup by uuid so
 searches never return duplicate cross-device hits; retrieval payloads stay
 tight); no re-embedding, no new daemon, no aggressive polling; reuse the audited
