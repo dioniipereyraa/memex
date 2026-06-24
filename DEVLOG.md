@@ -6,6 +6,16 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-23: Ingest RAM investigation + single-flight lock across all embed paths
+
+Goal: cut the transient ingest RAM peak (~0.69 GB observed on the `Memex ingest` worker) as much as possible without hurting search. Measured every lever on the real model (`nomic-embed-text-v1.5-Q`, batch=1/threads=1) instead of guessing.
+
+- **Findings (measured peak RSS, minimal process).** nomic 768d = ~0.54 GB; `all-MiniLM-L6-v2` 384d = ~0.26 GB (35x faster) but English-centric; `bge-small-en` 384d = ~0.40 GB; `paraphrase-multilingual-MiniLM-L12-v2` 384d = ~0.88 GB (huge multilingual vocab → MORE RAM). `enable_cpu_mem_arena=False` made no difference (538 vs 545 MB). Chunk size 500 -> 256 tok saves ~85 MB and ~2x speed. So the peak is dominated by the fixed model+runtime load; batch/threads were already at the minimum.
+- **Quality gate.** A semantic recall test (Spanish + English, low lexical overlap) showed nomic 6/6 vs all-MiniLM 4/6, the misses being Spanish with near-zero margin. Conclusion: for a Spanish+English corpus nomic is near the practical floor; a smaller model trades real recall for RAM. Documented as an opt-in only if usage becomes English-dominant. No model change shipped.
+- **Shipped: serialize every embedder loader.** The CLI ingest already held a non-blocking `ingest.lock`, but the live-capture worker did not, and `http_ingest` awaits each subprocess, so concurrent captures (backfill burst / multiple tabs) or capture-vs-CLI could stack ~0.5 GB loads. Extracted the lock to `memex/ingest_lock.py` (`acquire_nonblocking` for the CLI backstop, `acquire_blocking(timeout)` for live capture, `release`). `_ingest_in_subprocess` now takes an in-process `asyncio.Lock` (serializes the server's own workers) plus the cross-process lock blocking-with-timeout (a capture waits for an in-flight ingest, else 503s and is re-sent), and never loads a second model concurrently. CLI keeps the non-blocking skip.
+- **Verification.** 527 unit tests pass (+4 new in `test_ingest_lock.py`), ruff + format clean, mypy clean on core + the new/touched files. No DB or schema change; user data untouched.
+- **Next:** optional `MEMEX_CHUNK_SIZE` reduction (needs a re-index to be consistent); the smaller-model swap stays documented-but-unshipped. Then debate a cross-device sync design (separate project reusing memex's core).
+
 ## 2026-06-22: Phase 7 + Phase B close audit (findings fixed)
 
 Ran the owed phase-boundary audit across five dimensions in parallel (install/autostart, HTTP ingest + auth, the Chrome extension, config/data/redaction, and a project-wide dead-code/doc sweep), then verified each finding against the code and implemented the fixes. No critical/high-remote findings; the auth gate held (Origin+token, constant-time compare, 0600 token, TTY-gated print). 523 tests green, ruff + core mypy clean.

@@ -25,6 +25,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from memex import ingest_lock
 from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
 from memex.core.embeddings.lazy import LazyEmbedder
@@ -111,28 +112,15 @@ def ingest(
 
 
 def _acquire_ingest_lock(db_path: Path) -> object | None:
-    """Take a non-blocking, process-lifetime lock for Claude Code ingest.
+    """Take the non-blocking single-flight ingest lock for the CLI backstop.
 
-    Returns an open file handle (keep it referenced for the lock to hold) or
-    None if another ingest already holds it. Best-effort on platforms without
-    `fcntl` (Windows): returns a handle without locking.
+    Thin wrapper over the shared `memex.ingest_lock` so the CLI, the schedule,
+    the SessionEnd hook AND the live-capture worker all serialize on the same
+    `<db_dir>/ingest.lock` (otherwise two embedding model loads stack, doubling
+    RAM). Returns a handle to keep referenced, or None if another ingest holds
+    it (the caller then skips; the schedule re-runs in 15 min).
     """
-    lock_path = db_path.parent / "ingest.lock"
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = lock_path.open("w")
-    except OSError:
-        return object()  # cannot create the lock file; do not block ingest
-    try:
-        import fcntl
-    except ImportError:
-        return handle  # no flock on this platform; best-effort
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        return None
-    return handle
+    return ingest_lock.acquire_nonblocking(db_path)
 
 
 @app.command("ingest-claude-code")

@@ -59,6 +59,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from memex import ingest_lock
 from memex.config import settings
 from memex.core.embeddings import Embedder, EmbedderError, get_default_embedder
 from memex.core.ingest.pipeline import ingest_single_conversation
@@ -118,6 +119,19 @@ def _get_embedder() -> Embedder:
     return _embedder
 
 
+# Serializes this server's own capture workers (concurrent POSTs, e.g. a
+# backfill burst or several claude.ai tabs) so they do not each spawn a worker
+# and stack a ~0.5 GB model load. Created lazily to bind to the running loop.
+_ingest_serialize_lock: asyncio.Lock | None = None
+
+
+def _get_serialize_lock() -> asyncio.Lock:
+    global _ingest_serialize_lock
+    if _ingest_serialize_lock is None:
+        _ingest_serialize_lock = asyncio.Lock()
+    return _ingest_serialize_lock
+
+
 async def _ingest_in_subprocess(payload: dict[str, Any], source: Source) -> dict[str, int]:
     """Ingest one conversation in a short-lived child process, then it exits.
 
@@ -127,7 +141,28 @@ async def _ingest_in_subprocess(payload: dict[str, Any], source: Source) -> dict
     file, so nothing sensitive touches disk); the summary comes back as one JSON
     line on stdout. The DB path is passed absolute via the environment so the
     child does not depend on the working directory.
+
+    Single-flight on two fronts so at most one embedding model is resident at a
+    time: an in-process `asyncio.Lock` serializes this server's own workers, and
+    the cross-process `ingest.lock` (shared with the `ingest-claude-code` CLI /
+    schedule / hook) is taken blocking-with-timeout so a live capture WAITS for
+    an in-flight ingest instead of stacking a second load (and never hangs).
     """
+    async with _get_serialize_lock():
+        lock_handle = await asyncio.to_thread(ingest_lock.acquire_blocking)
+        if lock_handle is None:
+            # A long-running ingest still holds the lock past the timeout. Drop
+            # the live chat rather than risk a stacked model load; the extension
+            # re-sends and the incremental backfill re-fetches it later.
+            logger.warning("ingest lock busy past timeout; skipping this capture")
+            raise EmbedderError("ingest lock busy; capture deferred")
+        try:
+            return await _spawn_ingest_worker(payload, source)
+        finally:
+            ingest_lock.release(lock_handle)
+
+
+async def _spawn_ingest_worker(payload: dict[str, Any], source: Source) -> dict[str, int]:
     env = {k: v for k, v in os.environ.items() if k not in _WORKER_ENV_DENY}
     env["MEMEX_DB_PATH"] = str(Path(settings.db_path).resolve())
     proc = await asyncio.create_subprocess_exec(
