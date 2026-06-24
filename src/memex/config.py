@@ -170,6 +170,17 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO", alias="MEMEX_LOG_LEVEL")
 
+    # Multi-device sync (experimental). OFF by default so the feature adds no
+    # new network surface for non-users. When on (and at least one peer is
+    # paired), `memex serve` reconciles with each peer on startup and every
+    # `sync_interval_seconds`, skipping a tick while an ingest holds the lock and
+    # skipping any peer that is offline. The manual `memex sync` commands work
+    # regardless of this flag.
+    sync_auto: bool = Field(default=False, alias="MEMEX_SYNC_AUTO")
+    sync_interval_seconds: int = Field(
+        default=900, alias="MEMEX_SYNC_INTERVAL_SECONDS", ge=60, le=86_400
+    )
+
     # Auto-summaries with Claude Haiku. Opt-in: OFF by default to avoid
     # API calls during bulk ingest. Enable with MEMEX_SUMMARY_ENABLED=true
     # plus a set ANTHROPIC_API_KEY.

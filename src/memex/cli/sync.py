@@ -1,13 +1,15 @@
-"""`memex sync` command group: pull conversations from a paired device.
+"""`memex sync` command group: sync conversations between paired devices.
 
-Experimental (Phase 1). One-directional, manually triggered pull between two
-devices that ran `memex sync pair` once. The source device must be running
-`memex serve` reachable from this one (e.g. bound to its Tailscale address); the
-`/sync/*` endpoints are token-gated.
+Experimental. Devices pair once (`memex sync pair`), then:
+- `pull`: one-directional, take the peer's version (peer authoritative).
+- `push`: one-directional, send the local version (local authoritative).
+- `reconcile`: two-way, last-writer-wins by `updated_at`, leaves both equal.
 
-Phase 3 will add `enable`/`disable`/`status` and a default-off config gate; for
-now the feature exposes nothing unless the user pairs a peer AND deliberately
-binds `memex serve` beyond loopback.
+The peer must be running `memex serve` reachable from this device (e.g. bound to
+its Tailscale address); the `/sync/*` endpoints are token-gated. Auto-sync on
+`serve` startup + a sparse interval is opt-in (`MEMEX_SYNC_AUTO`); Phase 3 will
+add `enable`/`disable`/`status`. The feature exposes nothing unless the user
+pairs a peer AND deliberately binds `memex serve` beyond loopback.
 """
 
 from __future__ import annotations
@@ -110,6 +112,35 @@ def unpair(
         console.print(f"[yellow]No peer named {name!r}.[/yellow]")
 
 
+def _resolve_targets(peer_name: str | None) -> list[Peer]:
+    targets = peers.load_peers()
+    if peer_name is not None:
+        targets = [p for p in targets if p.name == peer_name]
+        if not targets:
+            console.print(f"[red]No peer named {peer_name!r}.[/red] See `memex sync peers`.")
+            raise typer.Exit(code=2)
+    if not targets:
+        console.print("[yellow]No peers paired. Use `memex sync pair`.[/yellow]")
+        raise typer.Exit(code=2)
+    return targets
+
+
+def _local_identity() -> tuple[str, int]:
+    try:
+        embedder = get_default_embedder()
+    except EmbedderError as e:
+        console.print(f"[red]Embedder error:[/red] {e}")
+        raise typer.Exit(code=2) from e
+    return embedder.model_name, embedder.dim
+
+
+def _mismatch_line(peer_model: object, peer_dim: object, local_model: str, local_dim: int) -> None:
+    console.print(
+        f"  [red]Refused:[/red] embedding mismatch (peer {peer_model}/{peer_dim}, "
+        f"local {local_model}/{local_dim}). Both devices must use the same embedding model."
+    )
+
+
 @sync_app.command("pull")
 def pull(
     peer_name: Annotated[
@@ -121,24 +152,9 @@ def pull(
         typer.Option("--db", help="Path to the SQLite database."),
     ] = None,
 ) -> None:
-    """Pull new or changed conversations from a paired device into this one."""
-    targets = peers.load_peers()
-    if peer_name is not None:
-        targets = [p for p in targets if p.name == peer_name]
-        if not targets:
-            console.print(f"[red]No peer named {peer_name!r}.[/red] See `memex sync peers`.")
-            raise typer.Exit(code=2)
-    if not targets:
-        console.print("[yellow]No peers paired. Use `memex sync pair`.[/yellow]")
-        raise typer.Exit(code=2)
-
-    try:
-        embedder = get_default_embedder()
-        local_model, local_dim = embedder.model_name, embedder.dim
-    except EmbedderError as e:
-        console.print(f"[red]Embedder error:[/red] {e}")
-        raise typer.Exit(code=2) from e
-
+    """Pull new or changed conversations from a paired device into this one (peer wins)."""
+    targets = _resolve_targets(peer_name)
+    local_model, local_dim = _local_identity()
     conn = connect_and_init(db_path)
     try:
         for peer in targets:
@@ -151,20 +167,89 @@ def pull(
             except ValueError as e:
                 console.print(f"  [red]Bad response from {peer.name}:[/red] {e}")
                 continue
-
             if summary.refused_mismatch:
-                console.print(
-                    f"  [red]Refused:[/red] embedding mismatch (peer "
-                    f"{summary.peer_model}/{summary.peer_dim}, local "
-                    f"{summary.local_model}/{summary.local_dim}). "
-                    "Both devices must use the same embedding model."
-                )
+                _mismatch_line(summary.peer_model, summary.peer_dim, local_model, local_dim)
                 continue
-
             console.print(
-                f"  Peer has {summary.manifest_total}, "
-                f"new/changed {summary.to_fetch}, "
+                f"  Peer has {summary.manifest_total}, new/changed {summary.to_fetch}, "
                 f"[green]inserted {summary.inserted}[/green]"
+                + (f", [red]failed {summary.failed}[/red]" if summary.failed else "")
+                + "."
+            )
+    finally:
+        conn.close()
+
+
+@sync_app.command("push")
+def push(
+    peer_name: Annotated[
+        str | None,
+        typer.Option("--peer", help="Push to this peer only (default: all paired peers)."),
+    ] = None,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Push local conversations the peer is missing or has differently (local wins)."""
+    targets = _resolve_targets(peer_name)
+    local_model, local_dim = _local_identity()
+    conn = connect_and_init(db_path)
+    try:
+        for peer in targets:
+            console.print(f"\n[bold]Pushing to {peer.name}[/bold] ({peer.url})...")
+            try:
+                summary = client.push(conn, peer, local_model=local_model, local_dim=local_dim)
+            except (urllib.error.URLError, OSError) as e:
+                console.print(f"  [yellow]Skipped:[/yellow] could not reach {peer.name} ({e}).")
+                continue
+            except ValueError as e:
+                console.print(f"  [red]Bad response from {peer.name}:[/red] {e}")
+                continue
+            if summary.refused_mismatch:
+                _mismatch_line(summary.peer_model, summary.peer_dim, local_model, local_dim)
+                continue
+            console.print(
+                f"  new/changed {summary.to_push}, [green]pushed {summary.pushed}[/green]"
+                + (f", [red]failed {summary.failed}[/red]" if summary.failed else "")
+                + "."
+            )
+    finally:
+        conn.close()
+
+
+@sync_app.command("reconcile")
+def reconcile(
+    peer_name: Annotated[
+        str | None,
+        typer.Option("--peer", help="Reconcile with this peer only (default: all paired peers)."),
+    ] = None,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Two-way sync with a paired device, leaving both equal (last writer wins)."""
+    targets = _resolve_targets(peer_name)
+    local_model, local_dim = _local_identity()
+    conn = connect_and_init(db_path)
+    try:
+        for peer in targets:
+            console.print(f"\n[bold]Reconciling with {peer.name}[/bold] ({peer.url})...")
+            try:
+                summary = client.reconcile(conn, peer, local_model=local_model, local_dim=local_dim)
+            except (urllib.error.URLError, OSError) as e:
+                console.print(f"  [yellow]Skipped:[/yellow] could not reach {peer.name} ({e}).")
+                continue
+            except ValueError as e:
+                console.print(f"  [red]Bad response from {peer.name}:[/red] {e}")
+                continue
+            if summary.refused_mismatch:
+                _mismatch_line(local_model, local_dim, local_model, local_dim)
+                continue
+            console.print(
+                f"  [green]pulled {summary.pulled}[/green], "
+                f"[green]pushed {summary.pushed}[/green]"
                 + (f", [red]failed {summary.failed}[/red]" if summary.failed else "")
                 + "."
             )

@@ -6,6 +6,18 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-24: Multi-device sync Phase 2 (bidirectional + auto-trigger)
+
+Continued straight into Phase 2 (same session). Added push + a safe two-way reconcile + opt-in auto-sync, and refactored the wire format into one shared place so the server and client cannot drift.
+
+- **Shared wire format (`sync/records.py`).** Pulled `serialize_conversation` + `insert_record` out of `http_ingest`/`client` into one module used by both sides, plus `local_manifest` and the diff helpers. No behavior change to Phase 1.
+- **Push (`POST /sync/push` + `client.push`).** The receiver accepts full records (same shape `/sync/conversations` returns), refuses on a model/dim mismatch (409), caps the list, and inserts through the repo. `push` sends the local conversations the peer is missing or has differently (local authoritative).
+- **Reconcile (`client.reconcile`).** Two-way, leaves both devices equal. Decision worth recording: the plan defers conflict policy to Phase 3, but a naive bidirectional reconcile by content-hash would let an OLDER copy overwrite a NEWER one (the same claude.ai chat captured on both devices at different times is the common case). So reconcile (and only reconcile / auto-sync) uses last-writer-wins by `updated_at`: pull where the peer is newer-or-absent, push where local is newer-or-absent, skip equal, leave a same-timestamp fork untouched (full conflict policy still Phase 3). The explicit `pull`/`push` commands stay one-directional overrides (hash-diff, the user picks the direction).
+- **Auto-trigger.** `MEMEX_SYNC_AUTO` (off by default) + `MEMEX_SYNC_INTERVAL_SECONDS` (default 900, min 60). A Starlette lifespan task in `memex serve` reconciles with each peer on startup and every interval, off the event loop in a thread, with its own short-lived DB connection. It takes the single-flight ingest lock NON-BLOCKING and skips the tick if an ingest holds it (so a sync write never contends with the embedding pipeline and never blocks a capture); offline peers are skipped. The manual commands do not touch the lock.
+- **CLI.** Added `memex sync push` and `memex sync reconcile` (shared target/identity helpers with `pull`).
+- **Tests + checks.** +11 tests (push endpoint auth/insert/mismatch/cap; client push; reconcile makes both equal + idempotent + newer-wins-no-overwrite; auto-sync skips-when-locked / iterates-peers / no-peers-noop). 560 tests green, ruff + format + mypy clean on core + the new files.
+- **Next:** a live Mac<->Linux reconcile over Tailscale, then Phase 3 (conflict policy beyond LWW, `enable`/`disable`/`status`, red-team the sync surface, drop the experimental label).
+
 ## 2026-06-24: Multi-device sync Phase 1 (one-directional manual pull)
 
 Started the multi-device sync feature (one Claude across the user's devices; full plan in `docs/internal/multidevice-sync-plan.md`). First committed the single-flight ingest lock left from the prior session (`97f1417`), then built Phase 1: a manual, one-directional pull between two paired devices, reusing the already-running `memex serve` HTTP server (the user chose "reuse serve, opt-in Tailscale bind" over a separate sync daemon).

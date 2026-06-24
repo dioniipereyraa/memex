@@ -359,16 +359,26 @@ memex token                            # copy this; the other device needs it
 ```bash
 # On the DESTINATION device (the one you want to pull into):
 memex sync pair --name mac --url http://my-mac:5777   # paste the source's token when asked
-memex sync pull --peer mac                            # fetch new/changed conversations
-memex sync peers                                       # list paired devices
+memex sync reconcile --peer mac                        # two-way: leaves both devices equal
+memex sync peers                                        # list paired devices
 ```
 
-The pull only transfers conversations that are new or changed (by content hash),
-brings their embeddings along so your machine never re-embeds, and is idempotent
-(re-running pulls nothing new). Both devices must use the same embedding model
-(the sync refuses on a mismatch). The peer's token is stored user-only (0600)
-next to the DB. Never sync the SQLite file itself with a folder-sync tool; always
-use `memex sync`, which is consistent at the conversation level.
+`reconcile` is the usual command: it syncs both ways and converges the two
+devices, keeping the newer copy of anything that exists on both (last writer wins
+by update time). If you want a one-directional sync instead, `memex sync pull`
+takes the peer's version and `memex sync push` sends yours.
+
+Every sync only transfers conversations that are new or changed, brings their
+embeddings along so your machine never re-embeds, and is idempotent (re-running
+moves nothing new). Both devices must use the same embedding model (the sync
+refuses on a mismatch). The peer's token is stored user-only (0600) next to the
+DB. Never sync the SQLite file itself with a folder-sync tool; always use `memex
+sync`, which is consistent at the conversation level.
+
+To keep two devices in sync automatically, set `MEMEX_SYNC_AUTO=true` before
+`memex serve`: it reconciles with each paired peer on startup and every
+`MEMEX_SYNC_INTERVAL_SECONDS` (default 900), skipping a peer that is offline and
+backing off while an ingest is running. It stays off unless you set the flag.
 
 ## Running always-on
 

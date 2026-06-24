@@ -1,15 +1,19 @@
-"""Pull a peer's conversations into the local store (Phase 1, one-directional).
+"""Sync a peer's conversations with the local store.
 
-Flow: fetch the peer's manifest, refuse if its embedding model/dim differ from
-this device's (the vectors would be incompatible), diff the manifest against the
-local store by uuid + content_hash, request only the new/changed records, and
-insert each through the repo so `chunks`/`vec_chunks`/`fts_chunks` stay
-consistent. Vectors travel inside each record, so this side never re-embeds and
-never loads the model.
+Three operations, all over the peer's `memex serve` HTTP endpoints
+(`/sync/manifest`, `/sync/conversations`, `/sync/push`):
 
-Idempotent: a re-pull with nothing new fetches and inserts nothing. The HTTP
-calls are injectable (`manifest_fn` / `fetch_fn`) so the diff/insert logic is
-tested without a live socket; the CLI wires them to the urllib helpers here.
+- `pull`  (Phase 1): one-directional, take the peer's version of anything that
+  differs (peer authoritative).
+- `push`  (Phase 2): one-directional, send the local version of anything the
+  peer is missing or has differently (local authoritative).
+- `reconcile` (Phase 2): bidirectional last-writer-wins by `updated_at`, so a
+  newer version is never overwritten by an older one; converges both devices.
+
+All refuse on an embedding model/dim mismatch (the vectors would be
+incompatible). Records carry their chunk vectors, so neither side re-embeds. The
+record (de)serialization and the diff live in `sync.records`; the HTTP calls are
+injectable so the logic is tested without a live socket.
 """
 
 from __future__ import annotations
@@ -22,16 +26,15 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from memex.core.models import Chunk, Conversation, Message, Project, Sender, Source
-from memex.core.storage import repo
+from memex.sync import records
 from memex.sync.peers import Peer
 
 logger = logging.getLogger("memex.sync.client")
 
 # Header carrying the peer's per-install token (matches http_ingest._TOKEN_HEADER).
 _TOKEN_HEADER = "X-Memex-Token"
-# How many uuids to request per /sync/conversations call. Kept under the
-# server's `_MAX_SYNC_UUIDS` cap; a larger pull is split into several requests.
+# How many conversations to move per request. Kept under the server's
+# `_MAX_SYNC_UUIDS` cap; a larger sync is split into several requests.
 _DEFAULT_BATCH = 500
 _MANIFEST_TIMEOUT = 30.0
 _FETCH_TIMEOUT = 120.0
@@ -53,8 +56,35 @@ class PullSummary:
     refused_mismatch: bool = False
 
 
+@dataclass
+class PushSummary:
+    """Result of one `push`."""
+
+    peer: str
+    to_push: int
+    pushed: int
+    failed: int
+    local_model: str
+    local_dim: int
+    peer_model: str | None
+    peer_dim: int | None
+    refused_mismatch: bool = False
+
+
+@dataclass
+class ReconcileSummary:
+    """Result of one bidirectional `reconcile`."""
+
+    peer: str
+    pulled: int
+    pushed: int
+    failed: int
+    refused_mismatch: bool = False
+
+
 ManifestFn = Callable[[Peer], dict[str, Any]]
 FetchFn = Callable[[Peer, list[str]], dict[str, Any]]
+PushFn = Callable[[Peer, str, int, list[dict[str, Any]]], dict[str, Any]]
 
 
 def _http_get_json(url: str, token: str, timeout: float) -> dict[str, Any]:
@@ -92,89 +122,29 @@ def fetch_conversations(peer: Peer, uuids: list[str]) -> dict[str, Any]:
     )
 
 
-def _batched(items: Sequence[str], size: int) -> Iterator[list[str]]:
+def push_conversations(
+    peer: Peer, model: str, dim: int, conversations: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return _http_post_json(
+        f"{peer.url}/sync/push",
+        peer.token,
+        {"embed_model": model, "embed_dim": dim, "conversations": conversations},
+        _FETCH_TIMEOUT,
+    )
+
+
+def _batched(items: Sequence[Any], size: int) -> Iterator[list[Any]]:
     for start in range(0, len(items), size):
         yield list(items[start : start + size])
 
 
+def _compatible(manifest: dict[str, Any], local_model: str, local_dim: int) -> bool:
+    return manifest.get("embed_model") == local_model and manifest.get("embed_dim") == local_dim
+
+
 def _insert_record(conn: sqlite3.Connection, record: dict[str, Any], expected_dim: int) -> None:
-    """Insert one synced conversation (row + messages + chunks + vectors).
-
-    Replaces any existing chunks for the uuid so a re-pull of a changed
-    conversation is a clean swap (chunk ids are local and reassigned, never the
-    peer's, so two devices never collide on ids). Wrapped in a transaction.
-    """
-    project_data = record.get("project")
-    project = Project(**project_data) if isinstance(project_data, dict) else None
-    project_uuid = record.get("project_uuid")
-    # A design_chat references a project via a foreign key. If the peer did not
-    # ship the project row (older peer, or a dangling reference), drop the link
-    # rather than fail the whole insert on the FK; the conversation still syncs.
-    if project_uuid is not None and project is None:
-        logger.warning(
-            "Synced conversation %s references project %s with no project row; "
-            "dropping the project link.",
-            record.get("uuid"),
-            project_uuid,
-        )
-        project_uuid = None
-
-    conv = Conversation(
-        uuid=record["uuid"],
-        title=record["title"],
-        summary=record.get("summary"),
-        source=Source(record["source"]),
-        project_uuid=project_uuid,
-        account_uuid=record.get("account_uuid"),
-        created_at=record["created_at"],
-        updated_at=record["updated_at"],
-        content_hash=record.get("content_hash"),
-    )
-    messages = [
-        Message(
-            uuid=m["uuid"],
-            conversation_uuid=conv.uuid,
-            parent_uuid=m.get("parent_uuid"),
-            sender=Sender(m["sender"]),
-            text=m.get("text", ""),
-            raw_content=m.get("raw_content"),
-            has_tool_use=bool(m.get("has_tool_use", False)),
-            has_attachments=bool(m.get("has_attachments", False)),
-            created_at=m["created_at"],
-            updated_at=m["updated_at"],
-        )
-        for m in record.get("messages", [])
-    ]
-    chunk_rows = record.get("chunks", [])
-    # Validate every embedding before writing anything: a wrong dimension means
-    # the peer's model drifted (the manifest guard should have caught it) and
-    # inserting it would corrupt vector search.
-    for ch in chunk_rows:
-        emb = ch.get("embedding")
-        if not isinstance(emb, list) or len(emb) != expected_dim:
-            got = len(emb) if isinstance(emb, list) else "missing"
-            raise ValueError(f"chunk embedding dim {got} != expected {expected_dim}")
-
-    with conn:
-        if project is not None:
-            repo.insert_project(conn, project)
-        repo.insert_conversation(conn, conv)
-        for msg in messages:
-            repo.insert_message(conn, msg)
-        # Clear old chunks (vec + fts together) before re-adding, so a changed
-        # conversation does not leave stale vectors behind.
-        repo.delete_chunks_for_conversation(conn, conv.uuid)
-        for ch in chunk_rows:
-            chunk = Chunk(
-                conversation_uuid=conv.uuid,
-                message_uuid=ch.get("message_uuid"),
-                sender=ch.get("sender"),
-                text=ch["text"],
-                char_start=ch["char_start"],
-                char_end=ch["char_end"],
-                created_at=ch["created_at"],
-            )
-            repo.add_chunk(conn, chunk, ch["embedding"])
+    """Thin alias kept for the test suite; delegates to the shared insert path."""
+    records.insert_record(conn, record, expected_dim)
 
 
 def pull(
@@ -187,18 +157,18 @@ def pull(
     fetch_fn: FetchFn | None = None,
     batch_size: int = _DEFAULT_BATCH,
 ) -> PullSummary:
-    """Pull new/changed conversations from `peer` into `conn`."""
+    """Pull new or changed conversations from `peer` into `conn` (peer wins)."""
     manifest_fn = manifest_fn or fetch_manifest
     fetch_fn = fetch_fn or fetch_conversations
 
     manifest = manifest_fn(peer)
     peer_model = manifest.get("embed_model")
     peer_dim = manifest.get("embed_dim")
-    convs = manifest.get("conversations") or []
+    remote = manifest.get("conversations") or []
 
-    if peer_model != local_model or peer_dim != local_dim:
+    if not _compatible(manifest, local_model, local_dim):
         logger.warning(
-            "Refusing sync with peer %s: model/dim mismatch (peer %s/%s, local %s/%s)",
+            "Refusing pull from peer %s: model/dim mismatch (peer %s/%s, local %s/%s)",
             peer.name,
             peer_model,
             peer_dim,
@@ -207,7 +177,7 @@ def pull(
         )
         return PullSummary(
             peer=peer.name,
-            manifest_total=len(convs),
+            manifest_total=len(remote),
             to_fetch=0,
             inserted=0,
             failed=0,
@@ -218,41 +188,13 @@ def pull(
             refused_mismatch=True,
         )
 
-    known = {
-        row["uuid"]: row["content_hash"]
-        for row in conn.execute("SELECT uuid, content_hash FROM conversations").fetchall()
-    }
-    to_fetch: list[str] = []
-    for item in convs:
-        uuid = item.get("uuid") if isinstance(item, dict) else None
-        if not uuid:
-            continue
-        if uuid not in known or known[uuid] != item.get("content_hash"):
-            to_fetch.append(uuid)
-
-    inserted = 0
-    failed = 0
-    for batch in _batched(to_fetch, batch_size):
-        resp = fetch_fn(peer, batch)
-        # The peer could in principle re-embed under a new model between the
-        # manifest and this call; re-check before trusting the vectors.
-        if resp.get("embed_model") != local_model or resp.get("embed_dim") != local_dim:
-            logger.warning("Peer %s changed model mid-pull; stopping.", peer.name)
-            break
-        for record in resp.get("conversations") or []:
-            try:
-                _insert_record(conn, record, local_dim)
-                inserted += 1
-            except Exception:
-                logger.exception(
-                    "Failed to insert synced conversation %s",
-                    record.get("uuid") if isinstance(record, dict) else "<?>",
-                )
-                failed += 1
-
+    to_fetch = records.select_to_transfer(records.local_manifest(conn), remote)
+    inserted, failed = _fetch_and_insert(
+        conn, peer, to_fetch, fetch_fn, local_model, local_dim, batch_size
+    )
     return PullSummary(
         peer=peer.name,
-        manifest_total=len(convs),
+        manifest_total=len(remote),
         to_fetch=len(to_fetch),
         inserted=inserted,
         failed=failed,
@@ -261,3 +203,143 @@ def pull(
         peer_model=peer_model,
         peer_dim=peer_dim,
     )
+
+
+def push(
+    conn: sqlite3.Connection,
+    peer: Peer,
+    *,
+    local_model: str,
+    local_dim: int,
+    manifest_fn: ManifestFn | None = None,
+    push_fn: PushFn | None = None,
+    batch_size: int = _DEFAULT_BATCH,
+) -> PushSummary:
+    """Push local conversations the peer is missing or has differently (local wins)."""
+    manifest_fn = manifest_fn or fetch_manifest
+    push_fn = push_fn or push_conversations
+
+    manifest = manifest_fn(peer)
+    peer_model = manifest.get("embed_model")
+    peer_dim = manifest.get("embed_dim")
+    remote = manifest.get("conversations") or []
+
+    if not _compatible(manifest, local_model, local_dim):
+        logger.warning("Refusing push to peer %s: model/dim mismatch", peer.name)
+        return PushSummary(
+            peer=peer.name,
+            to_push=0,
+            pushed=0,
+            failed=0,
+            local_model=local_model,
+            local_dim=local_dim,
+            peer_model=peer_model,
+            peer_dim=peer_dim,
+            refused_mismatch=True,
+        )
+
+    to_push = records.select_to_transfer(remote, records.local_manifest(conn))
+    pushed, failed = _serialize_and_push(
+        conn, peer, to_push, push_fn, local_model, local_dim, batch_size
+    )
+    return PushSummary(
+        peer=peer.name,
+        to_push=len(to_push),
+        pushed=pushed,
+        failed=failed,
+        local_model=local_model,
+        local_dim=local_dim,
+        peer_model=peer_model,
+        peer_dim=peer_dim,
+    )
+
+
+def reconcile(
+    conn: sqlite3.Connection,
+    peer: Peer,
+    *,
+    local_model: str,
+    local_dim: int,
+    manifest_fn: ManifestFn | None = None,
+    fetch_fn: FetchFn | None = None,
+    push_fn: PushFn | None = None,
+    batch_size: int = _DEFAULT_BATCH,
+) -> ReconcileSummary:
+    """Bidirectional reconcile (last-writer-wins by updated_at); leaves both equal."""
+    manifest_fn = manifest_fn or fetch_manifest
+    fetch_fn = fetch_fn or fetch_conversations
+    push_fn = push_fn or push_conversations
+
+    manifest = manifest_fn(peer)
+    remote = manifest.get("conversations") or []
+    if not _compatible(manifest, local_model, local_dim):
+        logger.warning("Refusing reconcile with peer %s: model/dim mismatch", peer.name)
+        return ReconcileSummary(peer=peer.name, pulled=0, pushed=0, failed=0, refused_mismatch=True)
+
+    to_pull, to_push = records.select_reconcile(records.local_manifest(conn), remote)
+    pulled, pull_failed = _fetch_and_insert(
+        conn, peer, to_pull, fetch_fn, local_model, local_dim, batch_size
+    )
+    pushed, push_failed = _serialize_and_push(
+        conn, peer, to_push, push_fn, local_model, local_dim, batch_size
+    )
+    return ReconcileSummary(
+        peer=peer.name,
+        pulled=pulled,
+        pushed=pushed,
+        failed=pull_failed + push_failed,
+    )
+
+
+def _fetch_and_insert(
+    conn: sqlite3.Connection,
+    peer: Peer,
+    uuids: list[str],
+    fetch_fn: FetchFn,
+    local_model: str,
+    local_dim: int,
+    batch_size: int,
+) -> tuple[int, int]:
+    inserted = 0
+    failed = 0
+    for batch in _batched(uuids, batch_size):
+        resp = fetch_fn(peer, batch)
+        # The peer could re-embed under a new model between the manifest and this
+        # call; re-check before trusting the vectors.
+        if not _compatible(resp, local_model, local_dim):
+            logger.warning("Peer %s changed model mid-sync; stopping fetch.", peer.name)
+            break
+        for record in resp.get("conversations") or []:
+            try:
+                records.insert_record(conn, record, local_dim)
+                inserted += 1
+            except Exception:
+                logger.exception(
+                    "Failed to insert synced conversation %s",
+                    record.get("uuid") if isinstance(record, dict) else "<?>",
+                )
+                failed += 1
+    return inserted, failed
+
+
+def _serialize_and_push(
+    conn: sqlite3.Connection,
+    peer: Peer,
+    uuids: list[str],
+    push_fn: PushFn,
+    local_model: str,
+    local_dim: int,
+    batch_size: int,
+) -> tuple[int, int]:
+    pushed = 0
+    failed = 0
+    for batch in _batched(uuids, batch_size):
+        payload = [
+            rec for rec in (records.serialize_conversation(conn, uuid) for uuid in batch) if rec
+        ]
+        if not payload:
+            continue
+        resp = push_fn(peer, local_model, local_dim, payload)
+        pushed += int(resp.get("inserted", 0))
+        failed += int(resp.get("failed", 0))
+    return pushed, failed

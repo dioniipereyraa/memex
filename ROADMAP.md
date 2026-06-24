@@ -209,10 +209,15 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   carries its Project row so the FK holds. Off by default (nothing exposed unless
   a peer is paired AND `memex serve` is bound beyond loopback on purpose). 22
   tests.
-- [ ] **Phase 2: bidirectional + auto-trigger.** Mutual reconcile so one command
-  leaves both devices equal; auto-trigger on `serve` startup + a sparse interval
-  (no tight polling, back off when a peer is offline); the sync insert takes the
-  shared single-flight ingest lock so it never stacks a model load.
+- [x] **Phase 2: bidirectional + auto-trigger (2026-06-24).** `POST /sync/push` +
+  `memex sync push` (one-directional, local authoritative) and `memex sync
+  reconcile` (two-way, leaves both equal). Reconcile is last-writer-wins by
+  `updated_at` so a newer copy is never overwritten by an older one (the explicit
+  `pull`/`push` stay one-directional overrides; the full conflict policy is still
+  Phase 3). Auto-sync (`MEMEX_SYNC_AUTO`, off by default) reconciles with each
+  peer on `serve` startup + every `MEMEX_SYNC_INTERVAL_SECONDS`, skipping a tick
+  while an ingest holds the single-flight lock and skipping offline peers. The
+  wire format is shared between server and client in `sync/records.py`. 11 tests.
 - [ ] **Phase 3: conflicts, UX, hardening, docs.** Confirm last-writer-wins by
   `updated_at`/`content_hash` (optional message-level merge); `memex sync
   enable`/`disable`/`status` + a default-off config gate; a red-team pass on the

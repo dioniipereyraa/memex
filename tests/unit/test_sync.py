@@ -123,7 +123,63 @@ def _transport(source_client: TestClient):
     return manifest_fn, fetch_fn
 
 
+def _push_fn(source_client: TestClient):
+    """Bind the sync client's push hook to a TestClient on the source app."""
+
+    def push_fn(_peer: Peer, model: str, dim: int, conversations: list[dict]) -> dict:
+        r = source_client.post(
+            "/sync/push",
+            json={"embed_model": model, "embed_dim": dim, "conversations": conversations},
+            headers={"X-Memex-Token": TOKEN},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    return push_fn
+
+
 PEER = Peer(name="src", url="http://127.0.0.1:5777", token=TOKEN)
+
+
+def _make_conv(uuid: str, content_hash: str, updated_at: datetime, text: str = "local chunk"):
+    """Build a (conversation, message, chunk-text) triple for seeding a dest DB."""
+    conv = Conversation(
+        uuid=uuid,
+        title=f"conv {uuid}",
+        source=Source.CONVERSATIONS,
+        created_at=_now(),
+        updated_at=updated_at,
+        content_hash=content_hash,
+    )
+    msg = Message(
+        uuid=f"{uuid}-m",
+        conversation_uuid=uuid,
+        sender=Sender.HUMAN,
+        text=text,
+        created_at=_now(),
+        updated_at=updated_at,
+    )
+    return conv, msg, text
+
+
+def _seed(
+    conn, uuid: str, content_hash: str, updated_at: datetime, text: str = "local chunk"
+) -> None:
+    conv, msg, chunk_text = _make_conv(uuid, content_hash, updated_at, text)
+    repo.insert_conversation(conn, conv)
+    repo.insert_message(conn, msg)
+    repo.add_chunk(
+        conn,
+        Chunk(
+            conversation_uuid=uuid,
+            message_uuid=msg.uuid,
+            text=chunk_text,
+            char_start=0,
+            char_end=len(chunk_text),
+            created_at=_now(),
+        ),
+        EMBEDDER.embed_one(chunk_text),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -452,3 +508,230 @@ class TestPull:
         assert summary.refused_mismatch is True
         assert repo.get_conversation(dest, "c1") is None
         dest.close()
+
+
+# --------------------------------------------------------------------------
+# /sync/push endpoint
+# --------------------------------------------------------------------------
+
+
+def _record(uuid: str, content_hash: str, updated_at: datetime) -> dict:
+    iso = updated_at.isoformat()
+    text = "pushed chunk"
+    return {
+        "uuid": uuid,
+        "title": f"conv {uuid}",
+        "summary": None,
+        "source": "conversations",
+        "project_uuid": None,
+        "project": None,
+        "account_uuid": None,
+        "created_at": _now().isoformat(),
+        "updated_at": iso,
+        "content_hash": content_hash,
+        "messages": [],
+        "chunks": [
+            {
+                "message_uuid": None,
+                "sender": "human",
+                "text": text,
+                "char_start": 0,
+                "char_end": len(text),
+                "created_at": _now().isoformat(),
+                "embedding": EMBEDDER.embed_one(text),
+            }
+        ],
+    }
+
+
+class TestSyncPushEndpoint:
+    def test_push_requires_token(self, source_client: TestClient) -> None:
+        r = source_client.post(
+            "/sync/push", json={"embed_model": "fake", "embed_dim": 768, "conversations": []}
+        )
+        assert r.status_code == 401
+
+    def test_push_inserts_record(self, source_client: TestClient) -> None:
+        r = source_client.post(
+            "/sync/push",
+            json={
+                "embed_model": "fake",
+                "embed_dim": 768,
+                "conversations": [_record("pushed-1", "ph", _now())],
+            },
+            headers={"X-Memex-Token": TOKEN},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"inserted": 1, "failed": 0}
+        assert repo.get_conversation(http_ingest._conn, "pushed-1") is not None
+
+    def test_push_rejects_model_mismatch(self, source_client: TestClient) -> None:
+        r = source_client.post(
+            "/sync/push",
+            json={
+                "embed_model": "other-model",
+                "embed_dim": 768,
+                "conversations": [_record("pushed-x", "ph", _now())],
+            },
+            headers={"X-Memex-Token": TOKEN},
+        )
+        assert r.status_code == 409
+        assert repo.get_conversation(http_ingest._conn, "pushed-x") is None
+
+    def test_push_rejects_oversized_list(self, source_client: TestClient) -> None:
+        r = source_client.post(
+            "/sync/push",
+            json={
+                "embed_model": "fake",
+                "embed_dim": 768,
+                "conversations": [{} for _ in range(http_ingest._MAX_SYNC_UUIDS + 1)],
+            },
+            headers={"X-Memex-Token": TOKEN},
+        )
+        assert r.status_code == 413
+
+
+# --------------------------------------------------------------------------
+# Client push + bidirectional reconcile
+# --------------------------------------------------------------------------
+
+
+class TestPushAndReconcile:
+    def _dest(self):
+        return connect_and_init(":memory:", check_same_thread=False)
+
+    def test_push_sends_local_only_conversations(self, source_client: TestClient) -> None:
+        dest = self._dest()
+        _seed(dest, "local-1", "h", _now())  # source does not have this
+        manifest_fn, _ = _transport(source_client)
+        push_fn = _push_fn(source_client)
+        summary = client.push(
+            dest,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            push_fn=push_fn,
+        )
+        assert summary.to_push == 1
+        assert summary.pushed == 1
+        # The source (peer) now has the local conversation.
+        assert repo.get_conversation(http_ingest._conn, "local-1") is not None
+        dest.close()
+
+    def test_reconcile_makes_both_equal(self, source_client: TestClient) -> None:
+        dest = self._dest()
+        _seed(dest, "only-on-dest", "hd", _now())  # source lacks this
+        manifest_fn, fetch_fn = _transport(source_client)
+        push_fn = _push_fn(source_client)
+        summary = client.reconcile(
+            dest,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            fetch_fn=fetch_fn,
+            push_fn=push_fn,
+        )
+        # Pulled the source's c1, pushed dest's only-on-dest.
+        assert summary.pulled == 1
+        assert summary.pushed == 1
+        src = http_ingest._conn
+        # Both DBs now hold both conversations.
+        for uuid in ("c1", "only-on-dest"):
+            assert repo.get_conversation(dest, uuid) is not None
+            assert repo.get_conversation(src, uuid) is not None
+        dest.close()
+
+    def test_reconcile_is_idempotent(self, source_client: TestClient) -> None:
+        dest = self._dest()
+        _seed(dest, "only-on-dest", "hd", _now())
+        manifest_fn, fetch_fn = _transport(source_client)
+        push_fn = _push_fn(source_client)
+        kwargs = dict(
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            fetch_fn=fetch_fn,
+            push_fn=push_fn,
+        )
+        client.reconcile(dest, PEER, **kwargs)
+        again = client.reconcile(dest, PEER, **kwargs)
+        assert again.pulled == 0
+        assert again.pushed == 0
+        dest.close()
+
+    def test_reconcile_newer_wins_no_overwrite_with_older(self, source_client: TestClient) -> None:
+        # Same uuid on both, dest strictly newer: reconcile must push dest's
+        # version to the source, never pull the source's older one.
+        dest = self._dest()
+        old = datetime(2026, 6, 1, tzinfo=UTC)
+        new = datetime(2026, 6, 24, tzinfo=UTC)
+        src = http_ingest._conn
+        # Source has c1 already (updated _now() = 2026-06-24 12:00). Give it an
+        # OLDER divergent copy of a shared uuid; dest gets the NEWER copy.
+        _seed(src, "shared", "src-old", old)
+        src.commit()
+        _seed(dest, "shared", "dest-new", new)
+
+        manifest_fn, fetch_fn = _transport(source_client)
+        push_fn = _push_fn(source_client)
+        client.reconcile(
+            dest,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            fetch_fn=fetch_fn,
+            push_fn=push_fn,
+        )
+        # Dest kept its newer version; source took dest's newer version.
+        assert repo.get_conversation(dest, "shared").content_hash == "dest-new"
+        assert repo.get_conversation(src, "shared").content_hash == "dest-new"
+        dest.close()
+
+
+# --------------------------------------------------------------------------
+# Auto-sync wrapper
+# --------------------------------------------------------------------------
+
+
+class TestAutoSync:
+    def test_skips_when_ingest_lock_busy(self, tmp_path, monkeypatch) -> None:
+        from memex import ingest_lock
+
+        db = tmp_path / "memex.db"
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [PEER])
+        called: list[str] = []
+        monkeypatch.setattr(
+            http_ingest.client,
+            "reconcile",
+            lambda *a, **k: called.append("reconciled"),
+        )
+        handle = ingest_lock.acquire_nonblocking(db)  # hold the lock
+        try:
+            http_ingest._auto_sync_once(db_path=db)
+        finally:
+            ingest_lock.release(handle)
+        assert called == []  # skipped because an ingest holds the lock
+
+    def test_reconciles_each_peer_when_free(self, tmp_path, monkeypatch) -> None:
+        db = tmp_path / "memex.db"
+        p2 = Peer(name="src2", url="http://127.0.0.1:5778", token="t2")
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [PEER, p2])
+        seen: list[str] = []
+
+        def fake_reconcile(conn, peer, **kwargs):
+            seen.append(peer.name)
+            return client.ReconcileSummary(peer=peer.name, pulled=0, pushed=0, failed=0)
+
+        monkeypatch.setattr(http_ingest.client, "reconcile", fake_reconcile)
+        http_ingest._auto_sync_once(db_path=db)
+        assert seen == ["src", "src2"]
+
+    def test_no_peers_is_a_noop(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        called: list[str] = []
+        monkeypatch.setattr(http_ingest.client, "reconcile", lambda *a, **k: called.append("x"))
+        http_ingest._auto_sync_once(db_path=tmp_path / "memex.db")
+        assert called == []

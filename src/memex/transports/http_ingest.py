@@ -14,6 +14,9 @@ Endpoints:
   (`{"conversations": [{uuid, updated_at}, ...]}`) and returns the
   `{"toFetch": [...]}` subset that is new or changed, so the extension's
   backfill skips already-indexed chats. Same Origin + token auth as ingest.
+- `GET /sync/manifest`, `POST /sync/conversations`, `POST /sync/push`:
+  multi-device sync with a paired peer (another memex, not a browser), so
+  token-only auth (no Origin), Host still pinned. See `memex.sync`.
 
 Lifecycle:
 - SQLite connections and the embedder are created lazily (one process for
@@ -64,8 +67,8 @@ from memex.config import settings
 from memex.core.embeddings import Embedder, EmbedderError, get_default_embedder
 from memex.core.ingest.pipeline import ingest_single_conversation
 from memex.core.models import Source
-from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
+from memex.sync import client, peers, records
 
 logger = logging.getLogger("memex.http_ingest")
 
@@ -454,7 +457,8 @@ async def backfill_plan_endpoint(request: Request) -> JSONResponse:
 
 
 # --------------------------------------------------------------------------
-# Multi-device sync (Phase 1): a paired peer pulls conversations from here.
+# Multi-device sync (Phase 1 pull + Phase 2 push): a paired peer syncs
+# conversations with this device.
 #
 # These endpoints serve another device running memex (not a browser), so unlike
 # `/ingest/*` they do NOT require an extension Origin. They are gated by the
@@ -463,7 +467,8 @@ async def backfill_plan_endpoint(request: Request) -> JSONResponse:
 # user deliberately runs `memex serve --host <addr>` and adds that host to
 # `MEMEX_INGEST_ALLOWED_HOSTS`; the default loopback bind exposes nothing new.
 # Synced text was already redacted at ingest, so no unredacted secret crosses
-# the wire.
+# the wire. The record (de)serialization is shared with the client in
+# `memex.sync.records`.
 # --------------------------------------------------------------------------
 
 
@@ -486,101 +491,20 @@ def _sync_unauthorized(request: Request) -> JSONResponse | None:
     return None
 
 
-def _serialize_conversation(conn: sqlite3.Connection, uuid: str) -> dict[str, Any] | None:
-    """Full transferable record for one conversation: row + messages + chunks.
-
-    Chunks carry their stored embedding so the receiver never re-embeds. When the
-    conversation belongs to a Project (a `design_chat`), its project row travels
-    too, so the receiver can satisfy the `conversations.project_uuid` foreign key
-    without a separate project sync. Returns None if the uuid is unknown.
-    """
-    conv = repo.get_conversation(conn, uuid)
-    if conv is None:
-        return None
-    messages = repo.get_messages_for_conversation(conn, uuid)
-    chunks = repo.get_chunks_with_embeddings_for_conversation(conn, uuid)
-    project: dict[str, Any] | None = None
-    if conv.project_uuid is not None:
-        proj = repo.get_project(conn, conv.project_uuid)
-        if proj is not None:
-            project = {
-                "uuid": proj.uuid,
-                "name": proj.name,
-                "description": proj.description,
-                "prompt_template": proj.prompt_template,
-                "is_private": proj.is_private,
-                "is_starter_project": proj.is_starter_project,
-                "creator_uuid": proj.creator_uuid,
-                "creator_name": proj.creator_name,
-                "created_at": proj.created_at.isoformat(),
-                "updated_at": proj.updated_at.isoformat(),
-            }
-    return {
-        "uuid": conv.uuid,
-        "title": conv.title,
-        "summary": conv.summary,
-        "source": conv.source.value,
-        "project_uuid": conv.project_uuid,
-        "project": project,
-        "account_uuid": conv.account_uuid,
-        "created_at": conv.created_at.isoformat(),
-        "updated_at": conv.updated_at.isoformat(),
-        "content_hash": conv.content_hash,
-        "messages": [
-            {
-                "uuid": m.uuid,
-                "conversation_uuid": m.conversation_uuid,
-                "parent_uuid": m.parent_uuid,
-                "sender": m.sender.value,
-                "text": m.text,
-                "raw_content": m.raw_content,
-                "has_tool_use": m.has_tool_use,
-                "has_attachments": m.has_attachments,
-                "created_at": m.created_at.isoformat(),
-                "updated_at": m.updated_at.isoformat(),
-            }
-            for m in messages
-        ],
-        "chunks": [
-            {
-                "message_uuid": chunk.message_uuid,
-                "sender": chunk.sender,
-                "text": chunk.text,
-                "char_start": chunk.char_start,
-                "char_end": chunk.char_end,
-                "created_at": chunk.created_at.isoformat(),
-                "embedding": embedding,
-            }
-            for chunk, embedding in chunks
-        ],
-    }
-
-
 async def sync_manifest_endpoint(request: Request) -> JSONResponse:
     """List what this device has, cheaply, for a peer to diff against.
 
     Returns `{embed_model, embed_dim, conversations: [{uuid, content_hash,
-    updated_at, source}]}` with no message bodies. The peer compares each
-    `content_hash` to its own and asks for only the new/changed uuids via
-    `/sync/conversations`. Token-gated (it reveals which conversations exist).
+    updated_at, source}]}` with no message bodies. The peer compares each entry
+    to its own and asks for only the new/changed uuids via `/sync/conversations`
+    (or pushes its own newer ones via `/sync/push`). Token-gated (it reveals
+    which conversations exist).
     """
     unauth = _sync_unauthorized(request)
     if unauth is not None:
         return unauth
     model, dim = _embedder_identity()
-    conn = _get_conn()
-    rows = conn.execute(
-        "SELECT uuid, content_hash, updated_at, source FROM conversations"
-    ).fetchall()
-    conversations = [
-        {
-            "uuid": row["uuid"],
-            "content_hash": row["content_hash"],
-            "updated_at": row["updated_at"],
-            "source": row["source"],
-        }
-        for row in rows
-    ]
+    conversations = records.local_manifest(_get_conn())
     return JSONResponse({"embed_model": model, "embed_dim": dim, "conversations": conversations})
 
 
@@ -612,16 +536,76 @@ async def sync_conversations_endpoint(request: Request) -> JSONResponse:
 
     model, dim = _embedder_identity()
     conn = _get_conn()
-    records: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for uuid in uuids:
         if not isinstance(uuid, str) or uuid in seen:
             continue
         seen.add(uuid)
-        record = _serialize_conversation(conn, uuid)
+        record = records.serialize_conversation(conn, uuid)
         if record is not None:
-            records.append(record)
-    return JSONResponse({"embed_model": model, "embed_dim": dim, "conversations": records})
+            out.append(record)
+    return JSONResponse({"embed_model": model, "embed_dim": dim, "conversations": out})
+
+
+async def sync_push_endpoint(request: Request) -> JSONResponse:
+    """Accept full records pushed by a peer and insert them (Phase 2).
+
+    POST body `{embed_model, embed_dim, conversations: [<record>, ...]}` (the
+    same record shape `/sync/conversations` returns). Token-gated; refuses on an
+    embedding model/dim mismatch (the vectors would be incompatible) and caps the
+    list. Inserts each record through the shared repo path so chunks/vec/fts stay
+    consistent. A record that fails to insert is counted, not fatal.
+    """
+    unauth = _sync_unauthorized(request)
+    if unauth is not None:
+        return unauth
+    raw = await _read_body_capped(request, settings.ingest_max_body_bytes)
+    if raw is None:
+        return JSONResponse({"error": "Payload too large."}, status_code=413)
+    try:
+        body: Any = json.loads(raw)
+    except ValueError:
+        return JSONResponse({"error": "Body is not valid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
+    convs = body.get("conversations")
+    if not isinstance(convs, list):
+        return JSONResponse(
+            {"error": "Expected {'conversations': [...], 'embed_model', 'embed_dim'}"},
+            status_code=400,
+        )
+    if len(convs) > _MAX_SYNC_UUIDS:
+        return JSONResponse(
+            {"error": f"Too many conversations in one push (max {_MAX_SYNC_UUIDS})."},
+            status_code=413,
+        )
+
+    model, dim = _embedder_identity()
+    if body.get("embed_model") != model or body.get("embed_dim") != dim:
+        return JSONResponse(
+            {
+                "error": "Embedding model/dim mismatch; refusing push.",
+                "embed_model": model,
+                "embed_dim": dim,
+            },
+            status_code=409,
+        )
+
+    conn = _get_conn()
+    inserted = 0
+    failed = 0
+    for record in convs:
+        if not isinstance(record, dict):
+            failed += 1
+            continue
+        try:
+            records.insert_record(conn, record, dim)
+            inserted += 1
+        except Exception:
+            logger.exception("Failed to insert pushed conversation %s", record.get("uuid"))
+            failed += 1
+    return JSONResponse({"inserted": inserted, "failed": failed})
 
 
 def _allowed_hosts() -> list[str]:
@@ -629,10 +613,86 @@ def _allowed_hosts() -> list[str]:
     return hosts or ["127.0.0.1", "localhost"]
 
 
+# --------------------------------------------------------------------------
+# Auto-sync (Phase 2): when MEMEX_SYNC_AUTO is on and peers are paired, the
+# capture server reconciles with each peer on startup and on a sparse interval.
+# It piggybacks this already-running process (no new daemon) and runs each tick
+# off the event loop in a thread (the HTTP + DB work is blocking).
+# --------------------------------------------------------------------------
+
+
+def _auto_sync_once(db_path: Path | None = None) -> None:
+    """One reconcile pass over all paired peers. Safe to call from a thread.
+
+    Skips entirely while an ingest holds the single-flight lock (so a sync write
+    never contends with the embedding pipeline; the next tick retries), and skips
+    any peer that is offline. Uses its own short-lived DB connection rather than
+    the server's, which is bound to the event-loop thread.
+    """
+    targets = peers.load_peers()
+    if not targets:
+        return
+    lock_handle = ingest_lock.acquire_nonblocking(db_path or settings.db_path)
+    if lock_handle is None:
+        logger.info("auto-sync: an ingest holds the lock; skipping this tick")
+        return
+    conn = connect_and_init(db_path, check_same_thread=False)
+    try:
+        embedder = get_default_embedder()
+        model, dim = embedder.model_name, embedder.dim
+        for peer in targets:
+            try:
+                summary = client.reconcile(conn, peer, local_model=model, local_dim=dim)
+            except OSError:
+                logger.info("auto-sync: peer %s unreachable; skipping", peer.name)
+                continue
+            except Exception:
+                logger.exception("auto-sync: error reconciling with %s", peer.name)
+                continue
+            if summary.pulled or summary.pushed:
+                logger.info(
+                    "auto-sync %s: pulled %d, pushed %d",
+                    peer.name,
+                    summary.pulled,
+                    summary.pushed,
+                )
+    finally:
+        conn.close()
+        ingest_lock.release(lock_handle)
+
+
+async def _auto_sync_loop() -> None:
+    """Run a reconcile shortly after startup, then every `sync_interval_seconds`."""
+    interval = max(60, settings.sync_interval_seconds)
+    while True:
+        try:
+            await asyncio.to_thread(_auto_sync_once)
+        except Exception:
+            logger.exception("auto-sync loop tick failed")
+        await asyncio.sleep(interval)
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: Starlette) -> Any:
+    """Start the auto-sync background task if enabled; cancel it on shutdown."""
+    task: asyncio.Task[None] | None = None
+    if settings.sync_auto:
+        logger.info("auto-sync enabled (every %ss)", settings.sync_interval_seconds)
+        task = asyncio.create_task(_auto_sync_loop())
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
 def build_app() -> Starlette:
     """Factory for the Starlette app. Tests use it to reuse the instance."""
     return Starlette(
         debug=False,
+        lifespan=_lifespan,
         # Pin the Host header to loopback (DNS-rebinding defense). The
         # middleware strips the port before matching, so list bare hosts.
         middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())],
@@ -646,6 +706,7 @@ def build_app() -> Starlette:
             Route("/ingest/plan", backfill_plan_endpoint, methods=["POST"]),
             Route("/sync/manifest", sync_manifest_endpoint, methods=["GET"]),
             Route("/sync/conversations", sync_conversations_endpoint, methods=["POST"]),
+            Route("/sync/push", sync_push_endpoint, methods=["POST"]),
         ],
     )
 
