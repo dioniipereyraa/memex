@@ -16,7 +16,9 @@ Diff policy:
   intent (pull = peer authoritative, push = local authoritative).
 - `select_reconcile` (bidirectional / auto-sync): last-writer-wins by
   `updated_at`, so a newer version is never overwritten by an older one. The
-  rare same-timestamp-different-content fork is left untouched (Phase 3).
+  rare same-timestamp-different-content fork is never overwritten and is reported
+  back as `forks` for the caller to surface (the user resolves it with an
+  explicit one-directional `pull`/`push`).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+from memex.config import settings
 from memex.core.models import Chunk, Conversation, Message, Project, Sender, Source
 from memex.core.storage import repo
 
@@ -87,17 +90,24 @@ def select_to_transfer(have: list[dict[str, Any]], offered: list[dict[str, Any]]
 
 def select_reconcile(
     local: list[dict[str, Any]], remote: list[dict[str, Any]]
-) -> tuple[list[str], list[str]]:
-    """Bidirectional last-writer-wins split: (to_pull, to_push).
+) -> tuple[list[str], list[str], list[str]]:
+    """Bidirectional last-writer-wins split: (to_pull, to_push, forks).
 
     For each uuid: pull if the remote is absent-here or strictly newer; push if
-    the local is absent-there or strictly newer; skip if the content hash matches
-    or the timestamps tie (a same-time fork is left for Phase 3, never overwritten).
+    the local is absent-there or strictly newer; skip if the content hash matches.
+    A uuid whose two sides differ in content but share the same `updated_at` is a
+    fork: neither side is demonstrably newer, so it is NEVER overwritten and is
+    returned in `forks` so the caller can surface it (the user resolves it with an
+    explicit one-directional `pull`/`push --peer`). This is the documented v1
+    conflict policy; a message-level merge is intentionally not attempted (it would
+    require re-chunking and re-embedding the merged conversation, which the no
+    re-embed design forbids).
     """
     local_by = _by_uuid(local)
     remote_by = _by_uuid(remote)
     to_pull: list[str] = []
     to_push: list[str] = []
+    forks: list[str] = []
     for uuid in set(local_by) | set(remote_by):
         loc = local_by.get(uuid)
         rem = remote_by.get(uuid)
@@ -115,8 +125,11 @@ def select_reconcile(
             to_pull.append(uuid)
         elif local_t > remote_t:
             to_push.append(uuid)
-        # equal timestamps, different content: a fork; leave both untouched.
-    return to_pull, to_push
+        else:
+            # Same timestamp, different content: a fork. Leave both untouched and
+            # report it; the user picks the winning side with `pull`/`push --peer`.
+            forks.append(uuid)
+    return to_pull, to_push, forks
 
 
 def serialize_conversation(conn: sqlite3.Connection, uuid: str) -> dict[str, Any] | None:
@@ -216,6 +229,20 @@ def insert_record(conn: sqlite3.Connection, record: dict[str, Any], expected_dim
         updated_at=record["updated_at"],
         content_hash=record.get("content_hash"),
     )
+    # A pushed record is attacker-shaped (the peer controls every field). Reject a
+    # non-list messages/chunks rather than iterating it into a confusing crash.
+    raw_messages = record.get("messages", [])
+    chunk_rows = record.get("chunks", [])
+    if not isinstance(raw_messages, list) or not isinstance(chunk_rows, list):
+        raise ValueError("record 'messages'/'chunks' must be lists")
+    # Bound the chunk fan-out: the sync insert path does not go through the ingest
+    # pipeline, so it would otherwise skip the per-conversation chunk cap that
+    # bounds the embed/store amplification of one record. The request body cap is
+    # the outer bound; this keeps one record from inserting an unbounded number of
+    # rows even within that.
+    max_chunks = settings.max_chunks_per_conversation
+    if len(chunk_rows) > max_chunks:
+        raise ValueError(f"record has {len(chunk_rows)} chunks > cap {max_chunks}")
     messages = [
         Message(
             uuid=m["uuid"],
@@ -229,9 +256,8 @@ def insert_record(conn: sqlite3.Connection, record: dict[str, Any], expected_dim
             created_at=m["created_at"],
             updated_at=m["updated_at"],
         )
-        for m in record.get("messages", [])
+        for m in raw_messages
     ]
-    chunk_rows = record.get("chunks", [])
     # Validate every embedding before writing anything: a wrong dimension means
     # the peer's model drifted (the model/dim guard should have caught it) and
     # inserting it would corrupt vector search.

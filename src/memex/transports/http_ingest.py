@@ -16,7 +16,8 @@ Endpoints:
   backfill skips already-indexed chats. Same Origin + token auth as ingest.
 - `GET /sync/manifest`, `POST /sync/conversations`, `POST /sync/push`:
   multi-device sync with a paired peer (another memex, not a browser), so
-  token-only auth (no Origin), Host still pinned. See `memex.sync`.
+  token-only auth (no Origin), Host still pinned. Gated by the master enabled
+  flag: 404 when sync is disabled (the default). See `memex.sync`.
 
 Lifecycle:
 - SQLite connections and the embedder are created lazily (one process for
@@ -69,6 +70,7 @@ from memex.core.ingest.pipeline import ingest_single_conversation
 from memex.core.models import Source
 from memex.core.storage.db import connect_and_init
 from memex.sync import client, peers, records
+from memex.sync import state as sync_state
 
 logger = logging.getLogger("memex.http_ingest")
 
@@ -78,6 +80,10 @@ _embedder: Embedder | None = None
 # Per-install access token. Loaded lazily from disk (or generated). Tests set
 # it directly to avoid filesystem I/O.
 _token: str | None = None
+# Override for the on-disk sync gate. None = read `sync_state.is_enabled()` from
+# the file (so a `memex sync enable`/`disable` takes effect without a restart).
+# Tests set it to avoid touching the real per-user state file.
+_sync_enabled_override: bool | None = None
 
 # Only accept requests originating from a browser extension. Defense in depth
 # on top of the token: blocks visited web pages (browsers force a truthful
@@ -94,11 +100,16 @@ _TOKEN_HEADER = "x-memex-token"
 # claude.ai org has at most a few thousand chats, so 50k is generous.
 _MAX_PLAN_ITEMS = 50_000
 
-# Hard cap on the number of uuids accepted in one /sync/conversations request.
-# Each uuid pulls a full conversation (rows + messages + chunks + vectors), so
-# this bounds the work a paired peer can ask for in a single call; the client
-# batches a larger pull into several requests under this cap.
-_MAX_SYNC_UUIDS = 5_000
+# Hard cap on the number of conversations moved in one /sync request (both the
+# uuid list a peer may request from /sync/conversations and the records it may
+# push to /sync/push). Each uuid materializes a FULL conversation (rows +
+# messages + chunks + vectors) into the in-memory response/insert, so the count
+# bounds the memory a single token-holding peer can amplify in one call. The
+# client batches at 500 (`client._DEFAULT_BATCH`), so 1000 is 2x headroom for a
+# legitimate caller while keeping a compromised peer from asking for the whole
+# corpus (which could be hundreds of MB) in a single request. The request body
+# cap is the outer bound on a push; this is the count bound on top of it.
+_MAX_SYNC_UUIDS = 1_000
 
 # Secrets the short-lived ingest worker never needs. Stripped from its
 # environment (defense in depth: the child must not carry the parent's API
@@ -483,8 +494,24 @@ def _embedder_identity() -> tuple[str, int]:
     return embedder.model_name, embedder.dim
 
 
-def _sync_unauthorized(request: Request) -> JSONResponse | None:
-    """Token gate for the sync endpoints (no Origin requirement). None if OK."""
+def _sync_is_enabled() -> bool:
+    """Whether the sync feature is on (master gate). Honors the test override."""
+    if _sync_enabled_override is not None:
+        return _sync_enabled_override
+    return sync_state.is_enabled()
+
+
+def _sync_refusal(request: Request) -> JSONResponse | None:
+    """Gate for the sync endpoints. None if the request may proceed, else a refusal.
+
+    Two checks, in order:
+    1. If the feature is DISABLED, return 404 (not 403) so a device that does not
+       use sync does not even reveal the endpoint exists, even to a token holder.
+    2. Token gate (no Origin requirement: a peer is not a browser). 401 on a bad
+       or missing token, constant-time compared.
+    """
+    if not _sync_is_enabled():
+        return JSONResponse({"error": "Not found."}, status_code=404)
     if not _token_valid(request):
         logger.warning("Sync request rejected: missing or invalid X-Memex-Token")
         return JSONResponse({"error": "Missing or invalid access token."}, status_code=401)
@@ -500,9 +527,9 @@ async def sync_manifest_endpoint(request: Request) -> JSONResponse:
     (or pushes its own newer ones via `/sync/push`). Token-gated (it reveals
     which conversations exist).
     """
-    unauth = _sync_unauthorized(request)
-    if unauth is not None:
-        return unauth
+    refusal = _sync_refusal(request)
+    if refusal is not None:
+        return refusal
     model, dim = _embedder_identity()
     conversations = records.local_manifest(_get_conn())
     return JSONResponse({"embed_model": model, "embed_dim": dim, "conversations": conversations})
@@ -515,9 +542,9 @@ async def sync_conversations_endpoint(request: Request) -> JSONResponse:
     embed model/dim so the peer can re-check compatibility before inserting.
     Token-gated; unknown uuids are skipped (not an error).
     """
-    unauth = _sync_unauthorized(request)
-    if unauth is not None:
-        return unauth
+    refusal = _sync_refusal(request)
+    if refusal is not None:
+        return refusal
     raw = await _read_body_capped(request, settings.ingest_max_body_bytes)
     if raw is None:
         return JSONResponse({"error": "Payload too large."}, status_code=413)
@@ -557,9 +584,9 @@ async def sync_push_endpoint(request: Request) -> JSONResponse:
     list. Inserts each record through the shared repo path so chunks/vec/fts stay
     consistent. A record that fails to insert is counted, not fatal.
     """
-    unauth = _sync_unauthorized(request)
-    if unauth is not None:
-        return unauth
+    refusal = _sync_refusal(request)
+    if refusal is not None:
+        return refusal
     raw = await _read_body_capped(request, settings.ingest_max_body_bytes)
     if raw is None:
         return JSONResponse({"error": "Payload too large."}, status_code=413)
@@ -614,21 +641,27 @@ def _allowed_hosts() -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# Auto-sync (Phase 2): when MEMEX_SYNC_AUTO is on and peers are paired, the
-# capture server reconciles with each peer on startup and on a sparse interval.
-# It piggybacks this already-running process (no new daemon) and runs each tick
-# off the event loop in a thread (the HTTP + DB work is blocking).
+# Auto-sync: when MEMEX_SYNC_AUTO is on, sync is enabled, and peers are paired,
+# the capture server reconciles with each peer on startup and on a sparse
+# interval. It piggybacks this already-running process (no new daemon) and runs
+# each tick off the event loop in a thread (the HTTP + DB work is blocking). The
+# loop checks the enabled gate each tick, so toggling sync off pauses it (and
+# back on resumes it) without a restart.
 # --------------------------------------------------------------------------
 
 
 def _auto_sync_once(db_path: Path | None = None) -> None:
     """One reconcile pass over all paired peers. Safe to call from a thread.
 
-    Skips entirely while an ingest holds the single-flight lock (so a sync write
-    never contends with the embedding pipeline; the next tick retries), and skips
-    any peer that is offline. Uses its own short-lived DB connection rather than
-    the server's, which is bound to the event-loop thread.
+    Skips entirely when sync is disabled (the master gate) so toggling it off
+    stops the background loop without a restart, and while an ingest holds the
+    single-flight lock (so a sync write never contends with the embedding
+    pipeline; the next tick retries). Skips any peer that is offline and uses its
+    own short-lived DB connection rather than the server's, which is bound to the
+    event-loop thread.
     """
+    if not _sync_is_enabled():
+        return
     targets = peers.load_peers()
     if not targets:
         return
@@ -649,6 +682,13 @@ def _auto_sync_once(db_path: Path | None = None) -> None:
             except Exception:
                 logger.exception("auto-sync: error reconciling with %s", peer.name)
                 continue
+            with contextlib.suppress(OSError):
+                sync_state.record_sync(
+                    peer.name,
+                    pulled=summary.pulled,
+                    pushed=summary.pushed,
+                    failed=summary.failed,
+                )
             if summary.pulled or summary.pushed:
                 logger.info(
                     "auto-sync %s: pulled %d, pushed %d",

@@ -79,6 +79,9 @@ class ReconcileSummary:
     pulled: int
     pushed: int
     failed: int
+    # uuids that diverged on both sides with the SAME updated_at (a fork): left
+    # untouched on both, surfaced so the user can force a side with pull/push.
+    forks: int = 0
     refused_mismatch: bool = False
 
 
@@ -276,18 +279,27 @@ def reconcile(
         logger.warning("Refusing reconcile with peer %s: model/dim mismatch", peer.name)
         return ReconcileSummary(peer=peer.name, pulled=0, pushed=0, failed=0, refused_mismatch=True)
 
-    to_pull, to_push = records.select_reconcile(records.local_manifest(conn), remote)
+    to_pull, to_push, forks = records.select_reconcile(records.local_manifest(conn), remote)
     pulled, pull_failed = _fetch_and_insert(
         conn, peer, to_pull, fetch_fn, local_model, local_dim, batch_size
     )
     pushed, push_failed = _serialize_and_push(
         conn, peer, to_push, push_fn, local_model, local_dim, batch_size
     )
+    if forks:
+        logger.warning(
+            "reconcile with %s: %d conversation(s) forked (same updated_at, different "
+            "content); left untouched. Resolve with `memex sync pull`/`push --peer %s`.",
+            peer.name,
+            len(forks),
+            peer.name,
+        )
     return ReconcileSummary(
         peer=peer.name,
         pulled=pulled,
         pushed=pushed,
         failed=pull_failed + push_failed,
+        forks=len(forks),
     )
 
 

@@ -1,34 +1,40 @@
 """`memex sync` command group: sync conversations between paired devices.
 
-Experimental. Devices pair once (`memex sync pair`), then:
+The whole feature is OFF by default (`memex sync enable` turns it on). Once on,
+devices pair once (`memex sync pair`), then:
 - `pull`: one-directional, take the peer's version (peer authoritative).
 - `push`: one-directional, send the local version (local authoritative).
 - `reconcile`: two-way, last-writer-wins by `updated_at`, leaves both equal.
 
-The peer must be running `memex serve` reachable from this device (e.g. bound to
-its Tailscale address); the `/sync/*` endpoints are token-gated. Auto-sync on
-`serve` startup + a sparse interval is opt-in (`MEMEX_SYNC_AUTO`); Phase 3 will
-add `enable`/`disable`/`status`. The feature exposes nothing unless the user
-pairs a peer AND deliberately binds `memex serve` beyond loopback.
+`enable`/`disable` flip the master gate; `status` shows the current state, the
+local embedding identity, and each peer's last sync. The peer must be running
+`memex serve` reachable from this device (e.g. bound to its Tailscale address);
+the `/sync/*` endpoints are token-gated and 404 while sync is disabled. Auto-sync
+on `serve` startup + a sparse interval is opt-in (`MEMEX_SYNC_AUTO`, and only
+while enabled). Even enabled, the feature exposes nothing unless the user
+deliberately binds `memex serve` beyond loopback.
 """
 
 from __future__ import annotations
 
 import urllib.error
+from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
 from memex.core.storage.db import connect_and_init
 from memex.sync import client, peers
+from memex.sync import state as sync_state
 from memex.sync.peers import Peer
 
 sync_app = typer.Typer(
-    help="Sync conversations between your devices (experimental).",
+    help="Sync conversations between your devices.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -112,6 +118,76 @@ def unpair(
         console.print(f"[yellow]No peer named {name!r}.[/yellow]")
 
 
+@sync_app.command("enable")
+def enable() -> None:
+    """Turn multi-device sync on (it is OFF by default)."""
+    sync_state.set_enabled(True)
+    console.print("[green]Sync enabled.[/green]")
+    console.print(
+        "  Pair a device with `memex sync pair`, then `memex sync reconcile`.\n"
+        "  The /sync endpoints stay loopback-only until you also run "
+        "`memex serve --host <addr>` and add that host to MEMEX_INGEST_ALLOWED_HOSTS."
+    )
+
+
+@sync_app.command("disable")
+def disable() -> None:
+    """Turn multi-device sync off (the /sync endpoints 404, data commands refuse)."""
+    sync_state.set_enabled(False)
+    console.print(
+        "Sync [bold]disabled[/bold]. Paired peers are kept; re-enable with `memex sync enable`."
+    )
+
+
+@sync_app.command("status")
+def status(
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Ping each peer to verify reachability + token (makes network calls).",
+        ),
+    ] = False,
+) -> None:
+    """Show whether sync is on, the local embedding identity, and each peer."""
+    enabled = sync_state.is_enabled()
+    console.print(f"Sync: {'[green]enabled[/green]' if enabled else '[yellow]disabled[/yellow]'}")
+    console.print(
+        f"Auto-sync: {'on' if settings.sync_auto else 'off'} "
+        f"(every {settings.sync_interval_seconds}s, only while enabled and `serve` is running)"
+    )
+
+    local_model: str | None = None
+    local_dim: int | None = None
+    try:
+        embedder = get_default_embedder()
+        local_model, local_dim = embedder.model_name, embedder.dim
+        console.print(f"Local embedding: {local_model} / {local_dim}")
+    except EmbedderError as e:
+        console.print(f"[yellow]Local embedding unavailable:[/yellow] {e}")
+
+    known = peers.load_peers()
+    if not known:
+        console.print("[yellow]No peers paired.[/yellow] Use `memex sync pair`.")
+        return
+
+    table = Table(title="Sync peers")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("URL")
+    table.add_column("Last sync")
+    table.add_column("Pulled/Pushed")
+    if check:
+        table.add_column("Reachable")
+    for peer in known:
+        hist = sync_state.get_peer_history(peer.name)
+        counts = f"{hist['pulled']}/{hist['pushed']}" if hist else "-"
+        row = [peer.name, peer.url, _format_last_sync(hist), counts]
+        if check:
+            row.append(_peer_reachable(peer, local_model, local_dim))
+        table.add_row(*row)
+    console.print(table)
+
+
 def _resolve_targets(peer_name: str | None) -> list[Peer]:
     targets = peers.load_peers()
     if peer_name is not None:
@@ -141,6 +217,45 @@ def _mismatch_line(peer_model: object, peer_dim: object, local_model: str, local
     )
 
 
+def _require_enabled() -> None:
+    """Refuse a data command while sync is disabled (the master gate, off by default)."""
+    if not sync_state.is_enabled():
+        console.print(
+            "[yellow]Sync is disabled.[/yellow] Run `memex sync enable` first "
+            "(it is off by default)."
+        )
+        raise typer.Exit(code=2)
+
+
+def _format_last_sync(hist: dict[str, Any] | None) -> str:
+    if not hist:
+        return "never"
+    raw = hist.get("last_sync_at")
+    if not isinstance(raw, str):
+        return "?"
+    try:
+        return datetime.fromisoformat(raw).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return raw
+
+
+def _peer_reachable(peer: Peer, local_model: str | None, local_dim: int | None) -> str:
+    """One-word reachability for `status --check`: pings the peer's manifest."""
+    try:
+        manifest = client.fetch_manifest(peer)
+    except urllib.error.HTTPError as e:
+        return f"[red]HTTP {e.code}[/red]"
+    except (urllib.error.URLError, OSError):
+        return "[red]offline[/red]"
+    except ValueError:
+        return "[red]bad response[/red]"
+    peer_model = manifest.get("embed_model")
+    peer_dim = manifest.get("embed_dim")
+    if local_model is not None and (peer_model != local_model or peer_dim != local_dim):
+        return f"[yellow]model {peer_model}/{peer_dim}[/yellow]"
+    return "[green]ok[/green]"
+
+
 @sync_app.command("pull")
 def pull(
     peer_name: Annotated[
@@ -153,6 +268,7 @@ def pull(
     ] = None,
 ) -> None:
     """Pull new or changed conversations from a paired device into this one (peer wins)."""
+    _require_enabled()
     targets = _resolve_targets(peer_name)
     local_model, local_dim = _local_identity()
     conn = connect_and_init(db_path)
@@ -170,6 +286,9 @@ def pull(
             if summary.refused_mismatch:
                 _mismatch_line(summary.peer_model, summary.peer_dim, local_model, local_dim)
                 continue
+            sync_state.record_sync(
+                peer.name, pulled=summary.inserted, pushed=0, failed=summary.failed
+            )
             console.print(
                 f"  Peer has {summary.manifest_total}, new/changed {summary.to_fetch}, "
                 f"[green]inserted {summary.inserted}[/green]"
@@ -192,6 +311,7 @@ def push(
     ] = None,
 ) -> None:
     """Push local conversations the peer is missing or has differently (local wins)."""
+    _require_enabled()
     targets = _resolve_targets(peer_name)
     local_model, local_dim = _local_identity()
     conn = connect_and_init(db_path)
@@ -209,6 +329,9 @@ def push(
             if summary.refused_mismatch:
                 _mismatch_line(summary.peer_model, summary.peer_dim, local_model, local_dim)
                 continue
+            sync_state.record_sync(
+                peer.name, pulled=0, pushed=summary.pushed, failed=summary.failed
+            )
             console.print(
                 f"  new/changed {summary.to_push}, [green]pushed {summary.pushed}[/green]"
                 + (f", [red]failed {summary.failed}[/red]" if summary.failed else "")
@@ -230,6 +353,7 @@ def reconcile(
     ] = None,
 ) -> None:
     """Two-way sync with a paired device, leaving both equal (last writer wins)."""
+    _require_enabled()
     targets = _resolve_targets(peer_name)
     local_model, local_dim = _local_identity()
     conn = connect_and_init(db_path)
@@ -247,11 +371,20 @@ def reconcile(
             if summary.refused_mismatch:
                 _mismatch_line(local_model, local_dim, local_model, local_dim)
                 continue
+            sync_state.record_sync(
+                peer.name, pulled=summary.pulled, pushed=summary.pushed, failed=summary.failed
+            )
             console.print(
                 f"  [green]pulled {summary.pulled}[/green], "
                 f"[green]pushed {summary.pushed}[/green]"
                 + (f", [red]failed {summary.failed}[/red]" if summary.failed else "")
                 + "."
             )
+            if summary.forks:
+                console.print(
+                    f"  [yellow]{summary.forks} conflict(s)[/yellow] (same timestamp, "
+                    f"different content) left untouched. Force a side with "
+                    f"`memex sync pull`/`push --peer {peer.name}`."
+                )
     finally:
         conn.close()
