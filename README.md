@@ -335,23 +335,26 @@ These sessions are stored under the `claude_code` source, searchable like any ot
    ```
    It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. On Linux, run the same script from a systemd user timer or cron; the script is OS-agnostic. (On Windows, the hook needs a PowerShell equivalent of `session-end-hook.sh`, not yet included; until then, schedule `memex ingest-claude-code` with Task Scheduler.)
 
-## Syncing across your devices (experimental)
+## Syncing across your devices
 
 If you run memex on more than one machine (say a laptop and a desktop), `memex
 sync` makes Claude one memory across them: index a chat on one device and search
 it from the other. Each device keeps its own local store and they sync
-peer-to-peer, with no central server and nothing leaving your hardware. This is
-an early, experimental feature that needs both devices powered on and reachable.
-It is available from a recent source build (not yet in the published PyPI
-release), so to use it today run from a clone (`uv run memex sync ...`).
+peer-to-peer, with no central server and nothing leaving your hardware. The sync
+needs both devices powered on and reachable at the same time (it is overlap
+sync, not a cloud relay). It ships in memex `0.4.0`+; on an older install,
+upgrade first (`uv tool upgrade memex-chats`).
 
-It is off by default and exposes nothing until you opt in on the source device.
-The source must run `memex serve` bound somewhere the other device can reach it
-(a [Tailscale](https://tailscale.com) address is the easy, encrypted option) and
-allow that host:
+The whole feature is **off by default** and exposes nothing until you turn it on
+with `memex sync enable` on each device. While it is off, the sync endpoints
+return 404 and the sync commands refuse, so a normal single-device install has no
+extra surface. Turn it on, then have the source run `memex serve` bound somewhere
+the other device can reach it (a [Tailscale](https://tailscale.com) address is the
+easy, encrypted option) and allow that host:
 
 ```bash
 # On the SOURCE device (the one with the conversations you want):
+memex sync enable
 MEMEX_INGEST_ALLOWED_HOSTS="127.0.0.1,localhost,my-mac" \
   memex serve --host 0.0.0.0          # reachable on the tailnet, token still required
 memex token                            # copy this; the other device needs it
@@ -359,27 +362,33 @@ memex token                            # copy this; the other device needs it
 
 ```bash
 # On the DESTINATION device (the one you want to pull into):
+memex sync enable
 memex sync pair --name mac --url http://my-mac:5777   # paste the source's token when asked
 memex sync reconcile --peer mac                        # two-way: leaves both devices equal
-memex sync peers                                        # list paired devices
+memex sync status                                      # is sync on, who is paired, last sync
 ```
 
 `reconcile` is the usual command: it syncs both ways and converges the two
 devices, keeping the newer copy of anything that exists on both (last writer wins
-by update time). If you want a one-directional sync instead, `memex sync pull`
-takes the peer's version and `memex sync push` sends yours.
+by update time). If the same conversation was edited on both devices with the
+exact same timestamp, that is a conflict: `reconcile` leaves both copies
+untouched and reports it, and you pick a winner with a one-directional `memex sync
+pull --peer mac` (take the peer's) or `push --peer mac` (send yours).
 
 Every sync only transfers conversations that are new or changed, brings their
 embeddings along so your machine never re-embeds, and is idempotent (re-running
 moves nothing new). Both devices must use the same embedding model (the sync
 refuses on a mismatch). The peer's token is stored user-only (0600) next to the
-DB. Never sync the SQLite file itself with a folder-sync tool; always use `memex
-sync`, which is consistent at the conversation level.
+DB. Pairing is a trust decision (it shares an access token), so only pair devices
+you control. Never sync the SQLite file itself with a folder-sync tool; always use
+`memex sync`, which is consistent at the conversation level.
 
 To keep two devices in sync automatically, set `MEMEX_SYNC_AUTO=true` before
-`memex serve`: it reconciles with each paired peer on startup and every
-`MEMEX_SYNC_INTERVAL_SECONDS` (default 900), skipping a peer that is offline and
-backing off while an ingest is running. It stays off unless you set the flag.
+`memex serve`: while sync is enabled it reconciles with each paired peer on
+startup and every `MEMEX_SYNC_INTERVAL_SECONDS` (default 900), skipping a peer
+that is offline and backing off while an ingest is running. It stays off unless
+you both set the flag and `enable` sync. Turn the whole feature back off any time
+with `memex sync disable`.
 
 ## Running always-on
 

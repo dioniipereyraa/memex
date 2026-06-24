@@ -6,6 +6,18 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-24: Multi-device sync Phase 3 (gate, status, conflicts, hardening) + 0.4.0
+
+Closed Phase 8's Phase 3 on `feature/sync-phase3` (branch + PR per the workflow rule). Sync graduates from experimental and gets a real on/off.
+
+- **Master gate, off by default.** New `sync/state.py` persists an `enabled` flag in `sync_state.json`. The whole feature is off until `memex sync enable`: the `/sync/*` endpoints return **404 while disabled** (not 401, so a non-user device does not even reveal the endpoint exists), the CLI data commands refuse, and the auto-sync loop checks the gate each tick. The flag is read per request, so a toggle takes effect without restarting `serve`, and is fail-closed (a corrupt/half-written gate reads as off).
+- **CLI `enable` / `disable` / `status`.** `status` shows whether sync is on, the auto-sync setting, the local embedding model/dim, and a per-peer table (last sync time + counts; `--check` pings each peer for reachability + token + model match). Per-peer breadcrumbs live in a SEPARATE `sync_history.json` so a frequent sync write can never race-clobber the rarely-written gate; both write atomically (temp + `os.replace`).
+- **Conflict policy confirmed + made observable.** Last-writer-wins by `updated_at` stays the policy. The same-`updated_at`-different-content fork (previously skipped silently) is now returned by `select_reconcile` as `forks` and reported by `reconcile` ("N conflicts left untouched; resolve with `pull`/`push --peer`"). Message-level merge was deferred on purpose: merging messages would force a re-chunk + re-embed, which breaks the no-re-embed design.
+- **Red-team pass + fixes.** (1) `insert_record` now re-asserts the `max_chunks_per_conversation` cap and guards `messages`/`chunks` are lists: the sync insert path bypasses the ingest pipeline, so it inherited none of the pipeline's bounds, letting a compromised peer push an unbounded chunk count. (2) `_MAX_SYNC_UUIDS` lowered 5000 -> 1000: each requested uuid materializes a full conversation (text + chunks + vectors) into one in-memory response, and the client only ever batches 500, so the old cap let a token holder amplify one call to hundreds of MB. (3) Documented the pairing trust boundary (a paired peer shares the token, can spoof the LWW timestamp to overwrite, and pushes content the receiver does not re-redact) in `docs/internal/security-notes.md`. Lessons in CLAUDE.md.
+- **0.4.0** is the first release carrying sync (`0.3.1`/`0.3.2` were pre-sync). Version bumped in `pyproject.toml` + `server.json` + `uv.lock`, `dist/` rebuilt; the user publishes.
+- **Tests.** 55 sync tests (was 33): state gate + atomic writes, endpoints 404 when disabled, CLI enable/disable/status + the data-command gate, reconcile fork reporting, cross-device dedup (one row per uuid), and the `insert_record` hardening guards. Full suite 582 green, ruff + format + core mypy clean.
+- **Next.** User opens the PR and publishes `0.4.0`; then re-run the cross-device live test on the published build with `memex sync enable` on both ends. Deferred (optional): a per-device provenance tag + `search --device` filter.
+
 ## 2026-06-24: Multi-device sync live cross-device test (Mac -> Linux over Tailscale)
 
 Validated the sync between the two real machines, end to end, together with the user.
