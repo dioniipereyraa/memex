@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import struct
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -412,6 +413,44 @@ def delete_chunks_for_conversation(conn: sqlite3.Connection, conversation_uuid: 
     conn.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", ids)
     conn.execute("DELETE FROM chunks WHERE conversation_uuid = ?", (conversation_uuid,))
     return len(ids)
+
+
+def get_chunks_with_embeddings_for_conversation(
+    conn: sqlite3.Connection, conversation_uuid: str
+) -> list[tuple[Chunk, list[float]]]:
+    """Return each chunk of a conversation paired with its stored embedding.
+
+    Reads the float32 vectors straight from `vec_chunks` (by `rowid = chunks.id`)
+    and deserializes them. Used by the multi-device sync transport to ship a
+    conversation's vectors to a peer so the receiver never has to re-embed (and
+    never loads the model). A chunk with no vector row is skipped, but
+    `add_chunk` always writes both, so that should not happen.
+    """
+    chunks = [
+        _row_to_chunk(r)
+        for r in conn.execute(
+            "SELECT * FROM chunks WHERE conversation_uuid = ? ORDER BY id ASC",
+            (conversation_uuid,),
+        ).fetchall()
+    ]
+    if not chunks:
+        return []
+    ids = [c.id for c in chunks if c.id is not None]
+    placeholders = ",".join("?" * len(ids))
+    vec_rows = conn.execute(
+        f"SELECT rowid, embedding FROM vec_chunks WHERE rowid IN ({placeholders})",
+        ids,
+    ).fetchall()
+    by_id: dict[int, list[float]] = {}
+    for row in vec_rows:
+        blob = row["embedding"]
+        by_id[int(row["rowid"])] = list(struct.unpack(f"<{len(blob) // 4}f", blob))
+    out: list[tuple[Chunk, list[float]]] = []
+    for chunk in chunks:
+        embedding = by_id.get(chunk.id) if chunk.id is not None else None
+        if embedding is not None:
+            out.append((chunk, embedding))
+    return out
 
 
 def _row_to_chunk(row: sqlite3.Row) -> Chunk:

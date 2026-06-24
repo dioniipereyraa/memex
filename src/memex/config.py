@@ -191,6 +191,16 @@ class Settings(BaseSettings):
         """
         return self.db_path.parent / "ingest_token"
 
+    @property
+    def sync_peers_path(self) -> Path:
+        """Where the multi-device sync peer registry is stored.
+
+        A small JSON file next to the DB (user-only, 0600) holding each paired
+        peer's address + access token (the shared secret used to authenticate
+        to its `/sync/*` endpoints), the same sensitivity as `ingest_token`.
+        """
+        return self.db_path.parent / "sync_peers.json"
+
     @field_validator("ollama_host")
     @classmethod
     def _warn_non_local_ollama_host(cls, value: str) -> str:

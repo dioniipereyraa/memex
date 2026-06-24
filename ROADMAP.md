@@ -190,6 +190,45 @@ Deferred follow-ups (low severity, tracked here):
 
 ---
 
+## Phase 8: multi-device sync (EXPERIMENTAL, in progress)
+
+One Claude across the user's devices, not many ways to talk to it. Talk on the
+MacBook, continue on the Linux box, go back to the Mac, all over the same
+memory. Continuity comes from retrieval (memex fetches the other device's
+conversation as context), not from merging chats. Local-first: each device runs
+its own memex and they sync peer-to-peer, with no central always-on server.
+Full design (locked decisions, cross-cutting principles, all sub-phases) in
+`docs/internal/multidevice-sync-plan.md`.
+
+- [x] **Phase 1: one-directional manual pull (2026-06-24).** Reuses the running
+  `memex serve`: `GET /sync/manifest` + `POST /sync/conversations` (token-gated,
+  no Origin, Host-pinned). `memex sync pair` / `peers` / `unpair` / `pull`. The
+  pull diffs by uuid + content_hash, refuses on embedding model/dim mismatch,
+  transfers vectors so the receiver never re-embeds, and inserts through the repo
+  so chunks/vec/fts stay consistent (idempotent re-pull). A synced `design_chat`
+  carries its Project row so the FK holds. Off by default (nothing exposed unless
+  a peer is paired AND `memex serve` is bound beyond loopback on purpose). 22
+  tests.
+- [ ] **Phase 2: bidirectional + auto-trigger.** Mutual reconcile so one command
+  leaves both devices equal; auto-trigger on `serve` startup + a sparse interval
+  (no tight polling, back off when a peer is offline); the sync insert takes the
+  shared single-flight ingest lock so it never stacks a model load.
+- [ ] **Phase 3: conflicts, UX, hardening, docs.** Confirm last-writer-wins by
+  `updated_at`/`content_hash` (optional message-level merge); `memex sync
+  enable`/`disable`/`status` + a default-off config gate; a red-team pass on the
+  sync path; drop the experimental label.
+- [ ] **Phase 4 (future, optional): cloud relay / accounts** for async handoff
+  without both devices on. Out of scope until the project grows; the local P2P
+  mode stays the default/private path.
+
+**Cross-cutting (every phase):** stay token-cheap FOR USERS (dedup by uuid so
+searches never return duplicate cross-device hits; retrieval payloads stay
+tight); no re-embedding, no new daemon, no aggressive polling; reuse the audited
+`http_ingest` auth + caps; never sync the SQLite file itself (always app-level by
+uuid).
+
+---
+
 ## Out of scope
 
 - Multi-user or cross-account sharing.

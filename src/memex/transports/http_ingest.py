@@ -64,6 +64,7 @@ from memex.config import settings
 from memex.core.embeddings import Embedder, EmbedderError, get_default_embedder
 from memex.core.ingest.pipeline import ingest_single_conversation
 from memex.core.models import Source
+from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
 
 logger = logging.getLogger("memex.http_ingest")
@@ -89,6 +90,12 @@ _TOKEN_HEADER = "x-memex-token"
 # full-table scan plus millions of timestamp parses on the event loop. A real
 # claude.ai org has at most a few thousand chats, so 50k is generous.
 _MAX_PLAN_ITEMS = 50_000
+
+# Hard cap on the number of uuids accepted in one /sync/conversations request.
+# Each uuid pulls a full conversation (rows + messages + chunks + vectors), so
+# this bounds the work a paired peer can ask for in a single call; the client
+# batches a larger pull into several requests under this cap.
+_MAX_SYNC_UUIDS = 5_000
 
 # Secrets the short-lived ingest worker never needs. Stripped from its
 # environment (defense in depth: the child must not carry the parent's API
@@ -446,6 +453,177 @@ async def backfill_plan_endpoint(request: Request) -> JSONResponse:
     return JSONResponse({"toFetch": to_fetch})
 
 
+# --------------------------------------------------------------------------
+# Multi-device sync (Phase 1): a paired peer pulls conversations from here.
+#
+# These endpoints serve another device running memex (not a browser), so unlike
+# `/ingest/*` they do NOT require an extension Origin. They are gated by the
+# per-install token (constant-time compare) and, app-wide, by the Host
+# allow-list (`TrustedHostMiddleware`). They are only reachable off-box when the
+# user deliberately runs `memex serve --host <addr>` and adds that host to
+# `MEMEX_INGEST_ALLOWED_HOSTS`; the default loopback bind exposes nothing new.
+# Synced text was already redacted at ingest, so no unredacted secret crosses
+# the wire.
+# --------------------------------------------------------------------------
+
+
+def _embedder_identity() -> tuple[str, int]:
+    """The embedding model name + dimension this DB's vectors were built with.
+
+    Two peers must share both, or the transferred vectors are incompatible.
+    Reads the configured embedder without loading the model (`model_name`/`dim`
+    are cheap), so a manifest request stays light.
+    """
+    embedder = _get_embedder()
+    return embedder.model_name, embedder.dim
+
+
+def _sync_unauthorized(request: Request) -> JSONResponse | None:
+    """Token gate for the sync endpoints (no Origin requirement). None if OK."""
+    if not _token_valid(request):
+        logger.warning("Sync request rejected: missing or invalid X-Memex-Token")
+        return JSONResponse({"error": "Missing or invalid access token."}, status_code=401)
+    return None
+
+
+def _serialize_conversation(conn: sqlite3.Connection, uuid: str) -> dict[str, Any] | None:
+    """Full transferable record for one conversation: row + messages + chunks.
+
+    Chunks carry their stored embedding so the receiver never re-embeds. When the
+    conversation belongs to a Project (a `design_chat`), its project row travels
+    too, so the receiver can satisfy the `conversations.project_uuid` foreign key
+    without a separate project sync. Returns None if the uuid is unknown.
+    """
+    conv = repo.get_conversation(conn, uuid)
+    if conv is None:
+        return None
+    messages = repo.get_messages_for_conversation(conn, uuid)
+    chunks = repo.get_chunks_with_embeddings_for_conversation(conn, uuid)
+    project: dict[str, Any] | None = None
+    if conv.project_uuid is not None:
+        proj = repo.get_project(conn, conv.project_uuid)
+        if proj is not None:
+            project = {
+                "uuid": proj.uuid,
+                "name": proj.name,
+                "description": proj.description,
+                "prompt_template": proj.prompt_template,
+                "is_private": proj.is_private,
+                "is_starter_project": proj.is_starter_project,
+                "creator_uuid": proj.creator_uuid,
+                "creator_name": proj.creator_name,
+                "created_at": proj.created_at.isoformat(),
+                "updated_at": proj.updated_at.isoformat(),
+            }
+    return {
+        "uuid": conv.uuid,
+        "title": conv.title,
+        "summary": conv.summary,
+        "source": conv.source.value,
+        "project_uuid": conv.project_uuid,
+        "project": project,
+        "account_uuid": conv.account_uuid,
+        "created_at": conv.created_at.isoformat(),
+        "updated_at": conv.updated_at.isoformat(),
+        "content_hash": conv.content_hash,
+        "messages": [
+            {
+                "uuid": m.uuid,
+                "conversation_uuid": m.conversation_uuid,
+                "parent_uuid": m.parent_uuid,
+                "sender": m.sender.value,
+                "text": m.text,
+                "raw_content": m.raw_content,
+                "has_tool_use": m.has_tool_use,
+                "has_attachments": m.has_attachments,
+                "created_at": m.created_at.isoformat(),
+                "updated_at": m.updated_at.isoformat(),
+            }
+            for m in messages
+        ],
+        "chunks": [
+            {
+                "message_uuid": chunk.message_uuid,
+                "sender": chunk.sender,
+                "text": chunk.text,
+                "char_start": chunk.char_start,
+                "char_end": chunk.char_end,
+                "created_at": chunk.created_at.isoformat(),
+                "embedding": embedding,
+            }
+            for chunk, embedding in chunks
+        ],
+    }
+
+
+async def sync_manifest_endpoint(request: Request) -> JSONResponse:
+    """List what this device has, cheaply, for a peer to diff against.
+
+    Returns `{embed_model, embed_dim, conversations: [{uuid, content_hash,
+    updated_at, source}]}` with no message bodies. The peer compares each
+    `content_hash` to its own and asks for only the new/changed uuids via
+    `/sync/conversations`. Token-gated (it reveals which conversations exist).
+    """
+    unauth = _sync_unauthorized(request)
+    if unauth is not None:
+        return unauth
+    model, dim = _embedder_identity()
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT uuid, content_hash, updated_at, source FROM conversations"
+    ).fetchall()
+    conversations = [
+        {
+            "uuid": row["uuid"],
+            "content_hash": row["content_hash"],
+            "updated_at": row["updated_at"],
+            "source": row["source"],
+        }
+        for row in rows
+    ]
+    return JSONResponse({"embed_model": model, "embed_dim": dim, "conversations": conversations})
+
+
+async def sync_conversations_endpoint(request: Request) -> JSONResponse:
+    """Return full records (row + messages + chunks + vectors) for given uuids.
+
+    POST body `{"uuids": [...]}` (capped at `_MAX_SYNC_UUIDS`). Echoes the
+    embed model/dim so the peer can re-check compatibility before inserting.
+    Token-gated; unknown uuids are skipped (not an error).
+    """
+    unauth = _sync_unauthorized(request)
+    if unauth is not None:
+        return unauth
+    raw = await _read_body_capped(request, settings.ingest_max_body_bytes)
+    if raw is None:
+        return JSONResponse({"error": "Payload too large."}, status_code=413)
+    try:
+        body: Any = json.loads(raw)
+    except ValueError:
+        return JSONResponse({"error": "Body is not valid JSON"}, status_code=400)
+    uuids = body.get("uuids") if isinstance(body, dict) else None
+    if not isinstance(uuids, list):
+        return JSONResponse({"error": "Expected {'uuids': [...]}"}, status_code=400)
+    if len(uuids) > _MAX_SYNC_UUIDS:
+        return JSONResponse(
+            {"error": f"Too many uuids in one request (max {_MAX_SYNC_UUIDS})."},
+            status_code=413,
+        )
+
+    model, dim = _embedder_identity()
+    conn = _get_conn()
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for uuid in uuids:
+        if not isinstance(uuid, str) or uuid in seen:
+            continue
+        seen.add(uuid)
+        record = _serialize_conversation(conn, uuid)
+        if record is not None:
+            records.append(record)
+    return JSONResponse({"embed_model": model, "embed_dim": dim, "conversations": records})
+
+
 def _allowed_hosts() -> list[str]:
     hosts = [h.strip() for h in settings.ingest_allowed_hosts.split(",") if h.strip()]
     return hosts or ["127.0.0.1", "localhost"]
@@ -466,6 +644,8 @@ def build_app() -> Starlette:
                 methods=["POST"],
             ),
             Route("/ingest/plan", backfill_plan_endpoint, methods=["POST"]),
+            Route("/sync/manifest", sync_manifest_endpoint, methods=["GET"]),
+            Route("/sync/conversations", sync_conversations_endpoint, methods=["POST"]),
         ],
     )
 

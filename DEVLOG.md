@@ -6,6 +6,19 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-24: Multi-device sync Phase 1 (one-directional manual pull)
+
+Started the multi-device sync feature (one Claude across the user's devices; full plan in `docs/internal/multidevice-sync-plan.md`). First committed the single-flight ingest lock left from the prior session (`97f1417`), then built Phase 1: a manual, one-directional pull between two paired devices, reusing the already-running `memex serve` HTTP server (the user chose "reuse serve, opt-in Tailscale bind" over a separate sync daemon).
+
+- **Server (`transports/http_ingest.py`).** Two token-gated endpoints, NO extension Origin required (a peer is not a browser), Host still pinned by `TrustedHostMiddleware`: `GET /sync/manifest` returns `{embed_model, embed_dim, conversations:[{uuid, content_hash, updated_at, source}]}` with no bodies, and `POST /sync/conversations` (`{uuids:[...]}`, capped at 5000) returns the full records (conversation row + messages + chunks + their vectors, plus the Project row when the conversation is a `design_chat`). Vectors travel so the receiver never re-embeds and never loads the model.
+- **Vectors out of the DB.** `repo.get_chunks_with_embeddings_for_conversation` reads the float32 blobs straight from `vec_chunks` (by `rowid = chunks.id`) and deserializes them with `struct`.
+- **Client (`memex/sync/`).** `peers.py` is a 0600 JSON peer registry next to the DB (peer address + the peer's token). `client.pull` fetches the manifest, refuses on embedding model/dim mismatch, diffs by uuid + content_hash, fetches only the new/changed records in batches under the cap, and inserts each through the repo (`insert_conversation`/`insert_message` + `delete_chunks_for_conversation` + `add_chunk` with the travelled vector) so chunks/vec/fts stay consistent and chunk ids are reassigned locally (no cross-device id collision). Idempotent: a re-pull with nothing new fetches nothing. HTTP is via stdlib `urllib` (no new dependency) and is injectable so the diff/insert logic is tested without a socket.
+- **CLI.** `memex sync pair --name --url [--token]` (verifies connectivity + token at pairing time, saves regardless), `memex sync peers`, `memex sync unpair <name>`, `memex sync pull [--peer <name>]`.
+- **Off by default.** Nothing new is exposed unless the user pairs a peer AND deliberately binds `memex serve` beyond loopback (`--host` + `MEMEX_INGEST_ALLOWED_HOSTS`, both pre-existing). The `enable`/`disable`/`status` UX and a config gate land in Phase 3.
+- **Bug found and fixed in review (rule 3).** A synced `design_chat` carries a `project_uuid` foreign key; inserting it on a device that lacks the project failed the FK (reproduced: `IntegrityError FOREIGN KEY constraint failed`). Fixed by shipping the Project row inside the record and upserting it before the conversation, with a graceful fallback (drop the project link rather than fail the whole insert if a peer does not ship the project).
+- **Tests + checks.** 22 new tests in `test_sync.py` (peer store round-trip + 0600 perms, endpoint auth/shape/caps, pull insert + searchability + idempotency + changed-hash replace + model/dim mismatch refused + project sync + missing-project degradation). 549 tests green, ruff + format clean, mypy clean on core + the new files.
+- **Next:** Phase 2 (bidirectional + auto-trigger on `serve` startup and a sparse interval, reusing the ingest lock so a sync insert never stacks a model load). Then a live Mac<->Linux pull over Tailscale before graduating from experimental.
+
 ## 2026-06-23: Ingest RAM investigation + single-flight lock across all embed paths
 
 Goal: cut the transient ingest RAM peak (~0.69 GB observed on the `Memex ingest` worker) as much as possible without hurting search. Measured every lever on the real model (`nomic-embed-text-v1.5-Q`, batch=1/threads=1) instead of guessing.

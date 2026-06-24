@@ -26,6 +26,7 @@ from rich.console import Console
 from rich.table import Table
 
 from memex import ingest_lock
+from memex.cli.sync import sync_app
 from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
 from memex.core.embeddings.lazy import LazyEmbedder
@@ -41,6 +42,9 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+# `memex sync ...`: pull conversations between the user's devices (experimental).
+app.add_typer(sync_app, name="sync")
 
 
 @app.command()

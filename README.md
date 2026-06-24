@@ -335,6 +335,41 @@ These sessions are stored under the `claude_code` source, searchable like any ot
    ```
    It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. On Linux, run the same script from a systemd user timer or cron; the script is OS-agnostic. (On Windows, the hook needs a PowerShell equivalent of `session-end-hook.sh`, not yet included; until then, schedule `memex ingest-claude-code` with Task Scheduler.)
 
+## Syncing across your devices (experimental)
+
+If you run memex on more than one machine (say a laptop and a desktop), `memex
+sync` makes Claude one memory across them: index a chat on one device and search
+it from the other. Each device keeps its own local store and they sync
+peer-to-peer, with no central server and nothing leaving your hardware. This is
+an early, experimental feature: today the sync is a manual, one-directional pull
+and needs both devices powered on and reachable.
+
+It is off by default and exposes nothing until you opt in on the source device.
+The source must run `memex serve` bound somewhere the other device can reach it
+(a [Tailscale](https://tailscale.com) address is the easy, encrypted option) and
+allow that host:
+
+```bash
+# On the SOURCE device (the one with the conversations you want):
+MEMEX_INGEST_ALLOWED_HOSTS="127.0.0.1,localhost,my-mac" \
+  memex serve --host 0.0.0.0          # reachable on the tailnet, token still required
+memex token                            # copy this; the other device needs it
+```
+
+```bash
+# On the DESTINATION device (the one you want to pull into):
+memex sync pair --name mac --url http://my-mac:5777   # paste the source's token when asked
+memex sync pull --peer mac                            # fetch new/changed conversations
+memex sync peers                                       # list paired devices
+```
+
+The pull only transfers conversations that are new or changed (by content hash),
+brings their embeddings along so your machine never re-embeds, and is idempotent
+(re-running pulls nothing new). Both devices must use the same embedding model
+(the sync refuses on a mismatch). The peer's token is stored user-only (0600)
+next to the DB. Never sync the SQLite file itself with a folder-sync tool; always
+use `memex sync`, which is consistent at the conversation level.
+
 ## Running always-on
 
 `memex serve` (claude.ai capture) is a long-lived server, and the Claude Code
