@@ -190,7 +190,7 @@ Deferred follow-ups (low severity, tracked here):
 
 ---
 
-## Phase 8: multi-device sync (EXPERIMENTAL, in progress)
+## Phase 8: multi-device sync (Phases 1-3 done, graduated from experimental)
 
 One Claude across the user's devices, not many ways to talk to it. Talk on the
 MacBook, continue on the Linux box, go back to the Mac, all over the same
@@ -218,21 +218,41 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   peer on `serve` startup + every `MEMEX_SYNC_INTERVAL_SECONDS`, skipping a tick
   while an ingest holds the single-flight lock and skipping offline peers. The
   wire format is shared between server and client in `sync/records.py`. 11 tests.
-- [ ] **Phase 3: conflicts, UX, hardening, docs.** Confirm last-writer-wins by
-  `updated_at`/`content_hash` (optional message-level merge); `memex sync
-  enable`/`disable`/`status` + a default-off config gate; a red-team pass on the
-  sync path; drop the experimental label.
+- [x] **Phase 3: conflicts, UX, hardening, docs (2026-06-24).** Confirmed
+  last-writer-wins by `updated_at` as the conflict policy, and made the
+  same-timestamp fork OBSERVABLE: `select_reconcile` returns `forks` and
+  `reconcile` reports "N conflicts left untouched" with the override to resolve
+  them (message-level merge was deferred on purpose: it would force a re-chunk +
+  re-embed, breaking the no-re-embed design). Added a default-off MASTER GATE
+  (`sync/state.py` -> `sync_state.json`): the feature is off until `memex sync
+  enable`, the `/sync/*` endpoints 404 while off (not 401, so they do not reveal
+  themselves), the data commands refuse, and auto-sync checks the gate each tick.
+  New CLI `memex sync enable`/`disable`/`status` (`status --check` pings each
+  peer); per-peer last-sync breadcrumbs in a separate `sync_history.json` (so a
+  frequent write never race-clobbers the gate), atomic state writes. Red-team
+  pass + fixes: `insert_record` re-asserts the `max_chunks_per_conversation` cap
+  the sync path otherwise bypasses + list guards; `_MAX_SYNC_UUIDS` 5000 -> 1000
+  to bound a fetch's in-memory amplification; the paired-peer trust boundary
+  (spoofable LWW timestamp, no receiver re-redaction) documented in
+  `docs/internal/security-notes.md`. Dropped the "experimental" label. 55 sync
+  tests (582 total green). Landed on `feature/sync-phase3` (branch + PR).
 - [ ] **Phase 4 (future, optional): cloud relay / accounts** for async handoff
   without both devices on. Out of scope until the project grows; the local P2P
   mode stays the default/private path.
+- [ ] **Deferred (optional, not blocking graduation):** a per-device provenance
+  tag + a `memex search --device` filter so a query can scope to one machine (the
+  plan's optional token-economy item). Dedup by uuid already holds (one row per
+  uuid), so cross-device hits are never duplicated; the per-device filter is a
+  convenience, not a correctness need, and would add a schema migration.
 
-**Live cross-device test PASSED (2026-06-24):** Mac to Linux over Tailscale, a
-`reconcile` pulled the Mac's conversations into the Linux box and they were
-searchable there with hybrid retrieval (confirmed both client-side and from the
-Mac serve log). PUSH cross-device is not yet live-tested (covered by the local
-two-instance test + unit tests). Shipping sync for real needs a published bump
-carrying it (0.3.1/0.3.2 are pre-sync), so day-to-day cross-device use is gated
-on a `0.4.0`-style release built from `main`.
+**Live cross-device test PASSED (2026-06-24, pre-Phase-3):** Mac to Linux over
+Tailscale, a `reconcile` pulled the Mac's conversations into the Linux box and
+they were searchable there with hybrid retrieval (confirmed both client-side and
+from the Mac serve log). PUSH cross-device is not yet live-tested (covered by the
+local two-instance test + unit tests). `0.4.0` is the first release that carries
+sync (built on `feature/sync-phase3`; `0.3.1`/`0.3.2` were pre-sync), so once it
+is published, re-run the live test on the published build with `memex sync enable`
+on both ends (the Phase 3 gate is new since the last live test).
 
 **Cross-cutting (every phase):** stay token-cheap FOR USERS (dedup by uuid so
 searches never return duplicate cross-device hits; retrieval payloads stay

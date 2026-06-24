@@ -1,4 +1,5 @@
-"""Tests for multi-device sync (Phase 1): peer store, server endpoints, pull."""
+"""Tests for multi-device sync: peer store, server endpoints, pull/push/reconcile,
+the master enable gate, status, conflict forks, and the hardening guards."""
 
 from __future__ import annotations
 
@@ -9,12 +10,15 @@ from datetime import UTC, datetime
 
 import pytest
 from starlette.testclient import TestClient
+from typer.testing import CliRunner
 
+from memex.cli.sync import sync_app
 from memex.core.embeddings.fake import FakeEmbedder
 from memex.core.models import Chunk, Conversation, Message, Project, Sender, Source
 from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
-from memex.sync import client
+from memex.sync import client, records
+from memex.sync import state as sync_state
 from memex.sync.peers import Peer, add_peer, get_peer, load_peers, remove_peer
 from memex.transports import http_ingest
 
@@ -90,9 +94,13 @@ def source_client() -> Iterator[TestClient]:
     orig_conn = http_ingest._conn
     orig_embedder = http_ingest._embedder
     orig_token = http_ingest._token
+    orig_gate = http_ingest._sync_enabled_override
     http_ingest._conn = conn
     http_ingest._embedder = EMBEDDER
     http_ingest._token = TOKEN
+    # Enable sync via the in-memory override so the endpoints serve (the gate is
+    # off by default and reads a per-user file we must not touch in tests).
+    http_ingest._sync_enabled_override = True
     try:
         with TestClient(http_ingest.app, base_url="http://127.0.0.1") as c:
             yield c
@@ -100,6 +108,7 @@ def source_client() -> Iterator[TestClient]:
         http_ingest._conn = orig_conn
         http_ingest._embedder = orig_embedder
         http_ingest._token = orig_token
+        http_ingest._sync_enabled_override = orig_gate
         conn.close()
 
 
@@ -697,6 +706,21 @@ class TestPushAndReconcile:
 
 
 class TestAutoSync:
+    @pytest.fixture(autouse=True)
+    def _enable_and_isolate(self, monkeypatch) -> None:
+        # Enable the gate (off by default) and keep record_sync off the real
+        # per-user history file.
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", True)
+        monkeypatch.setattr(http_ingest.sync_state, "record_sync", lambda *a, **k: None)
+
+    def test_skips_when_disabled(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [PEER])
+        called: list[str] = []
+        monkeypatch.setattr(http_ingest.client, "reconcile", lambda *a, **k: called.append("x"))
+        http_ingest._auto_sync_once(db_path=tmp_path / "memex.db")
+        assert called == []  # the master gate is off
+
     def test_skips_when_ingest_lock_busy(self, tmp_path, monkeypatch) -> None:
         from memex import ingest_lock
 
@@ -735,3 +759,246 @@ class TestAutoSync:
         monkeypatch.setattr(http_ingest.client, "reconcile", lambda *a, **k: called.append("x"))
         http_ingest._auto_sync_once(db_path=tmp_path / "memex.db")
         assert called == []
+
+
+# --------------------------------------------------------------------------
+# Phase 3: master gate state
+# --------------------------------------------------------------------------
+
+
+class TestSyncState:
+    def test_default_disabled(self, tmp_path) -> None:
+        assert sync_state.is_enabled(tmp_path / "sync_state.json") is False
+
+    def test_enable_disable_roundtrip(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_enabled(True, p)
+        assert sync_state.is_enabled(p) is True
+        sync_state.set_enabled(False, p)
+        assert sync_state.is_enabled(p) is False
+
+    def test_record_and_get_history(self, tmp_path) -> None:
+        h = tmp_path / "sync_history.json"
+        when = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
+        sync_state.record_sync("mac", pulled=2, pushed=1, failed=0, when=when, path=h)
+        entry = sync_state.get_peer_history("mac", h)
+        assert entry is not None
+        assert entry["pulled"] == 2
+        assert entry["pushed"] == 1
+        assert entry["last_sync_at"].startswith("2026-06-24")
+        assert sync_state.get_peer_history("absent", h) is None
+
+    def test_history_does_not_clobber_gate(self, tmp_path) -> None:
+        # The gate and the history are separate files on purpose, so a frequent
+        # history write can never race-clobber the enabled flag.
+        state_p = tmp_path / "sync_state.json"
+        hist_p = tmp_path / "sync_history.json"
+        sync_state.set_enabled(True, state_p)
+        sync_state.record_sync("mac", pulled=1, pushed=0, failed=0, path=hist_p)
+        assert sync_state.is_enabled(state_p) is True
+
+    def test_corrupt_state_is_fail_closed(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        p.write_text("{ not valid json", encoding="utf-8")
+        assert sync_state.is_enabled(p) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file mode")
+    def test_state_file_is_0600(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_enabled(True, p)
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+# --------------------------------------------------------------------------
+# Phase 3: the gate hides the endpoints when sync is off
+# --------------------------------------------------------------------------
+
+
+class TestSyncGateEndpoints:
+    def test_endpoints_404_when_disabled(self, source_client, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
+        h = {"X-Memex-Token": TOKEN}
+        assert source_client.get("/sync/manifest", headers=h).status_code == 404
+        assert (
+            source_client.post("/sync/conversations", json={"uuids": []}, headers=h).status_code
+            == 404
+        )
+        assert (
+            source_client.post("/sync/push", json={"conversations": []}, headers=h).status_code
+            == 404
+        )
+
+    def test_disabled_404s_before_the_token_check(self, source_client, monkeypatch) -> None:
+        # A disabled device returns 404 even to a bad/absent token, so it does not
+        # reveal (via a 401) that the endpoint exists.
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
+        assert source_client.get("/sync/manifest").status_code == 404
+        assert (
+            source_client.get("/sync/manifest", headers={"X-Memex-Token": "wrong"}).status_code
+            == 404
+        )
+
+    def test_health_still_works_when_disabled(self, source_client, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
+        assert source_client.get("/health").status_code == 200
+
+
+# --------------------------------------------------------------------------
+# Phase 3: conflict forks + cross-device dedup
+# --------------------------------------------------------------------------
+
+
+class TestReconcileForks:
+    def test_select_reconcile_flags_same_timestamp_fork(self) -> None:
+        t = "2026-06-24T12:00:00+00:00"
+        local = [{"uuid": "c", "content_hash": "a", "updated_at": t, "source": "conversations"}]
+        remote = [{"uuid": "c", "content_hash": "b", "updated_at": t, "source": "conversations"}]
+        to_pull, to_push, forks = records.select_reconcile(local, remote)
+        assert to_pull == []
+        assert to_push == []
+        assert forks == ["c"]
+
+    def test_reconcile_reports_fork_and_overwrites_neither(self, source_client) -> None:
+        # Same uuid on both, SAME updated_at, different content: a fork. Neither
+        # side is overwritten and the summary reports it.
+        dest = connect_and_init(":memory:", check_same_thread=False)
+        same = _now()
+        src = http_ingest._conn
+        _seed(src, "forked", "src-content", same)
+        src.commit()
+        _seed(dest, "forked", "dest-content", same)
+        manifest_fn, fetch_fn = _transport(source_client)
+        push_fn = _push_fn(source_client)
+        summary = client.reconcile(
+            dest,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            fetch_fn=fetch_fn,
+            push_fn=push_fn,
+        )
+        assert summary.forks == 1
+        # Each side keeps its own divergent copy.
+        assert repo.get_conversation(dest, "forked").content_hash == "dest-content"
+        assert repo.get_conversation(src, "forked").content_hash == "src-content"
+        dest.close()
+
+
+class TestSyncDedup:
+    def test_reconcile_keeps_one_row_per_uuid(self, source_client) -> None:
+        # dest already holds an identical copy of the source's c1 (same uuid +
+        # content_hash). Reconcile must be a no-op for it: one conversation row,
+        # never a duplicate, so a cross-device search returns it once.
+        dest = connect_and_init(":memory:", check_same_thread=False)
+        _seed(dest, "c1", "hash-v1", _now())  # matches the source's c1 content_hash
+        manifest_fn, fetch_fn = _transport(source_client)
+        push_fn = _push_fn(source_client)
+        summary = client.reconcile(
+            dest,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            fetch_fn=fetch_fn,
+            push_fn=push_fn,
+        )
+        n = dest.execute("SELECT COUNT(*) AS n FROM conversations WHERE uuid = 'c1'").fetchone()[
+            "n"
+        ]
+        assert n == 1
+        assert summary.pulled == 0  # identical copy, nothing to pull
+        dest.close()
+
+
+# --------------------------------------------------------------------------
+# Phase 3: insert_record hardening (red-team)
+# --------------------------------------------------------------------------
+
+
+class TestInsertRecordHardening:
+    def _conn(self):
+        return connect_and_init(":memory:", check_same_thread=False)
+
+    def test_rejects_too_many_chunks(self, monkeypatch) -> None:
+        conn = self._conn()
+        monkeypatch.setattr(records.settings, "max_chunks_per_conversation", 2)
+        rec = _record("big", "h", _now())
+        rec["chunks"] = [
+            {
+                "message_uuid": None,
+                "sender": "human",
+                "text": f"c{i}",
+                "char_start": 0,
+                "char_end": 2,
+                "created_at": _now().isoformat(),
+                "embedding": [0.0] * 768,
+            }
+            for i in range(3)
+        ]
+        with pytest.raises(ValueError, match="chunks"):
+            records.insert_record(conn, rec, 768)
+        conn.close()
+
+    def test_rejects_non_list_chunks(self) -> None:
+        conn = self._conn()
+        rec = _record("x", "h", _now())
+        rec["chunks"] = "not-a-list"
+        with pytest.raises(ValueError, match="lists"):
+            records.insert_record(conn, rec, 768)
+        conn.close()
+
+    def test_rejects_non_list_messages(self) -> None:
+        conn = self._conn()
+        rec = _record("y", "h", _now())
+        rec["messages"] = "nope"
+        with pytest.raises(ValueError, match="lists"):
+            records.insert_record(conn, rec, 768)
+        conn.close()
+
+
+# --------------------------------------------------------------------------
+# Phase 3: CLI enable / disable / status + the data-command gate
+# --------------------------------------------------------------------------
+
+
+class TestSyncCLI:
+    @pytest.fixture
+    def isolated(self, tmp_path, monkeypatch):
+        # Point the gate/peer files under tmp and avoid loading a real embedder.
+        monkeypatch.setattr(sync_state.settings, "db_path", tmp_path / "memex.db")
+        monkeypatch.setattr("memex.cli.sync.get_default_embedder", lambda: EMBEDDER)
+        return tmp_path
+
+    def test_status_default_disabled(self, isolated) -> None:
+        result = CliRunner().invoke(sync_app, ["status"])
+        assert result.exit_code == 0
+        assert "disabled" in result.output
+
+    def test_enable_then_status_enabled(self, isolated) -> None:
+        assert CliRunner().invoke(sync_app, ["enable"]).exit_code == 0
+        assert sync_state.is_enabled() is True
+        result = CliRunner().invoke(sync_app, ["status"])
+        assert "enabled" in result.output
+
+    def test_disable_turns_it_off(self, isolated) -> None:
+        CliRunner().invoke(sync_app, ["enable"])
+        assert CliRunner().invoke(sync_app, ["disable"]).exit_code == 0
+        assert sync_state.is_enabled() is False
+
+    def test_pull_refused_when_disabled(self, isolated) -> None:
+        result = CliRunner().invoke(sync_app, ["pull"])
+        assert result.exit_code == 2
+        assert "disabled" in result.output
+
+    def test_reconcile_refused_when_disabled(self, isolated) -> None:
+        result = CliRunner().invoke(sync_app, ["reconcile"])
+        assert result.exit_code == 2
+        assert "disabled" in result.output
+
+    def test_corrupt_state_file_keeps_status_working(self, isolated) -> None:
+        # A garbage gate file is fail-closed, and `status` still runs.
+        (isolated / "sync_state.json").write_text("{bad", encoding="utf-8")
+        result = CliRunner().invoke(sync_app, ["status"])
+        assert result.exit_code == 0
+        assert "disabled" in result.output

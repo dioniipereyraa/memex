@@ -212,6 +212,26 @@ class Settings(BaseSettings):
         """
         return self.db_path.parent / "sync_peers.json"
 
+    @property
+    def sync_state_path(self) -> Path:
+        """Where the multi-device sync master gate (enabled flag) is stored.
+
+        A small JSON file next to the DB. The whole feature is OFF by default;
+        `memex sync enable`/`disable` are the only writers. The server reads it
+        per `/sync/*` request so a toggle takes effect without a restart.
+        """
+        return self.db_path.parent / "sync_state.json"
+
+    @property
+    def sync_history_path(self) -> Path:
+        """Where per-peer sync breadcrumbs (last time + counts) are stored.
+
+        Kept apart from `sync_state_path` so a frequent history write (auto-sync
+        every tick) never race-clobbers a concurrent `enable`/`disable`. Used
+        only to render `memex sync status` without a network round-trip.
+        """
+        return self.db_path.parent / "sync_history.json"
+
     @field_validator("ollama_host")
     @classmethod
     def _warn_non_local_ollama_host(cls, value: str) -> str:
