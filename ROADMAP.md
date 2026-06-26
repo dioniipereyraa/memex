@@ -235,7 +235,9 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   to bound a fetch's in-memory amplification; the paired-peer trust boundary
   (spoofable LWW timestamp, no receiver re-redaction) documented in
   `docs/internal/security-notes.md`. Dropped the "experimental" label. 55 sync
-  tests (582 total green). Landed on `feature/sync-phase3` (branch + PR).
+  tests (582 total green). Merged to `main` via PR #2 (merge commit `73c3a71`),
+  tagged `v0.4.0`, and **published to PyPI as `0.4.0`** (the first release carrying
+  multi-device sync).
 - [ ] **Phase 4 (future, optional): cloud relay / accounts** for async handoff
   without both devices on. Out of scope until the project grows; the local P2P
   mode stays the default/private path.
