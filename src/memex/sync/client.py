@@ -22,10 +22,11 @@ import json
 import logging
 import sqlite3
 import urllib.request
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from memex.config import settings
 from memex.sync import records
 from memex.sync.peers import Peer
 
@@ -33,11 +34,32 @@ logger = logging.getLogger("memex.sync.client")
 
 # Header carrying the peer's per-install token (matches http_ingest._TOKEN_HEADER).
 _TOKEN_HEADER = "X-Memex-Token"
-# How many conversations to move per request. Kept under the server's
-# `_MAX_SYNC_UUIDS` cap; a larger sync is split into several requests.
-_DEFAULT_BATCH = 500
 _MANIFEST_TIMEOUT = 30.0
 _FETCH_TIMEOUT = 120.0
+
+# A conversation carries its chunk vectors, so its transfer size scales with the
+# chunk count, not the conversation count. Sync therefore batches by serialized
+# BYTES (a budget under the peer's body cap), never by a fixed count, so a body
+# cannot exceed the receiver's `ingest_max_body_bytes` (which would 413 / break
+# the pipe). See `_resolve_budget` / `_serialize_and_push` / `_fetch_and_insert`.
+#
+# Fraction of the peer's advertised body cap we are willing to fill (headroom for
+# the JSON envelope and any size estimate error).
+_BUDGET_SAFETY = 0.8
+# Fixed slack for the request envelope ({"embed_model", "embed_dim",
+# "conversations": [...]}) added on top of the records' own size.
+_ENVELOPE_OVERHEAD = 4096
+# Hard ceiling on the per-request item count, regardless of the byte budget, so a
+# batch of tiny records still stays under the server's `_MAX_SYNC_UUIDS` (1000).
+_MAX_BATCH_COUNT = 500
+# Estimating a remote record's size from its manifest `chunk_count` (the client
+# has no local copy to measure). Vectors dominate: ~`dim` JSON floats per chunk.
+_FLOAT_JSON_BYTES = 14
+_CHUNK_TEXT_BYTES = 800
+_CONV_BASE_BYTES = 8192
+# Fallback chunk count for a peer too old to advertise it (estimate moderately so
+# batches stay conservative rather than huge).
+_DEFAULT_CHUNK_COUNT = 100
 
 
 @dataclass
@@ -69,6 +91,9 @@ class PushSummary:
     peer_model: str | None
     peer_dim: int | None
     refused_mismatch: bool = False
+    # Conversations skipped because one record alone exceeds the peer's body cap
+    # (counted in `failed` too). The peer must raise MEMEX_INGEST_MAX_BODY_BYTES.
+    oversized: int = 0
 
 
 @dataclass
@@ -83,6 +108,9 @@ class ReconcileSummary:
     # untouched on both, surfaced so the user can force a side with pull/push.
     forks: int = 0
     refused_mismatch: bool = False
+    # Conversations skipped because one record alone exceeds the peer's body cap
+    # (counted in `failed` too). The peer must raise MEMEX_INGEST_MAX_BODY_BYTES.
+    oversized: int = 0
 
 
 ManifestFn = Callable[[Peer], dict[str, Any]]
@@ -136,9 +164,41 @@ def push_conversations(
     )
 
 
-def _batched(items: Sequence[Any], size: int) -> Iterator[list[Any]]:
-    for start in range(0, len(items), size):
-        yield list(items[start : start + size])
+def _resolve_budget(manifest: dict[str, Any], override: int | None) -> int:
+    """Bytes one sync request may carry: a safe fraction of the peer's body cap.
+
+    Starts from the local config (or an explicit override), then clamps to 80% of
+    the peer's advertised `max_body_bytes` so a request never exceeds the
+    receiver's cap. A peer too old to advertise it leaves the local budget as is
+    (the default 8 MB already sits under the 16 MB default server cap).
+    """
+    base = override if (override is not None and override > 0) else settings.sync_max_batch_bytes
+    peer_cap = manifest.get("max_body_bytes")
+    if isinstance(peer_cap, int) and peer_cap > 0:
+        return min(base, int(peer_cap * _BUDGET_SAFETY))
+    return base
+
+
+def _est_record_bytes(chunk_count: int, dim: int) -> int:
+    """Estimate a record's serialized size from its chunk count (vectors dominate).
+
+    Used only for the pull side, where the client has no local copy to measure;
+    the push side measures the real serialized bytes instead.
+    """
+    per_chunk = dim * _FLOAT_JSON_BYTES + _CHUNK_TEXT_BYTES
+    return chunk_count * per_chunk + _CONV_BASE_BYTES
+
+
+def _size_hint(manifest_conversations: list[dict[str, Any]], dim: int) -> dict[str, int]:
+    """Map uuid -> estimated transfer bytes, from a peer manifest's chunk counts."""
+    hint: dict[str, int] = {}
+    for item in manifest_conversations:
+        if not isinstance(item, dict) or not item.get("uuid"):
+            continue
+        cc = item.get("chunk_count")
+        cc = cc if isinstance(cc, int) and cc >= 0 else _DEFAULT_CHUNK_COUNT
+        hint[item["uuid"]] = _est_record_bytes(cc, dim)
+    return hint
 
 
 def _compatible(manifest: dict[str, Any], local_model: str, local_dim: int) -> bool:
@@ -158,7 +218,7 @@ def pull(
     local_dim: int,
     manifest_fn: ManifestFn | None = None,
     fetch_fn: FetchFn | None = None,
-    batch_size: int = _DEFAULT_BATCH,
+    max_batch_bytes: int | None = None,
 ) -> PullSummary:
     """Pull new or changed conversations from `peer` into `conn` (peer wins)."""
     manifest_fn = manifest_fn or fetch_manifest
@@ -191,9 +251,11 @@ def pull(
             refused_mismatch=True,
         )
 
+    budget = _resolve_budget(manifest, max_batch_bytes)
+    hint = _size_hint(remote, local_dim)
     to_fetch = records.select_to_transfer(records.local_manifest(conn), remote)
     inserted, failed = _fetch_and_insert(
-        conn, peer, to_fetch, fetch_fn, local_model, local_dim, batch_size
+        conn, peer, to_fetch, fetch_fn, local_model, local_dim, budget, hint
     )
     return PullSummary(
         peer=peer.name,
@@ -216,7 +278,7 @@ def push(
     local_dim: int,
     manifest_fn: ManifestFn | None = None,
     push_fn: PushFn | None = None,
-    batch_size: int = _DEFAULT_BATCH,
+    max_batch_bytes: int | None = None,
 ) -> PushSummary:
     """Push local conversations the peer is missing or has differently (local wins)."""
     manifest_fn = manifest_fn or fetch_manifest
@@ -241,9 +303,10 @@ def push(
             refused_mismatch=True,
         )
 
+    budget = _resolve_budget(manifest, max_batch_bytes)
     to_push = records.select_to_transfer(remote, records.local_manifest(conn))
-    pushed, failed = _serialize_and_push(
-        conn, peer, to_push, push_fn, local_model, local_dim, batch_size
+    pushed, failed, oversized = _serialize_and_push(
+        conn, peer, to_push, push_fn, local_model, local_dim, budget
     )
     return PushSummary(
         peer=peer.name,
@@ -254,6 +317,7 @@ def push(
         local_dim=local_dim,
         peer_model=peer_model,
         peer_dim=peer_dim,
+        oversized=oversized,
     )
 
 
@@ -266,7 +330,7 @@ def reconcile(
     manifest_fn: ManifestFn | None = None,
     fetch_fn: FetchFn | None = None,
     push_fn: PushFn | None = None,
-    batch_size: int = _DEFAULT_BATCH,
+    max_batch_bytes: int | None = None,
 ) -> ReconcileSummary:
     """Bidirectional reconcile (last-writer-wins by updated_at); leaves both equal."""
     manifest_fn = manifest_fn or fetch_manifest
@@ -279,12 +343,14 @@ def reconcile(
         logger.warning("Refusing reconcile with peer %s: model/dim mismatch", peer.name)
         return ReconcileSummary(peer=peer.name, pulled=0, pushed=0, failed=0, refused_mismatch=True)
 
+    budget = _resolve_budget(manifest, max_batch_bytes)
+    hint = _size_hint(remote, local_dim)
     to_pull, to_push, forks = records.select_reconcile(records.local_manifest(conn), remote)
     pulled, pull_failed = _fetch_and_insert(
-        conn, peer, to_pull, fetch_fn, local_model, local_dim, batch_size
+        conn, peer, to_pull, fetch_fn, local_model, local_dim, budget, hint
     )
-    pushed, push_failed = _serialize_and_push(
-        conn, peer, to_push, push_fn, local_model, local_dim, batch_size
+    pushed, push_failed, oversized = _serialize_and_push(
+        conn, peer, to_push, push_fn, local_model, local_dim, budget
     )
     if forks:
         logger.warning(
@@ -300,6 +366,7 @@ def reconcile(
         pushed=pushed,
         failed=pull_failed + push_failed,
         forks=len(forks),
+        oversized=oversized,
     )
 
 
@@ -310,17 +377,33 @@ def _fetch_and_insert(
     fetch_fn: FetchFn,
     local_model: str,
     local_dim: int,
-    batch_size: int,
+    budget: int,
+    size_hint: dict[str, int],
 ) -> tuple[int, int]:
+    """Fetch the uuids from the peer and insert them, batching by estimated bytes.
+
+    The request body (a list of uuids) is tiny, but the RESPONSE carries full
+    records with vectors, so an over-large batch makes the peer materialize a
+    huge response in memory. Group uuids until their estimated transfer size
+    (from the manifest's chunk counts) would exceed `budget`, then fetch.
+    """
     inserted = 0
     failed = 0
-    for batch in _batched(uuids, batch_size):
+    batch: list[str] = []
+    batch_bytes = 0
+
+    def flush() -> bool:
+        """Fetch+insert the current batch. Returns False to stop (model drift)."""
+        nonlocal inserted, failed, batch, batch_bytes
+        if not batch:
+            return True
         resp = fetch_fn(peer, batch)
+        batch, batch_bytes = [], 0
         # The peer could re-embed under a new model between the manifest and this
         # call; re-check before trusting the vectors.
         if not _compatible(resp, local_model, local_dim):
             logger.warning("Peer %s changed model mid-sync; stopping fetch.", peer.name)
-            break
+            return False
         for record in resp.get("conversations") or []:
             try:
                 records.insert_record(conn, record, local_dim)
@@ -331,6 +414,18 @@ def _fetch_and_insert(
                     record.get("uuid") if isinstance(record, dict) else "<?>",
                 )
                 failed += 1
+        return True
+
+    for uuid in uuids:
+        est = size_hint.get(uuid, _est_record_bytes(_DEFAULT_CHUNK_COUNT, local_dim))
+        full = batch_bytes + est > budget or len(batch) >= _MAX_BATCH_COUNT
+        # flush() (side-effecting) only runs once the batch is non-empty and full;
+        # it returns False on peer model drift, which stops the whole fetch.
+        if batch and full and not flush():
+            return inserted, failed
+        batch.append(uuid)
+        batch_bytes += est
+    flush()
     return inserted, failed
 
 
@@ -341,17 +436,55 @@ def _serialize_and_push(
     push_fn: PushFn,
     local_model: str,
     local_dim: int,
-    batch_size: int,
-) -> tuple[int, int]:
+    budget: int,
+) -> tuple[int, int, int]:
+    """Serialize the uuids and push them, batching by real serialized bytes.
+
+    Each record carries its chunk vectors, so the batch is filled by measured
+    JSON size (not a fixed count) and flushed before it would exceed `budget`
+    (which is already under the peer's body cap). A single record that alone
+    exceeds the budget can never fit in any request, so it is skipped with a
+    clear log and counted as both failed and oversized rather than triggering a
+    413 / broken pipe that would abort the whole sync.
+
+    Returns (pushed, failed, oversized).
+    """
     pushed = 0
     failed = 0
-    for batch in _batched(uuids, batch_size):
-        payload = [
-            rec for rec in (records.serialize_conversation(conn, uuid) for uuid in batch) if rec
-        ]
-        if not payload:
-            continue
-        resp = push_fn(peer, local_model, local_dim, payload)
+    oversized = 0
+    batch: list[dict[str, Any]] = []
+    batch_bytes = _ENVELOPE_OVERHEAD
+
+    def flush() -> None:
+        nonlocal pushed, failed, batch, batch_bytes
+        if not batch:
+            return
+        resp = push_fn(peer, local_model, local_dim, batch)
         pushed += int(resp.get("inserted", 0))
         failed += int(resp.get("failed", 0))
-    return pushed, failed
+        batch, batch_bytes = [], _ENVELOPE_OVERHEAD
+
+    for uuid in uuids:
+        record = records.serialize_conversation(conn, uuid)
+        if record is None:
+            continue
+        rec_bytes = len(json.dumps(record).encode("utf-8"))
+        if rec_bytes + _ENVELOPE_OVERHEAD > budget:
+            logger.error(
+                "Conversation %s is %d bytes, over the %d-byte sync budget; skipping. "
+                "Raise MEMEX_INGEST_MAX_BODY_BYTES on %s (or lower "
+                "MEMEX_MAX_CHUNKS_PER_CONVERSATION) to transfer it.",
+                uuid,
+                rec_bytes,
+                budget,
+                peer.name,
+            )
+            failed += 1
+            oversized += 1
+            continue
+        if batch and (batch_bytes + rec_bytes > budget or len(batch) >= _MAX_BATCH_COUNT):
+            flush()
+        batch.append(record)
+        batch_bytes += rec_bytes
+    flush()
+    return pushed, failed, oversized

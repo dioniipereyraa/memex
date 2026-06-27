@@ -532,7 +532,16 @@ async def sync_manifest_endpoint(request: Request) -> JSONResponse:
         return refusal
     model, dim = _embedder_identity()
     conversations = records.local_manifest(_get_conn())
-    return JSONResponse({"embed_model": model, "embed_dim": dim, "conversations": conversations})
+    # Advertise the request-body cap so a pushing peer can size its batches to
+    # stay under it (a count-based batch can blow past the cap and get a 413).
+    return JSONResponse(
+        {
+            "embed_model": model,
+            "embed_dim": dim,
+            "max_body_bytes": settings.ingest_max_body_bytes,
+            "conversations": conversations,
+        }
+    )
 
 
 async def sync_conversations_endpoint(request: Request) -> JSONResponse:

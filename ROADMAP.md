@@ -238,6 +238,16 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   tests (582 total green). Merged to `main` via PR #2 (merge commit `73c3a71`),
   tagged `v0.4.0`, and **published to PyPI as `0.4.0`** (the first release carrying
   multi-device sync).
+- [x] **Size-aware batching (`0.4.1`, 2026-06-27).** The cross-device live re-test
+  on the published `0.4.0` exposed a real bug: push/reconcile batched by
+  conversation COUNT, so a real history (158 conversations / ~6 k vector-carrying
+  chunks) overflowed the 16 MB body cap and failed with a misleading `Broken pipe`.
+  Now batches by serialized BYTES (`_serialize_and_push` / `_fetch_and_insert`,
+  budget via `_resolve_budget`); `/sync/manifest` advertises `max_body_bytes` +
+  per-conversation `chunk_count` so the client sizes batches to the peer's real cap
+  (safe fallback for an older peer); an oversized single conversation is skipped +
+  reported, not fatal; new `MEMEX_SYNC_MAX_BATCH_BYTES` (default 8 MB). 587 tests
+  green. On branch `fix/sync-size-aware-batching` (pending `0.4.1` publish).
 - [ ] **Phase 4 (future, optional): cloud relay / accounts** for async handoff
   without both devices on. Out of scope until the project grows; the local P2P
   mode stays the default/private path.
@@ -250,11 +260,17 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
 **Live cross-device test PASSED (2026-06-24, pre-Phase-3):** Mac to Linux over
 Tailscale, a `reconcile` pulled the Mac's conversations into the Linux box and
 they were searchable there with hybrid retrieval (confirmed both client-side and
-from the Mac serve log). PUSH cross-device is not yet live-tested (covered by the
-local two-instance test + unit tests). `0.4.0` is the first release that carries
-sync (built on `feature/sync-phase3`; `0.3.1`/`0.3.2` were pre-sync), so once it
-is published, re-run the live test on the published build with `memex sync enable`
-on both ends (the Phase 3 gate is new since the last live test).
+from the Mac serve log).
+
+**Cross-device RE-TEST on the published `0.4.0` (2026-06-27):** with the Phase 3
+master gate enabled on both ends, `reconcile` converged both devices to 161
+conversations (pulled 3, pushed 158, 0 forks). This run surfaced the count-based
+batching bug above; after fixing it (`0.4.1`), the size-aware PULL was validated
+live (Mac pulled 161 from a still-`0.4.0` Linux peer in 23 byte-bounded requests,
+0 failed, vec/fts consistent, proving the old-peer fallback). The PUSH split path
+is unit-tested and was proven live via the manual small-batch workaround that
+completed the re-test. Operational note: `memex serve --host <addr>` does NOT
+allow-list `<addr>`; the peer must set `MEMEX_INGEST_ALLOWED_HOSTS`.
 
 **Cross-cutting (every phase):** stay token-cheap FOR USERS (dedup by uuid so
 searches never return duplicate cross-device hits; retrieval payloads stay
