@@ -227,6 +227,17 @@ def _require_enabled() -> None:
         raise typer.Exit(code=2)
 
 
+def _warn_oversized(oversized: int, peer_name: str) -> None:
+    """Tell the user when a record was too large to fit in any single request."""
+    if not oversized:
+        return
+    console.print(
+        f"  [yellow]{oversized} conversation(s) too large to transfer[/yellow] "
+        f"(one record exceeds the body cap). Raise MEMEX_INGEST_MAX_BODY_BYTES "
+        f"on {peer_name} (or lower MEMEX_MAX_CHUNKS_PER_CONVERSATION)."
+    )
+
+
 def _format_last_sync(hist: dict[str, Any] | None) -> str:
     if not hist:
         return "never"
@@ -337,6 +348,7 @@ def push(
                 + (f", [red]failed {summary.failed}[/red]" if summary.failed else "")
                 + "."
             )
+            _warn_oversized(summary.oversized, peer.name)
     finally:
         conn.close()
 
@@ -386,5 +398,6 @@ def reconcile(
                     f"different content) left untouched. Force a side with "
                     f"`memex sync pull`/`push --peer {peer.name}`."
                 )
+            _warn_oversized(summary.oversized, peer.name)
     finally:
         conn.close()

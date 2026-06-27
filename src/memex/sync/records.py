@@ -49,11 +49,19 @@ def to_epoch(value: object) -> float:
 def local_manifest(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """The local conversation manifest: uuid + content_hash + updated_at + source.
 
-    No message bodies; cheap to build and to send. Used by the server's
+    Also carries `chunk_count` per conversation so a pulling peer can estimate a
+    record's transfer size (the vectors dominate it) and batch by bytes instead
+    of by a fixed count. No message bodies; still cheap to build and to send
+    (the count uses the `idx_chunks_conversation` index). Used by the server's
     `/sync/manifest` and by the client when reconciling (it needs both sides).
     """
     rows = conn.execute(
-        "SELECT uuid, content_hash, updated_at, source FROM conversations"
+        """
+        SELECT c.uuid, c.content_hash, c.updated_at, c.source,
+               (SELECT COUNT(*) FROM chunks k WHERE k.conversation_uuid = c.uuid)
+                   AS chunk_count
+        FROM conversations c
+        """
     ).fetchall()
     return [
         {
@@ -61,6 +69,7 @@ def local_manifest(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "content_hash": row["content_hash"],
             "updated_at": row["updated_at"],
             "source": row["source"],
+            "chunk_count": row["chunk_count"],
         }
         for row in rows
     ]

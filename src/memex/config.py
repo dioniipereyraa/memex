@@ -180,6 +180,17 @@ class Settings(BaseSettings):
     sync_interval_seconds: int = Field(
         default=900, alias="MEMEX_SYNC_INTERVAL_SECONDS", ge=60, le=86_400
     )
+    # Target byte size of one pull/push request when syncing. A conversation
+    # carries its chunk vectors (~11 KB per chunk at dim 768), so batching by a
+    # fixed conversation COUNT could build a body far past the peer's
+    # `ingest_max_body_bytes` cap and get rejected (413 / broken pipe). The sync
+    # client instead accumulates serialized records up to this budget, then
+    # flushes, so every request stays under the cap. Kept comfortably below the
+    # 16 MB default body cap; the client also never exceeds 80% of the peer's
+    # advertised cap (see `sync.client._resolve_budget`).
+    sync_max_batch_bytes: int = Field(
+        default=8 * 1024 * 1024, alias="MEMEX_SYNC_MAX_BATCH_BYTES", ge=64 * 1024
+    )
 
     # Auto-summaries with Claude Haiku. Opt-in: OFF by default to avoid
     # API calls during bulk ingest. Enable with MEMEX_SUMMARY_ENABLED=true

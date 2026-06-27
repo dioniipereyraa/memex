@@ -3,6 +3,7 @@ the master enable gate, status, conflict forks, and the hardening guards."""
 
 from __future__ import annotations
 
+import json
 import stat
 import sys
 from collections.abc import Iterator
@@ -13,6 +14,7 @@ from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
 from memex.cli.sync import sync_app
+from memex.config import settings as cfg
 from memex.core.embeddings.fake import FakeEmbedder
 from memex.core.models import Chunk, Conversation, Message, Project, Sender, Source
 from memex.core.storage import repo
@@ -1002,3 +1004,130 @@ class TestSyncCLI:
         result = CliRunner().invoke(sync_app, ["status"])
         assert result.exit_code == 0
         assert "disabled" in result.output
+
+
+# --------------------------------------------------------------------------
+# Size-aware batching: a conversation carries its vectors, so sync batches by
+# serialized BYTES (a budget under the peer's body cap), never by a fixed count.
+# --------------------------------------------------------------------------
+
+
+class TestSizeAwareBatching:
+    def _dest(self):
+        return connect_and_init(":memory:", check_same_thread=False)
+
+    def test_manifest_advertises_body_cap_and_chunk_count(self, source_client: TestClient) -> None:
+        r = source_client.get("/sync/manifest", headers={"X-Memex-Token": TOKEN})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["max_body_bytes"] == cfg.ingest_max_body_bytes
+        c1 = next(c for c in body["conversations"] if c["uuid"] == "c1")
+        assert c1["chunk_count"] == 2  # the seeded conversation has 2 chunks
+
+    def test_resolve_budget_clamps_to_peer_cap(self) -> None:
+        # Peer cap small: budget is 80% of it, below the local default.
+        assert client._resolve_budget({"max_body_bytes": 1_000_000}, None) == 800_000
+        # Peer too old to advertise it: fall back to the local default.
+        assert client._resolve_budget({}, None) == cfg.sync_max_batch_bytes
+        # An explicit override below the peer cap wins.
+        assert client._resolve_budget({"max_body_bytes": 16 * 1024 * 1024}, 500_000) == 500_000
+
+    def test_push_splits_into_multiple_requests_by_size(self, source_client: TestClient) -> None:
+        local = self._dest()
+        for i in range(6):
+            _seed(local, f"x{i}", f"h{i}", _now(), text="some local text " * 8)
+        rec_bytes = len(json.dumps(records.serialize_conversation(local, "x0")).encode())
+
+        calls: list[int] = []
+        real_push = _push_fn(source_client)
+
+        def counting_push(peer, model, dim, convs):
+            calls.append(len(convs))
+            return real_push(peer, model, dim, convs)
+
+        manifest_fn, _ = _transport(source_client)
+        # Budget room for ~2 records per request -> the 6 split across >1 request.
+        budget = client._ENVELOPE_OVERHEAD + int(2.5 * rec_bytes)
+        summary = client.push(
+            local,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            push_fn=counting_push,
+            max_batch_bytes=budget,
+        )
+        assert summary.pushed == 6
+        assert summary.oversized == 0
+        assert len(calls) > 1  # actually split
+        assert sum(calls) == 6  # and every record was sent exactly once
+        # All six landed on the peer.
+        assert repo.get_conversation(http_ingest._conn, "x3") is not None
+        local.close()
+
+    def test_push_skips_oversized_record_without_aborting(self, source_client: TestClient) -> None:
+        local = self._dest()
+        _seed(local, "big", "hbig", _now())
+        rec_bytes = len(json.dumps(records.serialize_conversation(local, "big")).encode())
+        manifest_fn, _ = _transport(source_client)
+        push_fn = _push_fn(source_client)
+
+        # Budget below a single record: it can never fit -> skipped, not a crash.
+        summary = client.push(
+            local,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            push_fn=push_fn,
+            max_batch_bytes=rec_bytes - 100,
+        )
+        assert summary.oversized == 1
+        assert summary.failed == 1
+        assert summary.pushed == 0
+        assert repo.get_conversation(http_ingest._conn, "big") is None
+
+        # The very same record pushes fine under the default (16 MB peer cap) budget.
+        again = client.push(
+            local,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            push_fn=push_fn,
+        )
+        assert again.pushed == 1
+        assert again.oversized == 0
+        assert repo.get_conversation(http_ingest._conn, "big") is not None
+        local.close()
+
+    def test_pull_splits_fetch_by_estimated_size(self, source_client: TestClient) -> None:
+        # Add several conversations to the source so a pull spans >1 fetch.
+        src = http_ingest._conn
+        assert src is not None
+        for i in range(6):
+            _seed(src, f"s{i}", f"sh{i}", _now())
+
+        dest = self._dest()
+        manifest_fn, real_fetch = _transport(source_client)
+        calls: list[int] = []
+
+        def counting_fetch(peer, uuids):
+            calls.append(len(uuids))
+            return real_fetch(peer, uuids)
+
+        # Each conv estimates ~19 KB (1 chunk at dim 768); budget for ~2 per fetch.
+        est = client._est_record_bytes(1, 768)
+        summary = client.pull(
+            dest,
+            PEER,
+            local_model="fake",
+            local_dim=768,
+            manifest_fn=manifest_fn,
+            fetch_fn=counting_fetch,
+            max_batch_bytes=int(2.5 * est),
+        )
+        assert summary.inserted == 7  # c1 + s0..s5
+        assert len(calls) > 1
+        assert sum(calls) == 7
+        dest.close()
