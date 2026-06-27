@@ -55,7 +55,7 @@ From the repo root, cross-platform:
 python -c "
 import os, zipfile
 src = 'chrome-extension'
-dst = 'chrome-extension/dist/memex-live-capture-0.1.0.zip'
+dst = 'chrome-extension/dist/memex-extension-0.2.4.zip'  # name = manifest version
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 keep_dirs = ('icons', 'src')
 keep_files = ('manifest.json',)
@@ -64,7 +64,7 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.write(os.path.join(src, f), arcname=f)
     for d in keep_dirs:
         for root, _, files in os.walk(os.path.join(src, d)):
-            for name in files:
+            for name in sorted(files):
                 full = os.path.join(root, name)
                 rel = os.path.relpath(full, src).replace(os.sep, '/')
                 zf.write(full, arcname=rel)
@@ -72,10 +72,16 @@ print('built', dst)
 "
 ```
 
+ALWAYS rebuild right before uploading: the source files can be edited after a
+previous zip was packaged (e.g. the 2026-06-22 audit fixes to
+`background.js` / `popup.js` / `popup.html` post-dated the first 0.2.4 zip, so
+the stale zip would have shipped without them). Bump the manifest `version`
+before packaging if the code changed since the last published build.
+
 Verify the zip:
 
 ```bash
-unzip -l chrome-extension/dist/memex-live-capture-0.1.0.zip
+unzip -l chrome-extension/dist/memex-extension-0.2.4.zip
 # Expected entries (no .md files, no hidden files):
 #   manifest.json
 #   icons/
@@ -91,7 +97,7 @@ Memex Live Capture
 
 **Summary (max 132 chars):**
 ```
-Capture your claude.ai chats live into a local index. Pairs with the Memex MCP server for Claude Code retrieval.
+Capture your claude.ai chats live into a local index, and backfill your whole history. Pairs with the Memex MCP server.
 ```
 
 **Description (long, no char limit but keep it scannable):**
@@ -104,6 +110,13 @@ This extension intercepts the chat data Claude.ai already sends to your
 browser, and POSTs it to a local Memex server running on 127.0.0.1.
 Nothing leaves your machine.
 
+New chats are captured automatically as you use claude.ai. To import the
+chats you had BEFORE installing, click "Backfill claude.ai history" in
+the popup: it enumerates your conversations, asks the local server which
+are new or changed, and pulls only those through the same local pipe,
+with live progress. Re-running is cheap (already-indexed chats are
+skipped) and an interrupted run resumes on the next click.
+
 Requires:
   * Memex installed locally (pip install memex-chats).
   * `memex serve` running.
@@ -115,7 +128,7 @@ Privacy:
   * No analytics. No remote storage.
   * Permissions limited to claude.ai and localhost:5777.
 
-Status: alpha (0.2.1). Open source, MIT.
+Status: alpha (0.2.4). Open source, MIT.
 ```
 
 **Category:**
@@ -132,6 +145,7 @@ The dashboard asks you to justify each permission. Use these:
 | Permission | Justification |
 |---|---|
 | `storage` | Saves the user's local server URL and aggregated stats (count of captured chats). No chat content is stored in extension storage. |
+| `scripting` | Used only when the user clicks "Backfill claude.ai history": the popup injects the backfill routine into the user's own active claude.ai tab (`chrome.scripting.executeScript`, self-checks the page origin) so it can enumerate past conversations and import them through the local pipe. Not used for automatic capture. |
 | `host: https://claude.ai/*` | Read the chat data the user is already viewing on claude.ai, so it can be indexed locally. |
 | `host: http://127.0.0.1:5777/*` | Forward captured chats to the Memex server running on the user's machine. |
 | `host: http://localhost:5777/*` | Same as above; some users configure `localhost` instead of `127.0.0.1`. |
