@@ -4,6 +4,26 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [0.4.1] - 2026-06-27
+
+### Fixed
+- **Multi-device sync failed on any non-trivial history.** `memex sync push` / `reconcile` batched conversations by a fixed COUNT (up to 500 per request), but each conversation carries its chunk vectors (~11 KB per chunk at dim 768), so a batch of a real history far exceeded the receiver's 16 MB request-body cap. The push was rejected (HTTP 413), which surfaced to the client as a confusing `Broken pipe` / "could not reach peer". Sync now batches by serialized BYTES: it fills each request up to a budget kept under the peer's cap, then flushes, so a history of any size transfers across several requests. Pull batches the same way, estimating each record's size from the manifest.
+  - `/sync/manifest` now advertises the device's `max_body_bytes` and a per-conversation `chunk_count`, so a peer sizes its batches to the real cap. A peer too old to advertise them (e.g. one still on `0.4.0`) is handled with a safe fallback (the local 8 MB budget), so an updated device still syncs with it.
+  - A single conversation too large to fit in any request (one record over the peer's body cap) is skipped with a clear message and counted, instead of aborting the whole sync. Raise `MEMEX_INGEST_MAX_BODY_BYTES` on the peer (or lower `MEMEX_MAX_CHUNKS_PER_CONVERSATION`) to transfer it.
+
+### Added
+- **`MEMEX_SYNC_MAX_BATCH_BYTES`** (default 8 MB): tunes the per-request byte budget the sync client fills before flushing.
+
+## [0.4.0] - 2026-06-24
+
+### Added
+- **Multi-device sync: one Claude across your devices.** `memex sync` keeps your conversations consistent across the machines you run Memex on, peer-to-peer, with no central server and nothing leaving your hardware. Each device runs its own local store and they reconcile directly over `memex serve`'s token-gated `/sync/*` endpoints. Conversations carry their embeddings, so the receiver never re-embeds. `memex sync pair` registers a peer (token stored `0600`); `reconcile` syncs both ways (last writer wins by update time, a same-timestamp divergence is reported as a fork and left untouched); `pull` / `push` force one direction; `status` shows what is paired and the last sync.
+- **Master on/off gate, off by default.** The whole feature exposes nothing until `memex sync enable`; while off the `/sync/*` endpoints return 404 (not 401, so they do not reveal they exist) and the sync commands refuse, so a single-device install has no extra surface. `disable` turns it back off (paired peers are kept).
+- **Optional auto-sync.** With `MEMEX_SYNC_AUTO=true` (and sync enabled), `memex serve` reconciles with each paired peer on startup and every `MEMEX_SYNC_INTERVAL_SECONDS` (default 900), taking the ingest lock non-blocking so it never delays a live capture and skipping any peer that is offline.
+
+### Security
+- Sync endpoints are token-only (a peer is not a browser, so no Origin is required) with the Host still pinned by `TrustedHostMiddleware`, and refuse on an embedding model/dim mismatch. Pairing shares an access token, so it is a full-trust relationship (only pair devices you control); the threat model is documented internally.
+
 ## [0.3.2] - 2026-06-22
 
 ### Security

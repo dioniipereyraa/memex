@@ -6,6 +6,17 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-27: Cross-device re-test on published 0.4.0 + sync size-aware batching (0.4.1)
+
+Ran the pending cross-device live re-test on the published `0.4.0` (Mac <-> Linux over Tailscale, Phase 3 master gate enabled on both). It worked end to end (both devices converged to 161 conversations) but surfaced a real bug and an operational gotcha; fixed the bug on `fix/sync-size-aware-batching` (branch + PR per the workflow rule).
+
+- **Re-test result.** `memex sync reconcile` pulled 3 (Linux's) and pushed 158 (the Mac's), 0 forks, both devices ended at 161. The master gate behaved: with sync off Linux's `/sync/*` returned 404; after `enable` + an exposed `serve` + the token, it synced.
+- **Operational gotcha (not a code bug).** The first attempt failed with `Invalid host header`: `memex serve --host <tailscale-ip>` only sets the bind interface; `TrustedHostMiddleware` validates the `Host` header against `MEMEX_INGEST_ALLOWED_HOSTS` (default loopback) separately. The peer must add the dialed address to that env var. Already documented in the README sync section; added to CLAUDE.md mistakes.
+- **The bug.** `memex sync push`/`reconcile` batched conversations by COUNT (up to 500 per request), but each conversation ships its chunk vectors (~11 KB/chunk at dim 768), so pushing the Mac's 158 (~6 k chunks) in one batch blew the 16 MB `ingest_max_body_bytes`. The server rejects the oversized body with 413, but it closes mid-upload, so the client saw a misleading `Broken pipe` ("could not reach peer"). I completed the re-test with a one-off `batch_size=1` script, then fixed it properly.
+- **The fix (`0.4.1`).** Batch by serialized BYTES, never by count. `_serialize_and_push` accumulates records up to a budget and flushes before exceeding it (measuring real JSON bytes); `_fetch_and_insert` does the same on pull, estimating each record's size from the manifest's `chunk_count` + dim. `/sync/manifest` now advertises the device's `max_body_bytes` and per-conversation `chunk_count`; `_resolve_budget` fills to 80% of the peer's cap, falling back to the local 8 MB default when a peer is too old to advertise it. A single conversation that alone exceeds the budget is skipped with a clear log + an `oversized` count in the summary/CLI (raise the peer's `MEMEX_INGEST_MAX_BODY_BYTES` to move it), not a fatal abort. New setting `MEMEX_SYNC_MAX_BATCH_BYTES` (default 8 MB).
+- **Validation.** 5 new tests (manifest advertises cap + chunk_count, budget clamps to peer cap, push splits by size, push skips an oversized record without aborting, pull splits by estimated size); full suite 587 green, ruff + core mypy clean. **Validated LIVE:** the updated Mac pulled all 161 conversations from the still-`0.4.0` Linux peer in 23 byte-bounded requests, 0 failed, chunks=vec=fts consistent (also proving the old-peer fallback path: Linux advertised no `max_body_bytes`, so the client used the 8 MB default).
+- **Next.** Publish `0.4.1` to PyPI (bump in `pyproject.toml` + `server.json` + `uv.lock`, `dist/` rebuilt, `twine check` passed); the user updates Linux (`uv tool upgrade memex-chats`) so its manifest advertises the new fields (tighter batching). Then the Web Store push of the 0.2.4 extension is still the remaining distribution gate.
+
 ## 2026-06-24: Multi-device sync Phase 3 (gate, status, conflicts, hardening) + 0.4.0
 
 Closed Phase 8's Phase 3 on `feature/sync-phase3` (branch + PR per the workflow rule). Sync graduates from experimental and gets a real on/off.

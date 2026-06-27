@@ -377,11 +377,15 @@ pull --peer mac` (take the peer's) or `push --peer mac` (send yours).
 
 Every sync only transfers conversations that are new or changed, brings their
 embeddings along so your machine never re-embeds, and is idempotent (re-running
-moves nothing new). Both devices must use the same embedding model (the sync
-refuses on a mismatch). The peer's token is stored user-only (0600) next to the
-DB. Pairing is a trust decision (it shares an access token), so only pair devices
-you control. Never sync the SQLite file itself with a folder-sync tool; always use
-`memex sync`, which is consistent at the conversation level.
+moves nothing new). A large history transfers in size-bounded batches
+automatically, so it works no matter how many conversations you have (tune the
+target with `MEMEX_SYNC_MAX_BATCH_BYTES`, default 8 MB; a single conversation
+larger than the peer's `MEMEX_INGEST_MAX_BODY_BYTES` is skipped with a clear
+message). Both devices must use the same embedding model (the sync refuses on a
+mismatch). The peer's token is stored user-only (0600) next to the DB. Pairing is
+a trust decision (it shares an access token), so only pair devices you control.
+Never sync the SQLite file itself with a folder-sync tool; always use `memex
+sync`, which is consistent at the conversation level.
 
 To keep two devices in sync automatically, set `MEMEX_SYNC_AUTO=true` before
 `memex serve`: while sync is enabled it reconciles with each paired peer on
