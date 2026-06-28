@@ -4,6 +4,12 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [Unreleased]
+
+### Added
+- **`memex sync serve`: one-step reachable sync endpoint.** Setting up cross-device sync used to take several careful steps (run `serve` with both `--host` AND `MEMEX_INGEST_ALLOWED_HOSTS`, enable the gate separately, hand-copy a token). The new command does it in one: it resolves a reachable address (auto-detected from Tailscale, or `--host`), enables sync, binds to that address AND auto-adds it to the Host allow-list, and prints the exact `memex sync pair` line to run on the other device. It binds to that address only, so it coexists with the always-on loopback capture server, and works identically on macOS, Linux, and Windows (no per-OS network setup, no PowerShell env-var dance).
+- **Claude Code ingest backstop on Windows.** A wheel install on macOS autostarts both the capture server and a 15-minute `ingest-claude-code` backstop, but Windows only autostarted the server, so a Windows user's local Claude Code sessions were indexed once at setup and never refreshed. `memex install-service` / `memex setup` now also register a `MemexIngest` Scheduled Task (logon + every 15 minutes). It runs under `pythonw`, so the ingest command reopens its streams to `ingest.log` when headless (the same fix the server got for Windows).
+
 ## [0.4.1] - 2026-06-27
 
 ### Fixed
