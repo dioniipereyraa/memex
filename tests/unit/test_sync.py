@@ -1199,9 +1199,9 @@ class TestSyncServeCommand:
         assert "100.9.9.9" in sync_cli.settings.ingest_allowed_hosts
         # Bound to that address only (not 0.0.0.0), so it coexists with loopback serve.
         assert calls == {"host": "100.9.9.9", "port": 5999}
-        # Token created and the pairing line printed for the other device.
+        # Token created and the one-command connect line printed for the peer.
         assert http_ingest._token is not None
-        assert "memex sync pair" in result.output
+        assert "memex sync connect" in result.output
         assert "http://100.9.9.9:5999" in result.output
 
     def test_serve_errors_when_no_address(self, isolated, monkeypatch) -> None:
@@ -1211,3 +1211,35 @@ class TestSyncServeCommand:
         result = CliRunner().invoke(sync_app, ["serve"])
         assert result.exit_code == 2
         assert "Could not detect a reachable address" in result.output
+
+    def test_connect_enables_pairs_and_reconciles_in_one_command(
+        self, isolated, monkeypatch
+    ) -> None:
+        from memex.cli import sync as sync_cli
+
+        called: dict = {}
+
+        def fake_reconcile(conn, peer, *, local_model, local_dim):
+            called["peer"] = peer.name
+            return client.ReconcileSummary(peer=peer.name, pulled=2, pushed=1, failed=0)
+
+        # Avoid loading a real embedder for the local identity check.
+        monkeypatch.setattr(sync_cli, "_local_identity", lambda: ("fake", 768))
+        monkeypatch.setattr(sync_cli.client, "reconcile", fake_reconcile)
+
+        result = CliRunner().invoke(
+            sync_app,
+            ["connect", "--url", "http://100.5.5.5:5777", "--token", "tok", "--name", "mac"],
+        )
+        assert result.exit_code == 0, result.output
+        # One command did all three: enabled the gate, paired, and reconciled.
+        assert sync_state.is_enabled() is True
+        assert get_peer("mac") is not None
+        assert called.get("peer") == "mac"
+        assert "pulled 2" in result.output and "pushed 1" in result.output
+
+    def test_default_peer_name_from_url_host(self) -> None:
+        from memex.cli import sync as sync_cli
+
+        assert sync_cli._default_peer_name("http://100.5.5.5:5777") == "100.5.5.5"
+        assert sync_cli._default_peer_name("not a url") == "peer"

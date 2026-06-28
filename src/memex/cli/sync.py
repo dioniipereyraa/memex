@@ -229,17 +229,16 @@ def serve(
         f"\n[bold]Memex sync serve[/bold] reachable at [cyan]{url}[/cyan] "
         "(token required; bound to that address only)."
     )
-    console.print("On the [bold]other device[/bold], run:")
-    # Echo the full pair line (token included) only to an interactive terminal, so a
-    # redirected/daemon log never captures the token; otherwise point to `memex token`.
+    console.print("On the [bold]other device[/bold], run this one command:")
+    # Echo the full connect line (token included) only to an interactive terminal, so
+    # a redirected/daemon log never captures the token; otherwise point to `memex token`.
     if sys.stdout is not None and sys.stdout.isatty():
         console.print(
-            f"  [bold cyan]memex sync pair --name {name} --url {url} --token {token}[/bold cyan]"
+            f"  [bold cyan]memex sync connect --url {url} --token {token} --name {name}[/bold cyan]"
         )
-        console.print(f"  [bold cyan]memex sync reconcile --peer {name}[/bold cyan]")
     else:
         console.print(
-            f"  memex sync pair --name {name} --url {url}\n"
+            f"  memex sync connect --url {url} --name {name}\n"
             "  (it will prompt for the token; get it with `memex token` here)"
         )
     console.print("[dim]Ctrl+C to stop.[/dim]\n")
@@ -460,20 +459,8 @@ def push(
         conn.close()
 
 
-@sync_app.command("reconcile")
-def reconcile(
-    peer_name: Annotated[
-        str | None,
-        typer.Option("--peer", help="Reconcile with this peer only (default: all paired peers)."),
-    ] = None,
-    db_path: Annotated[
-        Path | None,
-        typer.Option("--db", help="Path to the SQLite database."),
-    ] = None,
-) -> None:
-    """Two-way sync with a paired device, leaving both equal (last writer wins)."""
-    _require_enabled()
-    targets = _resolve_targets(peer_name)
+def _reconcile_targets(targets: list[Peer], db_path: Path | None) -> None:
+    """Two-way reconcile + report for each peer. Shared by `reconcile` and `connect`."""
     local_model, local_dim = _local_identity()
     conn = connect_and_init(db_path)
     try:
@@ -508,3 +495,68 @@ def reconcile(
             _warn_oversized(summary.oversized, peer.name)
     finally:
         conn.close()
+
+
+@sync_app.command("reconcile")
+def reconcile(
+    peer_name: Annotated[
+        str | None,
+        typer.Option("--peer", help="Reconcile with this peer only (default: all paired peers)."),
+    ] = None,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Two-way sync with a paired device, leaving both equal (last writer wins)."""
+    _require_enabled()
+    _reconcile_targets(_resolve_targets(peer_name), db_path)
+
+
+def _default_peer_name(url: str) -> str:
+    """A peer label from the URL host (the user can override with --name)."""
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname
+    return host or "peer"
+
+
+@sync_app.command("connect")
+def connect(
+    url: Annotated[
+        str,
+        typer.Option("--url", help="Peer base URL printed by `memex sync serve`."),
+    ],
+    token: Annotated[
+        str | None,
+        typer.Option("--token", help="Peer access token (prompted if omitted)."),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Label for the peer (default: its host)."),
+    ] = None,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Pair with a device running `memex sync serve` and sync now, in one command.
+
+    This is the single line that the other device's `memex sync serve` tells you
+    to run: it turns sync on, registers the peer, and runs a two-way reconcile, so
+    a fresh device is set up and caught up in one step.
+    """
+    if not token:
+        token = typer.prompt("Peer access token", hide_input=True)
+    try:
+        peer = Peer(name=name or _default_peer_name(url), url=url, token=token)
+    except ValueError as e:
+        console.print(f"[red]Invalid peer:[/red] {e}")
+        raise typer.Exit(code=2) from e
+
+    if not sync_state.is_enabled():
+        sync_state.set_enabled(True)
+        console.print("[green]Sync enabled.[/green]")
+    peers.add_peer(peer)
+    console.print(f"Paired [bold]{peer.name}[/bold] -> {peer.url}.")
+    _reconcile_targets([peer], db_path)
