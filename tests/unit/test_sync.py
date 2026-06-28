@@ -1131,3 +1131,83 @@ class TestSizeAwareBatching:
         assert len(calls) > 1
         assert sum(calls) == 7
         dest.close()
+
+
+# --------------------------------------------------------------------------
+# `memex sync serve`: one-step reachable serve (bind + auto-allow-list + pair line).
+# --------------------------------------------------------------------------
+
+
+class TestSyncServeCommand:
+    @pytest.fixture
+    def isolated(self, tmp_path, monkeypatch):
+        # State gate + token under tmp; avoid loading a real embedder.
+        monkeypatch.setattr(sync_state.settings, "db_path", tmp_path / "memex.db")
+        monkeypatch.setattr("memex.cli.sync.get_default_embedder", lambda: EMBEDDER)
+        return tmp_path
+
+    def test_merge_hosts_dedups_and_appends(self) -> None:
+        from memex.cli import sync as sync_cli
+
+        assert (
+            sync_cli._merge_hosts("127.0.0.1,localhost", "100.1.2.3")
+            == "127.0.0.1,localhost,100.1.2.3"
+        )
+        # Already present: no duplicate.
+        assert sync_cli._merge_hosts("127.0.0.1,100.1.2.3", "100.1.2.3") == "127.0.0.1,100.1.2.3"
+
+    def test_detect_tailscale_ip_parses_first_line(self, monkeypatch) -> None:
+        from memex.cli import sync as sync_cli
+
+        class _R:
+            returncode = 0
+            stdout = "100.70.96.57\nfd7a:1234::1\n"
+
+        monkeypatch.setattr(sync_cli.subprocess, "run", lambda *a, **k: _R())
+        assert sync_cli._detect_tailscale_ip() == "100.70.96.57"
+
+    def test_detect_tailscale_ip_missing_cli_is_none(self, monkeypatch) -> None:
+        from memex.cli import sync as sync_cli
+
+        def _boom(*a, **k):
+            raise FileNotFoundError
+
+        monkeypatch.setattr(sync_cli.subprocess, "run", _boom)
+        assert sync_cli._detect_tailscale_ip() is None
+
+    def test_serve_enables_allowlists_and_binds_to_addr(self, isolated, monkeypatch) -> None:
+        import uvicorn
+
+        from memex.cli import sync as sync_cli
+        from memex.transports import http_ingest
+
+        monkeypatch.setattr(sync_cli.settings, "ingest_allowed_hosts", "127.0.0.1,localhost")
+        monkeypatch.setattr(http_ingest, "_token", None)
+        calls: dict = {}
+
+        def fake_run(app, host, port, **kw):
+            calls["host"] = host
+            calls["port"] = port
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+
+        result = CliRunner().invoke(sync_app, ["serve", "--host", "100.9.9.9", "--port", "5999"])
+        assert result.exit_code == 0, result.output
+        # Master gate flipped on.
+        assert sync_state.is_enabled() is True
+        # The dial address was auto-added to the Host allow-list (the footgun killed).
+        assert "100.9.9.9" in sync_cli.settings.ingest_allowed_hosts
+        # Bound to that address only (not 0.0.0.0), so it coexists with loopback serve.
+        assert calls == {"host": "100.9.9.9", "port": 5999}
+        # Token created and the pairing line printed for the other device.
+        assert http_ingest._token is not None
+        assert "memex sync pair" in result.output
+        assert "http://100.9.9.9:5999" in result.output
+
+    def test_serve_errors_when_no_address(self, isolated, monkeypatch) -> None:
+        from memex.cli import sync as sync_cli
+
+        monkeypatch.setattr(sync_cli, "_detect_tailscale_ip", lambda: None)
+        result = CliRunner().invoke(sync_app, ["serve"])
+        assert result.exit_code == 2
+        assert "Could not detect a reachable address" in result.output

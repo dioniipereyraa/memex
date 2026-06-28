@@ -17,6 +17,9 @@ deliberately binds `memex serve` beyond loopback.
 
 from __future__ import annotations
 
+import socket
+import subprocess
+import sys
 import urllib.error
 from datetime import datetime
 from pathlib import Path
@@ -137,6 +140,110 @@ def disable() -> None:
     console.print(
         "Sync [bold]disabled[/bold]. Paired peers are kept; re-enable with `memex sync enable`."
     )
+
+
+def _detect_tailscale_ip() -> str | None:
+    """Best-effort Tailscale IPv4 via the tailscale CLI. None if unavailable.
+
+    Works the same on macOS / Linux / Windows (the CLI is `tailscale` /
+    `tailscale.exe` on PATH), so `sync serve` needs no per-OS address dance.
+    """
+    try:
+        result = subprocess.run(
+            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        candidate = line.strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def _merge_hosts(existing: str, addr: str) -> str:
+    """Add `addr` to a comma-separated Host allow-list, de-duplicated."""
+    hosts = [h.strip() for h in existing.split(",") if h.strip()]
+    if addr not in hosts:
+        hosts.append(addr)
+    return ",".join(hosts)
+
+
+@sync_app.command("serve")
+def serve(
+    host: Annotated[
+        str | None,
+        typer.Option(
+            "--host",
+            help="Address the other device dials (e.g. your Tailscale IP). "
+            "Auto-detected from Tailscale if omitted.",
+        ),
+    ] = None,
+    port: Annotated[int, typer.Option("--port", "-p", help="Port to serve on.")] = 5777,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Serve the sync endpoints reachable from a paired device, set up in one step.
+
+    Unlike plain `memex serve`, this resolves a reachable address, binds to it AND
+    adds it to the Host allow-list (the usual two-step footgun: `--host` only binds,
+    the allow-list is separate), enables sync if needed, and prints the exact
+    `memex sync pair` line to run on the other device. It binds to that address
+    only (not all interfaces), so it runs alongside your always-on loopback capture
+    server without a port clash. Keep it up while the other device reconciles.
+    """
+    import uvicorn
+
+    from memex.transports import http_ingest
+
+    addr = host or _detect_tailscale_ip()
+    if not addr:
+        console.print(
+            "[red]Could not detect a reachable address.[/red] Pass [bold]--host <ip>[/bold] "
+            "(e.g. your Tailscale IP from `tailscale ip -4`)."
+        )
+        raise typer.Exit(code=2)
+
+    # Master gate: the /sync endpoints 404 until enabled. Running this command is an
+    # explicit sync intent, so flip it on (and say so) rather than fail closed.
+    if not sync_state.is_enabled():
+        sync_state.set_enabled(True)
+        console.print("[green]Sync enabled.[/green]")
+
+    # Auto-allow-list the dial address, then rebuild the app so the TrustedHost
+    # middleware picks it up (plain `serve` only binds; this removes the footgun).
+    settings.ingest_allowed_hosts = _merge_hosts(settings.ingest_allowed_hosts, addr)
+    app = http_ingest.build_app()
+    token = http_ingest.load_or_create_ingest_token()
+    http_ingest._token = token
+    if db_path is not None:
+        http_ingest._conn = connect_and_init(db_path, check_same_thread=False)
+
+    name = socket.gethostname() or "this-device"
+    url = f"http://{addr}:{port}"
+    console.print(
+        f"\n[bold]Memex sync serve[/bold] reachable at [cyan]{url}[/cyan] "
+        "(token required; bound to that address only)."
+    )
+    console.print("On the [bold]other device[/bold], run:")
+    # Echo the full pair line (token included) only to an interactive terminal, so a
+    # redirected/daemon log never captures the token; otherwise point to `memex token`.
+    if sys.stdout is not None and sys.stdout.isatty():
+        console.print(
+            f"  [bold cyan]memex sync pair --name {name} --url {url} --token {token}[/bold cyan]"
+        )
+        console.print(f"  [bold cyan]memex sync reconcile --peer {name}[/bold cyan]")
+    else:
+        console.print(
+            f"  memex sync pair --name {name} --url {url}\n"
+            "  (it will prompt for the token; get it with `memex token` here)"
+        )
+    console.print("[dim]Ctrl+C to stop.[/dim]\n")
+    uvicorn.run(app, host=addr, port=port, log_level="info")
 
 
 @sync_app.command("status")
