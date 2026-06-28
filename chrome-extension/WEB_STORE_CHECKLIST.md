@@ -55,7 +55,7 @@ From the repo root, cross-platform:
 python -c "
 import os, zipfile
 src = 'chrome-extension'
-dst = 'chrome-extension/dist/memex-extension-0.2.4.zip'  # name = manifest version
+dst = 'chrome-extension/dist/memex-extension-0.2.5.zip'  # name = manifest version
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 keep_dirs = ('icons', 'src')
 keep_files = ('manifest.json',)
@@ -81,7 +81,7 @@ before packaging if the code changed since the last published build.
 Verify the zip:
 
 ```bash
-unzip -l chrome-extension/dist/memex-extension-0.2.4.zip
+unzip -l chrome-extension/dist/memex-extension-0.2.5.zip
 # Expected entries (no .md files, no hidden files):
 #   manifest.json
 #   icons/
@@ -128,7 +128,7 @@ Privacy:
   * No analytics. No remote storage.
   * Permissions limited to claude.ai and localhost:5777.
 
-Status: alpha (0.2.4). Open source, MIT.
+Status: alpha (0.2.5). Open source, MIT.
 ```
 
 **Category:**

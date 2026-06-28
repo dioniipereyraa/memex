@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Memex Live Capture",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Capture your claude.ai chats live and ingest them into the local Memex server. Requires `memex serve` running on 127.0.0.1.",
   "permissions": ["storage", "scripting"],
   "host_permissions": [
