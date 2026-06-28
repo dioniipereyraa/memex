@@ -154,6 +154,10 @@ def ingest_claude_code(
     SessionEnd hook). The embedding model is loaded lazily, so a scan that
     finds nothing new costs almost nothing.
     """
+    # The Windows ingest-backstop Scheduled Task runs this under pythonw (no
+    # console), where the console.print calls below would otherwise crash on a
+    # None stdout. Reopen to ingest.log when headless; a no-op with a console.
+    _redirect_streams_if_headless("ingest.log")
     set_process_title("Memex ingest")
     root = path if path is not None else Path.home() / ".claude" / "projects"
 
@@ -295,22 +299,22 @@ def stats(
     console.print(table)
 
 
-def _redirect_streams_if_headless() -> None:
+def _redirect_streams_if_headless(log_name: str = "serve.log") -> None:
     """If running without a console (Windows `pythonw`), reopen std streams.
 
-    Under `pythonw.exe` (the interpreter the Windows logon Scheduled Task uses,
-    to avoid a console window) `sys.stdout`/`sys.stderr` are `None`. Any
+    Under `pythonw.exe` (the interpreter the Windows Scheduled Tasks use, to
+    avoid a console window) `sys.stdout`/`sys.stderr` are `None`. Any
     `console.print(...)`, `isatty()` check, or uvicorn log write then raises and
-    the server dies before it binds. Reopen the streams to a `serve.log` in the
-    data dir so output goes somewhere valid (and Windows finally gets logs).
-    No-op when a console is present.
+    the command dies before it does its work. Reopen the streams to `log_name`
+    in the data dir so output goes somewhere valid (and Windows finally gets
+    logs). No-op when a console is present.
     """
     if sys.stdout is not None and sys.stderr is not None:
         return
     import contextlib
     import os
 
-    log = Path(settings.db_path).parent / "serve.log"
+    log = Path(settings.db_path).parent / log_name
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         # 0600: a daemon's log can carry diagnostics; never let another local
