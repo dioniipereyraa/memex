@@ -6,6 +6,17 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-06-28: Pre-launch polish, part 1 (sync setup UX + Windows ingest backstop)
+
+Pre-launch "leave it fine and well-done" pass, on branch `feature/sync-setup-ux`. The live re-test had shown the sync setup is power-user-grade; this removes most of the friction and closes a Windows gap.
+
+- **`memex sync serve` (new command).** One command on the source replaces the old multi-step dance (run `serve` with `--host` AND `MEMEX_INGEST_ALLOWED_HOSTS`, `enable` separately, hand-copy a token). It resolves a reachable address (auto-detected via `tailscale ip -4`, or `--host`), enables the master gate, binds to that address AND auto-adds it to the Host allow-list (mutating `settings.ingest_allowed_hosts` then rebuilding the app so TrustedHost picks it up), and prints the exact `memex sync pair --name <host> --url <url> --token <token>` line for the other device. Binds to the address ONLY (not 0.0.0.0), so it coexists with the always-on loopback capture server without a port clash. Cross-platform, so it kills the PowerShell env-var dance on Windows too. Smoke-tested live (binds, `/health` ok, `/sync` 401 without token). 5 tests.
+- **Claude Code ingest backstop on Windows.** macOS wheel installs autostart both `serve` and a 15-min `ingest-claude-code` backstop; Windows only autostarted `serve`, so a Windows user's local Claude Code sessions were indexed once at setup and never refreshed (Linux wheel has the same gap, noted for a follow-up). Added a `MemexIngest` Scheduled Task (LogonTrigger + a PT15M TimeTrigger repetition, PT1H limit, IgnoreNew); refactored `windows_install_wheel` to install/uninstall/status both tasks. The task runs under `pythonw` (no console), where the ingest command's `console.print` would crash on a None stdout, so `_redirect_streams_if_headless` is now parameterized with a log name and called from `ingest-claude-code` (-> `ingest.log`). 3 tests.
+- **Docs.** README sync section rewritten to lead with `memex sync serve` (one command, same on all three OSes); `[Unreleased]` changelog.
+- **595 tests green**, ruff + format + core mypy clean. 3 commits (`61cf402` sync serve, `5ca2d30` Windows backstop, `9ef16e7` docs).
+- **Deferred on purpose:** full time-boxed auto-pairing (an unauthenticated pairing-code endpoint that hands the token over the network). `sync serve` already removes the token-retyping footgun by printing the whole pair line, so the remaining win (zero copy) is not worth adding a new unauthenticated network surface without its own security/red-team pass. Recommend it as a separate, reviewed change.
+- **Next.** Version bump + release for these, then the user uploads the 0.2.5 extension. Optional follow-ups: the Linux ingest backstop (systemd timer), the time-boxed auto-pairing.
+
 ## 2026-06-27: Cross-device re-test on published 0.4.0 + sync size-aware batching (0.4.1)
 
 Ran the pending cross-device live re-test on the published `0.4.0` (Mac <-> Linux over Tailscale, Phase 3 master gate enabled on both). It worked end to end (both devices converged to 161 conversations) but surfaced a real bug and an operational gotcha; fixed the bug on `fix/sync-size-aware-batching` (branch + PR per the workflow rule).
