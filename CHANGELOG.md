@@ -4,7 +4,7 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
-## [Unreleased]
+## [0.4.2] - 2026-06-28
 
 ### Added
 - **One-command cross-device sync setup.** Pairing two devices used to take several careful steps with two easy-to-miss footguns (run `serve` with both `--host` AND `MEMEX_INGEST_ALLOWED_HOSTS`, `enable` the gate separately, hand-copy a token). Now it is one command per device:
