@@ -18,7 +18,6 @@ deliberately binds `memex serve` beyond loopback.
 from __future__ import annotations
 
 import socket
-import subprocess
 import sys
 import urllib.error
 from datetime import datetime
@@ -29,6 +28,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from memex.cli._net import detect_tailscale_ip, merge_hosts
 from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
 from memex.core.storage.db import connect_and_init
@@ -142,35 +142,6 @@ def disable() -> None:
     )
 
 
-def _detect_tailscale_ip() -> str | None:
-    """Best-effort Tailscale IPv4 via the tailscale CLI. None if unavailable.
-
-    Works the same on macOS / Linux / Windows (the CLI is `tailscale` /
-    `tailscale.exe` on PATH), so `sync serve` needs no per-OS address dance.
-    """
-    try:
-        result = subprocess.run(
-            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    for line in result.stdout.splitlines():
-        candidate = line.strip()
-        if candidate:
-            return candidate
-    return None
-
-
-def _merge_hosts(existing: str, addr: str) -> str:
-    """Add `addr` to a comma-separated Host allow-list, de-duplicated."""
-    hosts = [h.strip() for h in existing.split(",") if h.strip()]
-    if addr not in hosts:
-        hosts.append(addr)
-    return ",".join(hosts)
-
-
 @sync_app.command("serve")
 def serve(
     host: Annotated[
@@ -200,7 +171,7 @@ def serve(
 
     from memex.transports import http_ingest
 
-    addr = host or _detect_tailscale_ip()
+    addr = host or detect_tailscale_ip()
     if not addr:
         console.print(
             "[red]Could not detect a reachable address.[/red] Pass [bold]--host <ip>[/bold] "
@@ -216,7 +187,7 @@ def serve(
 
     # Auto-allow-list the dial address, then rebuild the app so the TrustedHost
     # middleware picks it up (plain `serve` only binds; this removes the footgun).
-    settings.ingest_allowed_hosts = _merge_hosts(settings.ingest_allowed_hosts, addr)
+    settings.ingest_allowed_hosts = merge_hosts(settings.ingest_allowed_hosts, addr)
     app = http_ingest.build_app()
     token = http_ingest.load_or_create_ingest_token()
     http_ingest._token = token

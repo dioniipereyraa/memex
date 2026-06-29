@@ -7,6 +7,15 @@ next request (the state is read fresh, not cached). When sync is disabled the
 `/sync/*` endpoints 404 and the CLI data commands refuse, so a non-user has no new
 network surface even if `memex serve` is bound beyond loopback.
 
+The same gate file also holds `serve_sync`: the user's persisted, opt-in choice
+that the always-on `memex serve` should come up sync-reachable (bound beyond
+loopback on the device's Tailscale address) so a fresh `serve` is ready to sync
+without a separate `memex sync serve` step. It is OFF by default; `memex setup
+--sync` turns it on (and the gate too). Both flags live together because both are
+written only by rare, deliberate admin commands (`enable`/`disable`,
+`setup --sync/--no-sync`); the frequently-written per-peer history stays in a
+SEPARATE file so a history write never race-clobbers either flag.
+
 The per-peer sync history (last time + counts) lives in a SEPARATE file from the
 gate on purpose: the history is written on every sync (manual and the auto-sync
 loop), so co-locating it with the rarely-written `enabled` flag would let a
@@ -33,7 +42,41 @@ logger = logging.getLogger("memex.sync.state")
 
 
 def _default_gate() -> dict[str, Any]:
-    return {"enabled": False}
+    return {"enabled": False, "serve_sync": False}
+
+
+def _load_gate(path: Path | str | None = None) -> dict[str, Any]:
+    """Read the gate file into a normalized {enabled, serve_sync} dict.
+
+    Missing/corrupt/half-written file reads as the all-off default (fail closed),
+    and an unknown extra key is dropped so the on-disk shape stays canonical.
+    """
+    data = _load_json_object(state_path(path), "state") or {}
+    return {
+        "enabled": bool(data.get("enabled", False)),
+        "serve_sync": bool(data.get("serve_sync", False)),
+    }
+
+
+def set_gate(
+    *,
+    enabled: bool | None = None,
+    serve_sync: bool | None = None,
+    path: Path | str | None = None,
+) -> None:
+    """Update one or both gate flags atomically, preserving the other.
+
+    The only writer of the gate file. Read-modify-write so toggling one flag
+    (`enable`/`disable` touch only `enabled`; a plain re-run never touches
+    `serve_sync`) never clobbers the other. Both flags are written together when
+    `setup --sync/--no-sync` passes both.
+    """
+    gate = _load_gate(path)
+    if enabled is not None:
+        gate["enabled"] = bool(enabled)
+    if serve_sync is not None:
+        gate["serve_sync"] = bool(serve_sync)
+    _write_json_object(state_path(path), gate)
 
 
 def state_path(path: Path | str | None = None) -> Path:
@@ -80,13 +123,22 @@ def _write_json_object(target: Path, data: dict[str, Any]) -> None:
 
 def is_enabled(path: Path | str | None = None) -> bool:
     """Whether the sync feature is enabled on this device (default False)."""
-    data = _load_json_object(state_path(path), "state") or _default_gate()
-    return bool(data.get("enabled", False))
+    return bool(_load_gate(path)["enabled"])
 
 
 def set_enabled(enabled: bool, path: Path | str | None = None) -> None:
-    """Persist the master gate (the only writer of the gate file)."""
-    _write_json_object(state_path(path), {"enabled": bool(enabled)})
+    """Persist the master gate, preserving the `serve_sync` choice."""
+    set_gate(enabled=enabled, path=path)
+
+
+def is_serve_sync(path: Path | str | None = None) -> bool:
+    """Whether `serve` should come up sync-reachable on this device (default False)."""
+    return bool(_load_gate(path)["serve_sync"])
+
+
+def set_serve_sync(serve_sync: bool, path: Path | str | None = None) -> None:
+    """Persist the serve-sync-reachable choice, preserving the master gate."""
+    set_gate(serve_sync=serve_sync, path=path)
 
 
 def record_sync(

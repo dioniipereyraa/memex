@@ -123,6 +123,44 @@ uv sync               # installs Python 3.13 + dependencies into .venv
 uv run memex doctor   # verify
 ```
 
+### Upgrading (already have memex)
+
+Upgrade with the **same tool that installed it**, or the new version will not land
+on your PATH. A previous install owns the `memex` executable, so installing again
+with a different manager fails with "Executables already exist" and `memex` keeps
+running the old version. (This is the usual reason `memex sync` seems to "not
+exist" after an upgrade: an old pipx-owned `memex` shadowed a newer `uv tool`
+install.)
+
+```bash
+# 1. Find which tool owns it:
+which memex            # macOS / Linux
+Get-Command memex      # Windows (PowerShell)
+
+# 2. Upgrade with that tool:
+pipx upgrade memex-chats        # if pipx owns it
+uv tool upgrade memex-chats     # if uv owns it
+```
+
+If you want to switch managers, uninstall the old one first (`pipx uninstall
+memex-chats` or `uv tool uninstall memex-chats`), then reinstall. After upgrading,
+`memex --version` shows the new version and `memex doctor` should pass.
+
+### Multi-device (optional)
+
+To make Claude one memory across several machines, install
+[Tailscale](https://tailscale.com) **first** (so each device has a stable private
+address), then opt in once per device:
+
+```bash
+memex setup --sync     # opt-in, persisted: the always-on service is sync-reachable
+```
+
+It prints the single `memex sync connect ...` line to run on your other devices.
+The choice is saved, so the service stays sync-reachable across reboots without
+re-running anything. Full flow, security model, and the manual one-shot
+alternative are in [Syncing across your devices](#syncing-across-your-devices).
+
 ## First run
 
 The fast path is one command:
@@ -349,34 +387,50 @@ The whole feature is **off by default** and exposes nothing until you turn it on
 While it is off, the sync endpoints return 404 and the sync commands refuse, so a
 normal single-device install has no extra surface.
 
-It is **one command per device**. On the device that has the conversations, start
-a reachable endpoint (this enables sync, binds to your
-[Tailscale](https://tailscale.com) address, allow-lists it, and prints the exact
-command to run on the other device):
+### Set it up once (recommended)
+
+Install [Tailscale](https://tailscale.com) on each device first, then opt in once:
 
 ```bash
-# SOURCE device (the one with the conversations you want):
+memex setup --sync
+```
+
+This is the normal setup plus one thing: it turns sync on and makes your
+**always-on capture service** sync-reachable on this device's Tailscale address
+(it binds `0.0.0.0` so one server still answers the local extension, with the Host
+allow-list pinned to loopback + your Tailscale IP, resolved at startup, and the
+per-install token gating access). The choice is **persisted**: set it once and the
+service comes up sync-reachable on every reboot, so you never hand-run a serve
+command. It prints the single line to run on each other device:
+
+```bash
+memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
+```
+
+`connect` turns sync on there, pairs, and runs a two-way reconcile, so that device
+is set up and caught up in one step. Later, `memex sync reconcile` re-syncs an
+already-paired device and `memex sync status` shows what is paired. Turn the
+exposure back off with `memex setup --no-sync` (it stays loopback-only, sync off).
+
+### One-shot (without changing your setup)
+
+If you would rather not make the service permanently reachable, start a temporary
+endpoint on the device that has the conversations:
+
+```bash
+# SOURCE device:
 memex sync serve
 # -> Memex sync serve reachable at http://100.x.y.z:5777
 #    On the other device, run this one command:
 #      memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
 ```
 
-Paste that one line on the other device. `connect` turns sync on, pairs, and runs
-a two-way reconcile, so the device is set up and caught up in a single step:
-
-```bash
-# DESTINATION device (the one you want to pull into):
-memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
-memex sync status   # later: is sync on, who is paired, last sync
-```
-
 `memex sync serve` works the same on macOS, Linux, and Windows (it uses your
 Tailscale address, so there is no per-OS network setup and no `--host`/allow-list
 juggling). If you are not on Tailscale, pass `--host <address the other device can
-reach>`. It binds to that address only, so it runs alongside your always-on
-loopback capture server without a port clash; keep it up while the other device
-connects. Afterwards, `memex sync reconcile` re-syncs an already-paired device.
+reach>`. It binds to that address only and runs alongside your loopback capture
+server without a port clash; keep it up while the other device connects, then stop
+it with Ctrl+C. Afterwards, `memex sync reconcile` re-syncs an already-paired device.
 
 `reconcile` is the usual command: it syncs both ways and converges the two
 devices, keeping the newer copy of anything that exists on both (last writer wins

@@ -779,6 +779,42 @@ class TestSyncState:
         sync_state.set_enabled(False, p)
         assert sync_state.is_enabled(p) is False
 
+    def test_serve_sync_default_disabled(self, tmp_path) -> None:
+        assert sync_state.is_serve_sync(tmp_path / "sync_state.json") is False
+
+    def test_serve_sync_roundtrip(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_serve_sync(True, p)
+        assert sync_state.is_serve_sync(p) is True
+        sync_state.set_serve_sync(False, p)
+        assert sync_state.is_serve_sync(p) is False
+
+    def test_set_enabled_preserves_serve_sync(self, tmp_path) -> None:
+        # enable/disable must never clobber the user's persisted serve_sync choice.
+        p = tmp_path / "sync_state.json"
+        sync_state.set_serve_sync(True, p)
+        sync_state.set_enabled(False, p)
+        assert sync_state.is_serve_sync(p) is True
+        assert sync_state.is_enabled(p) is False
+
+    def test_set_serve_sync_preserves_enabled(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_enabled(True, p)
+        sync_state.set_serve_sync(True, p)
+        assert sync_state.is_enabled(p) is True
+        assert sync_state.is_serve_sync(p) is True
+
+    def test_set_gate_sets_both_atomically(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_gate(enabled=True, serve_sync=True, path=p)
+        assert sync_state.is_enabled(p) is True
+        assert sync_state.is_serve_sync(p) is True
+
+    def test_corrupt_state_fails_closed_for_serve_sync(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        p.write_text("{ not valid json", encoding="utf-8")
+        assert sync_state.is_serve_sync(p) is False
+
     def test_record_and_get_history(self, tmp_path) -> None:
         h = tmp_path / "sync_history.json"
         when = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
@@ -1147,33 +1183,52 @@ class TestSyncServeCommand:
         return tmp_path
 
     def test_merge_hosts_dedups_and_appends(self) -> None:
-        from memex.cli import sync as sync_cli
+        from memex.cli import _net
 
         assert (
-            sync_cli._merge_hosts("127.0.0.1,localhost", "100.1.2.3")
-            == "127.0.0.1,localhost,100.1.2.3"
+            _net.merge_hosts("127.0.0.1,localhost", "100.1.2.3") == "127.0.0.1,localhost,100.1.2.3"
         )
         # Already present: no duplicate.
-        assert sync_cli._merge_hosts("127.0.0.1,100.1.2.3", "100.1.2.3") == "127.0.0.1,100.1.2.3"
+        assert _net.merge_hosts("127.0.0.1,100.1.2.3", "100.1.2.3") == "127.0.0.1,100.1.2.3"
+        # Variadic: loopback + addr added together, order preserved.
+        assert (
+            _net.merge_hosts("127.0.0.1,localhost", "127.0.0.1", "localhost", "100.1.2.3")
+            == "127.0.0.1,localhost,100.1.2.3"
+        )
 
     def test_detect_tailscale_ip_parses_first_line(self, monkeypatch) -> None:
-        from memex.cli import sync as sync_cli
+        from memex.cli import _net
 
         class _R:
             returncode = 0
             stdout = "100.70.96.57\nfd7a:1234::1\n"
 
-        monkeypatch.setattr(sync_cli.subprocess, "run", lambda *a, **k: _R())
-        assert sync_cli._detect_tailscale_ip() == "100.70.96.57"
+        monkeypatch.setattr(_net.subprocess, "run", lambda *a, **k: _R())
+        assert _net.detect_tailscale_ip() == "100.70.96.57"
 
     def test_detect_tailscale_ip_missing_cli_is_none(self, monkeypatch) -> None:
-        from memex.cli import sync as sync_cli
+        from memex.cli import _net
 
         def _boom(*a, **k):
             raise FileNotFoundError
 
-        monkeypatch.setattr(sync_cli.subprocess, "run", _boom)
-        assert sync_cli._detect_tailscale_ip() is None
+        monkeypatch.setattr(_net.subprocess, "run", _boom)
+        monkeypatch.setattr(_net, "_TAILSCALE_FALLBACK_PATHS", ())
+        monkeypatch.setattr(_net.shutil, "which", lambda _name: None)
+        assert _net.detect_tailscale_ip() is None
+
+    def test_detect_tailscale_ip_uses_app_bundle_fallback(self, tmp_path, monkeypatch) -> None:
+        # The macOS GUI app keeps its CLI off PATH; the bundle path is probed when
+        # `shutil.which` finds nothing, and preferred over the bare-name last resort.
+        from memex.cli import _net
+
+        fake_cli = tmp_path / "Tailscale"
+        fake_cli.write_text("")
+        monkeypatch.setattr(_net.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(_net, "_TAILSCALE_FALLBACK_PATHS", (str(fake_cli),))
+        cands = _net._tailscale_candidates()
+        assert str(fake_cli) in cands
+        assert cands.index(str(fake_cli)) < cands.index("tailscale")
 
     def test_serve_enables_allowlists_and_binds_to_addr(self, isolated, monkeypatch) -> None:
         import uvicorn
@@ -1207,7 +1262,7 @@ class TestSyncServeCommand:
     def test_serve_errors_when_no_address(self, isolated, monkeypatch) -> None:
         from memex.cli import sync as sync_cli
 
-        monkeypatch.setattr(sync_cli, "_detect_tailscale_ip", lambda: None)
+        monkeypatch.setattr(sync_cli, "detect_tailscale_ip", lambda: None)
         result = CliRunner().invoke(sync_app, ["serve"])
         assert result.exit_code == 2
         assert "Could not detect a reachable address" in result.output

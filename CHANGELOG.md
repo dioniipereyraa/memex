@@ -4,6 +4,16 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [0.4.3] - 2026-06-28
+
+### Added
+- **Opt-in, persisted sync-reachable mode (`memex setup --sync`).** Multi-device sync needed the always-on capture server to be reachable on your Tailscale address, which until now meant hand-running `memex sync serve` (or wiring `--host` + `MEMEX_INGEST_ALLOWED_HOSTS` yourself) every time. `memex setup --sync` turns sync on and makes the autostart service come up sync-reachable, and the choice is **persisted**: set it once and it survives reboots, so you never run a serve command by hand. It prints the single `memex sync connect ...` line to run on your other devices. Turn it back off with `memex setup --no-sync`. Plain `memex setup` keeps your saved choice (a re-run never silently undoes `--sync`) and is unchanged (loopback-only, sync off) for everyone who does not opt in.
+- **`memex serve --sync` / `--no-sync`.** `serve` can be told to come up sync-reachable directly, or it reads the persisted `serve_sync` choice when no flag is given (the autostart service uses exactly this, so no per-OS service definition has to change). In sync mode it binds `0.0.0.0` so one server answers both the local extension and the Tailscale address, with the Host allow-list pinned to loopback + the Tailscale IP (resolved at startup, never baked into the service) and the per-install token gating access. If Tailscale is not up, it degrades to loopback-only with a warning instead of failing, so the capture server always starts.
+
+### Changed
+- **README: dedicated install/upgrade/multi-device docs.** The Installation section gains an **Upgrading** subsection (upgrade with the same tool that owns the `memex` executable, or a different manager fails with "Executables already exist" and PATH keeps the old version), a **Multi-device** subsection (install Tailscale first, then `memex setup --sync`), and the sync section now leads with the persisted one-time setup, with `memex sync serve` kept as the one-shot alternative.
+- The `tailscale` CLI is now resolved with `shutil.which` before the subprocess call (defense in depth, no behavior change).
+
 ## [0.4.2] - 2026-06-28
 
 ### Added
