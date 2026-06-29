@@ -20,7 +20,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from memex.config import settings
@@ -353,6 +353,7 @@ def linux_install_wheel(action: str) -> list[str]:
 
 
 WINDOWS_TASK_NAME = "MemexServe"
+WINDOWS_INGEST_TASK_NAME = "MemexIngest"
 
 
 def _windows_python_for_service() -> str:
@@ -416,43 +417,83 @@ def render_windows_task_xml() -> str:
 """
 
 
-def windows_install_wheel(action: str) -> list[str]:
-    """install/uninstall/status the logon Scheduled Task for a wheel install.
+def render_windows_ingest_task_xml() -> str:
+    """Task Scheduler XML for the Claude Code ingest backstop on a wheel install.
 
-    No admin needed (the task runs in the user's context). Output is not
-    captured: pythonw has no console, so for live logs run `memex serve` by hand.
+    The serve task is the live-capture server; this is the periodic counterpart of
+    the macOS `StartInterval` ingest agent, missing on Windows until now: it runs
+    `pythonw -m memex.cli.main ingest-claude-code` at logon and every 15 minutes so
+    local Claude Code sessions get indexed continuously, not just once at setup.
+    Short-lived, so it gets a 1-hour limit (not the server's infinite one) and
+    `IgnoreNew` (the ingest also holds a non-blocking flock, so a slow run never
+    stacks). pythonw has no console, so `ingest-claude-code` reopens its streams to
+    `ingest.log` when headless.
     """
-    if action == "uninstall":
-        result = subprocess.run(
-            ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            return [f"removed task {WINDOWS_TASK_NAME}"]
-        return [f"{WINDOWS_TASK_NAME} not installed"]
+    command = _xml_escape(_windows_python_for_service())
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Memex Claude Code ingest backstop (every 15 min)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT15M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2024-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>-m memex.cli.main ingest-claude-code</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
 
-    if action == "status":
-        result = subprocess.run(
-            ["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        return [
-            f"{WINDOWS_TASK_NAME}: {'registered' if result.returncode == 0 else 'not installed'}"
-        ]
 
-    # install: write the task XML to a temp file (UTF-16, as Task Scheduler
-    # expects) and register it, replacing any existing task with /F.
+# (task name, XML renderer, "runs:" summary) for each Windows Scheduled Task.
+_WINDOWS_TASKS: tuple[tuple[str, Callable[[], str], str], ...] = (
+    (WINDOWS_TASK_NAME, render_windows_task_xml, "pythonw -m memex.cli.main serve"),
+    (
+        WINDOWS_INGEST_TASK_NAME,
+        render_windows_ingest_task_xml,
+        "pythonw -m memex.cli.main ingest-claude-code (every 15 min)",
+    ),
+)
+
+
+def _windows_register_task(task_name: str, render: Callable[[], str]) -> str | None:
+    """Create one Scheduled Task from its XML. Returns an error string or None."""
     xml_path = ""
     with tempfile.NamedTemporaryFile("w", suffix=".xml", encoding="utf-16", delete=False) as handle:
-        handle.write(render_windows_task_xml())
+        handle.write(render())
         xml_path = handle.name
     try:
         result = subprocess.run(
-            ["schtasks", "/Create", "/TN", WINDOWS_TASK_NAME, "/XML", xml_path, "/F"],
+            ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path, "/F"],
             check=False,
             capture_output=True,
             text=True,
@@ -461,8 +502,58 @@ def windows_install_wheel(action: str) -> list[str]:
         with contextlib.suppress(OSError):
             os.unlink(xml_path)
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        return [f"FAILED to create task {WINDOWS_TASK_NAME}: {detail}"]
-    # The trigger fires at logon; start it once now so it is up immediately.
-    subprocess.run(["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME], check=False, capture_output=True)
-    return [f"installed task {WINDOWS_TASK_NAME}", "runs: pythonw -m memex.cli.main serve"]
+        return (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
+    # Start it once now so it is up immediately (the triggers also cover logon).
+    subprocess.run(["schtasks", "/Run", "/TN", task_name], check=False, capture_output=True)
+    return None
+
+
+def windows_install_wheel(action: str) -> list[str]:
+    """install/uninstall/status the Scheduled Tasks for a wheel install.
+
+    Two tasks: `MemexServe` (the always-on live-capture server) and `MemexIngest`
+    (the 15-minute Claude Code ingest backstop). No admin needed (they run in the
+    user's context). Output is not captured: pythonw has no console, so for live
+    logs run `memex serve` by hand or read `serve.log` / `ingest.log` in the data
+    dir.
+    """
+    if action == "uninstall":
+        lines: list[str] = []
+        for task_name, _render, _runs in _WINDOWS_TASKS:
+            result = subprocess.run(
+                ["schtasks", "/Delete", "/TN", task_name, "/F"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            lines.append(
+                f"removed task {task_name}"
+                if result.returncode == 0
+                else f"{task_name} not installed"
+            )
+        return lines
+
+    if action == "status":
+        lines = []
+        for task_name, _render, _runs in _WINDOWS_TASKS:
+            result = subprocess.run(
+                ["schtasks", "/Query", "/TN", task_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            state = "registered" if result.returncode == 0 else "not installed"
+            lines.append(f"{task_name}: {state}")
+        return lines
+
+    # install: write each task XML to a temp file (UTF-16, as Task Scheduler
+    # expects) and register it, replacing any existing task with /F.
+    lines = []
+    for task_name, render, runs in _WINDOWS_TASKS:
+        error = _windows_register_task(task_name, render)
+        if error is not None:
+            lines.append(f"FAILED to create task {task_name}: {error}")
+        else:
+            lines.append(f"installed task {task_name}")
+            lines.append(f"  runs: {runs}")
+    return lines

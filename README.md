@@ -345,28 +345,38 @@ needs both devices powered on and reachable at the same time (it is overlap
 sync, not a cloud relay). It ships in memex `0.4.0`+; on an older install,
 upgrade first (`uv tool upgrade memex-chats`).
 
-The whole feature is **off by default** and exposes nothing until you turn it on
-with `memex sync enable` on each device. While it is off, the sync endpoints
-return 404 and the sync commands refuse, so a normal single-device install has no
-extra surface. Turn it on, then have the source run `memex serve` bound somewhere
-the other device can reach it (a [Tailscale](https://tailscale.com) address is the
-easy, encrypted option) and allow that host:
+The whole feature is **off by default** and exposes nothing until you turn it on.
+While it is off, the sync endpoints return 404 and the sync commands refuse, so a
+normal single-device install has no extra surface.
+
+It is **one command per device**. On the device that has the conversations, start
+a reachable endpoint (this enables sync, binds to your
+[Tailscale](https://tailscale.com) address, allow-lists it, and prints the exact
+command to run on the other device):
 
 ```bash
-# On the SOURCE device (the one with the conversations you want):
-memex sync enable
-MEMEX_INGEST_ALLOWED_HOSTS="127.0.0.1,localhost,my-mac" \
-  memex serve --host 0.0.0.0          # reachable on the tailnet, token still required
-memex token                            # copy this; the other device needs it
+# SOURCE device (the one with the conversations you want):
+memex sync serve
+# -> Memex sync serve reachable at http://100.x.y.z:5777
+#    On the other device, run this one command:
+#      memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
 ```
 
+Paste that one line on the other device. `connect` turns sync on, pairs, and runs
+a two-way reconcile, so the device is set up and caught up in a single step:
+
 ```bash
-# On the DESTINATION device (the one you want to pull into):
-memex sync enable
-memex sync pair --name mac --url http://my-mac:5777   # paste the source's token when asked
-memex sync reconcile --peer mac                        # two-way: leaves both devices equal
-memex sync status                                      # is sync on, who is paired, last sync
+# DESTINATION device (the one you want to pull into):
+memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
+memex sync status   # later: is sync on, who is paired, last sync
 ```
+
+`memex sync serve` works the same on macOS, Linux, and Windows (it uses your
+Tailscale address, so there is no per-OS network setup and no `--host`/allow-list
+juggling). If you are not on Tailscale, pass `--host <address the other device can
+reach>`. It binds to that address only, so it runs alongside your always-on
+loopback capture server without a port clash; keep it up while the other device
+connects. Afterwards, `memex sync reconcile` re-syncs an already-paired device.
 
 `reconcile` is the usual command: it syncs both ways and converges the two
 devices, keeping the newer copy of anything that exists on both (last writer wins

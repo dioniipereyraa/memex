@@ -406,6 +406,39 @@ class TestServices:
         assert "<Arguments>-m memex.cli.main serve</Arguments>" in x
         assert "<LogonTrigger>" in x
 
+    def test_render_windows_ingest_task_xml(self) -> None:
+        import xml.etree.ElementTree as ET
+
+        from memex.cli import services
+
+        x = services.render_windows_ingest_task_xml()
+        ET.fromstring(x)  # well-formed XML
+        assert "<Arguments>-m memex.cli.main ingest-claude-code</Arguments>" in x
+        # Periodic (every 15 min) with a bounded run, unlike the always-on server.
+        assert "<Interval>PT15M</Interval>" in x
+        assert "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>" in x
+
+    def test_windows_wheel_install_creates_both_tasks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wheel install registers BOTH the serve task and the ingest backstop."""
+        import subprocess
+
+        from memex.cli import services
+
+        created: list[str] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if "/Create" in cmd:
+                created.append(cmd[cmd.index("/TN") + 1])
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        lines = services.windows_install_wheel("install")
+        assert created == ["MemexServe", "MemexIngest"]
+        assert any("MemexServe" in line for line in lines)
+        assert any("MemexIngest" in line for line in lines)
+
 
 class TestHeadlessStreams:
     """`serve` must survive pythonw, where sys.stdout/stderr are None."""
@@ -439,6 +472,26 @@ class TestHeadlessStreams:
         before = _sys.stdout  # pytest's capture object, not None
         climain._redirect_streams_if_headless()
         assert _sys.stdout is before
+
+    def test_redirect_honors_a_custom_log_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The Windows ingest backstop runs under pythonw and redirects to ingest.log.
+        import sys as _sys
+
+        from memex.cli import main as climain
+        from memex.config import settings
+
+        monkeypatch.setattr(settings, "db_path", tmp_path / "memex.db")
+        monkeypatch.setattr(_sys, "stderr", None)
+        monkeypatch.setattr(_sys, "stdout", None)
+
+        climain._redirect_streams_if_headless("ingest.log")
+
+        assert (tmp_path / "ingest.log").is_file()
+        assert not (tmp_path / "serve.log").exists()
+        with contextlib.suppress(Exception):
+            _sys.stdout.close()
 
 
 class _FakeEmbedder:
