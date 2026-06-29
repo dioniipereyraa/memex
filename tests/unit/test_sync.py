@@ -810,6 +810,20 @@ class TestSyncState:
         assert sync_state.is_enabled(p) is True
         assert sync_state.is_serve_sync(p) is True
 
+    def test_sync_auto_default_disabled(self, tmp_path) -> None:
+        assert sync_state.is_sync_auto(tmp_path / "sync_state.json") is False
+
+    def test_sync_auto_roundtrip_and_preservation(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_gate(enabled=True, serve_sync=True, sync_auto=True, path=p)
+        assert sync_state.is_sync_auto(p) is True
+        # Toggling one flag must not clobber sync_auto.
+        sync_state.set_enabled(False, p)
+        sync_state.set_serve_sync(False, p)
+        assert sync_state.is_sync_auto(p) is True
+        sync_state.set_sync_auto(False, p)
+        assert sync_state.is_sync_auto(p) is False
+
     def test_corrupt_state_fails_closed_for_serve_sync(self, tmp_path) -> None:
         p = tmp_path / "sync_state.json"
         p.write_text("{ not valid json", encoding="utf-8")
@@ -1298,3 +1312,29 @@ class TestSyncServeCommand:
 
         assert sync_cli._default_peer_name("http://100.5.5.5:5777") == "100.5.5.5"
         assert sync_cli._default_peer_name("not a url") == "peer"
+
+    def test_now_reconciles_all_paired_peers(self, isolated, monkeypatch) -> None:
+        # `memex sync now` is the on-demand reconcile: it must hit each paired peer.
+        from memex.cli import sync as sync_cli
+
+        sync_state.set_enabled(True)
+        add_peer(Peer(name="mac", url="http://100.5.5.5:5777", token="tok"))
+        called: list[str] = []
+
+        def fake_reconcile(conn, peer, *, local_model, local_dim):
+            called.append(peer.name)
+            return client.ReconcileSummary(peer=peer.name, pulled=1, pushed=0, failed=0)
+
+        monkeypatch.setattr(sync_cli, "_local_identity", lambda: ("fake", 768))
+        monkeypatch.setattr(sync_cli.client, "reconcile", fake_reconcile)
+
+        result = CliRunner().invoke(sync_app, ["now"])
+        assert result.exit_code == 0, result.output
+        assert called == ["mac"]
+
+    def test_now_refuses_when_disabled(self, isolated) -> None:
+        # The master gate still guards the on-demand command.
+        sync_state.set_enabled(False)
+        result = CliRunner().invoke(sync_app, ["now"])
+        assert result.exit_code == 2
+        assert "disabled" in result.output.lower()

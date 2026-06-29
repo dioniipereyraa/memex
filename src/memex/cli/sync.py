@@ -484,6 +484,30 @@ def reconcile(
     _reconcile_targets(_resolve_targets(peer_name), db_path)
 
 
+@sync_app.command("now")
+def sync_now(
+    peer_name: Annotated[
+        str | None,
+        typer.Option("--peer", help="Sync with this peer only (default: all paired peers)."),
+    ] = None,
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Sync with your paired devices right now (an immediate two-way reconcile).
+
+    The same as `reconcile`, named for the common case: push the conversation you
+    just had to your other devices (and pull theirs) without waiting for the
+    auto-sync tick. It propagates what is ALREADY indexed locally; a claude.ai
+    chat is indexed when the extension captures it (on open/reload), so reload the
+    chat first if you want its latest turns included. The terminal cannot read
+    claude.ai directly, so `now` never reaches into the browser itself.
+    """
+    _require_enabled()
+    _reconcile_targets(_resolve_targets(peer_name), db_path)
+
+
 def _default_peer_name(url: str) -> str:
     """A peer label from the URL host (the user can override with --name)."""
     from urllib.parse import urlparse

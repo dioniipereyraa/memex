@@ -206,6 +206,50 @@ installed the published PyPI package instead, drop the `uv run` prefix.)
 > with `MEMEX_DB_PATH` / `MEMEX_EXPORTS_DIR`. `memex doctor` prints the resolved
 > path.
 
+## Using Memex (after setup)
+
+Once `memex setup` finishes, nothing else needs launching: the capture server and
+the indexers run in the background. You use Memex three ways.
+
+**1. From Claude Code (the main way).** Setup registers the MCP server, so Claude
+Code can search your whole history through four tools:
+
+| Tool | What it does |
+|---|---|
+| `search_chats` | Semantic + keyword search across your claude.ai chats AND Claude Code sessions |
+| `get_chat` | Fetch a full conversation by id |
+| `list_recent_chats` | Your most recent conversations |
+| `find_related` | Conversations related to a topic or snippet |
+
+Just ask Claude Code naturally ("what did we decide about X in my claude.ai
+chats?") and it calls these. To have context injected automatically at the start
+of a session, add the optional [SessionStart hook](#proactive-context-injection-sessionstart-hook).
+
+**2. From the terminal.** `memex search "..."`, `memex stats`, `memex doctor`,
+`memex token` (re-print the extension pairing token), `memex --version`.
+
+**3. Capture (automatic, you run nothing).** The Chrome extension indexes a
+claude.ai chat as you open or reload it (and its "Backfill" button imports your old
+history once); your Claude Code sessions are indexed when a session ends, plus a
+15-minute backstop.
+
+### How fresh is the data (real-time)?
+
+| Path | Latency |
+|---|---|
+| A claude.ai chat into your local index | Near-instant: captured as you open/reload the chat (embedded in seconds) |
+| A Claude Code session into your local index | At session end, plus a 15-minute backstop |
+| Available to Claude Code on the **same** machine | Immediate (it reads the same local DB the capture writes) |
+| **Across devices** | **Not live.** Periodic + overlap: see below |
+
+Same-machine is essentially real-time. **Cross-device is not a live relay** (it is
+peer-to-peer with no cloud): paired devices auto-reconcile every 15 minutes while
+both are online, and you can force it immediately with **`memex sync now`**. A
+claude.ai chat is captured by the extension on open/reload, so to sync the latest
+turns of an in-progress chat, reload it (so the extension re-captures it), then run
+`memex sync now`. The terminal cannot read claude.ai directly, so the extension is
+always what captures; sync only propagates what is already indexed locally.
+
 ## Embeddings backend
 
 Default is fastembed (zero-config). To route through a local Ollama instead
@@ -408,9 +452,24 @@ memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
 ```
 
 `connect` turns sync on there, pairs, and runs a two-way reconcile, so that device
-is set up and caught up in one step. Later, `memex sync reconcile` re-syncs an
-already-paired device and `memex sync status` shows what is paired. Turn the
-exposure back off with `memex setup --no-sync` (it stays loopback-only, sync off).
+is set up and caught up in one step.
+
+**Set-and-forget:** `memex setup --sync` also enables **auto-sync**, so paired
+devices reconcile by themselves every 15 minutes while both are online (no env var,
+no cron). It is overlap sync, not a cloud relay: if the other device is off, that
+tick is skipped and catches up next time both are on. To sync immediately between
+ticks (e.g. to push the chat you are having right now), run:
+
+```bash
+memex sync now          # immediate two-way reconcile with every paired device
+```
+
+`memex sync now` propagates what is already indexed locally; a claude.ai chat is
+indexed when the extension captures it (on open/reload), so reload an in-progress
+chat first if you want its latest turns included. `memex sync status` shows what is
+paired and the last sync; `memex sync reconcile` is the same as `now`. Turn the
+whole thing back off (loopback-only, sync + auto-sync off) with `memex setup
+--no-sync`. Tune the interval with `MEMEX_SYNC_INTERVAL_SECONDS` (default 900).
 
 ### One-shot (without changing your setup)
 
@@ -451,12 +510,14 @@ a trust decision (it shares an access token), so only pair devices you control.
 Never sync the SQLite file itself with a folder-sync tool; always use `memex
 sync`, which is consistent at the conversation level.
 
-To keep two devices in sync automatically, set `MEMEX_SYNC_AUTO=true` before
-`memex serve`: while sync is enabled it reconciles with each paired peer on
-startup and every `MEMEX_SYNC_INTERVAL_SECONDS` (default 900), skipping a peer
-that is offline and backing off while an ingest is running. It stays off unless
-you both set the flag and `enable` sync. Turn the whole feature back off any time
-with `memex sync disable`.
+Auto-sync (the every-15-minutes reconcile) is turned on for you by `memex setup
+--sync`; you do not need an env var. Under the hood it reconciles with each paired
+peer on startup and every `MEMEX_SYNC_INTERVAL_SECONDS` (default 900), skipping a
+peer that is offline and backing off while an ingest is running. If you did not use
+`setup --sync` (e.g. a manual/dev setup) you can still enable it with
+`MEMEX_SYNC_AUTO=true` before `memex serve`; either the persisted flag or the env
+var starts the loop. It only runs while sync is enabled; turn the whole feature
+back off with `memex sync disable` (or `memex setup --no-sync`).
 
 ## Running always-on
 

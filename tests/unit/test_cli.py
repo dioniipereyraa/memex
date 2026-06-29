@@ -842,9 +842,13 @@ class TestSetupSyncMode:
         assert result.exit_code == 0, result.output
         assert sync_state.is_enabled() is True
         assert sync_state.is_serve_sync() is True
+        # --sync is set-and-forget: it also turns on persisted auto-sync.
+        assert sync_state.is_sync_auto() is True
         # The connect line (token included: setup is interactive, decision #2) is shown.
         assert "memex sync connect" in result.output
         assert "http://100.4.4.4:5777" in result.output
+        # The auto-sync + on-demand hint is shown (substring robust to line-wrap).
+        assert "auto-reconcile" in result.output
 
     def test_plain_setup_preserves_persisted_serve_sync(self, isolated, monkeypatch) -> None:
         from memex.sync import state as sync_state
@@ -858,11 +862,12 @@ class TestSetupSyncMode:
     def test_setup_no_sync_turns_it_off(self, isolated, monkeypatch) -> None:
         from memex.sync import state as sync_state
 
-        sync_state.set_gate(enabled=True, serve_sync=True)
+        sync_state.set_gate(enabled=True, serve_sync=True, sync_auto=True)
         result = runner.invoke(app, ["setup", "-y", *_SETUP_SKIP, "--no-sync"])
         assert result.exit_code == 0, result.output
         assert sync_state.is_enabled() is False
         assert sync_state.is_serve_sync() is False
+        assert sync_state.is_sync_auto() is False
 
     def test_declining_setup_does_not_persist_the_gate(self, isolated, monkeypatch) -> None:
         # Declining "Proceed?" must NOT leave the sync gate flipped (consent bug):
@@ -874,3 +879,4 @@ class TestSetupSyncMode:
         assert result.exit_code == 0, result.output
         assert sync_state.is_serve_sync() is False
         assert sync_state.is_enabled() is False
+        assert sync_state.is_sync_auto() is False

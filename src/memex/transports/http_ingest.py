@@ -725,7 +725,10 @@ async def _auto_sync_loop() -> None:
 async def _lifespan(_app: Starlette) -> Any:
     """Start the auto-sync background task if enabled; cancel it on shutdown."""
     task: asyncio.Task[None] | None = None
-    if settings.sync_auto:
+    # Start the loop if the auto-sync env flag OR the persisted gate flag is set
+    # (the persisted one is what `memex setup --sync` turns on, so a set-once
+    # install auto-syncs without an env var). Per-tick still respects the master gate.
+    if settings.sync_auto or sync_state.is_sync_auto():
         logger.info("auto-sync enabled (every %ss)", settings.sync_interval_seconds)
         task = asyncio.create_task(_auto_sync_loop())
     try:

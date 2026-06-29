@@ -42,11 +42,11 @@ logger = logging.getLogger("memex.sync.state")
 
 
 def _default_gate() -> dict[str, Any]:
-    return {"enabled": False, "serve_sync": False}
+    return {"enabled": False, "serve_sync": False, "sync_auto": False}
 
 
 def _load_gate(path: Path | str | None = None) -> dict[str, Any]:
-    """Read the gate file into a normalized {enabled, serve_sync} dict.
+    """Read the gate file into a normalized {enabled, serve_sync, sync_auto} dict.
 
     Missing/corrupt/half-written file reads as the all-off default (fail closed),
     and an unknown extra key is dropped so the on-disk shape stays canonical.
@@ -55,6 +55,7 @@ def _load_gate(path: Path | str | None = None) -> dict[str, Any]:
     return {
         "enabled": bool(data.get("enabled", False)),
         "serve_sync": bool(data.get("serve_sync", False)),
+        "sync_auto": bool(data.get("sync_auto", False)),
     }
 
 
@@ -62,20 +63,23 @@ def set_gate(
     *,
     enabled: bool | None = None,
     serve_sync: bool | None = None,
+    sync_auto: bool | None = None,
     path: Path | str | None = None,
 ) -> None:
-    """Update one or both gate flags atomically, preserving the other.
+    """Update one or more gate flags atomically, preserving the rest.
 
     The only writer of the gate file. Read-modify-write so toggling one flag
     (`enable`/`disable` touch only `enabled`; a plain re-run never touches
-    `serve_sync`) never clobbers the other. Both flags are written together when
-    `setup --sync/--no-sync` passes both.
+    `serve_sync`/`sync_auto`) never clobbers the others. `setup --sync/--no-sync`
+    writes all three together.
     """
     gate = _load_gate(path)
     if enabled is not None:
         gate["enabled"] = bool(enabled)
     if serve_sync is not None:
         gate["serve_sync"] = bool(serve_sync)
+    if sync_auto is not None:
+        gate["sync_auto"] = bool(sync_auto)
     _write_json_object(state_path(path), gate)
 
 
@@ -139,6 +143,21 @@ def is_serve_sync(path: Path | str | None = None) -> bool:
 def set_serve_sync(serve_sync: bool, path: Path | str | None = None) -> None:
     """Persist the serve-sync-reachable choice, preserving the master gate."""
     set_gate(serve_sync=serve_sync, path=path)
+
+
+def is_sync_auto(path: Path | str | None = None) -> bool:
+    """Whether `serve` should auto-reconcile with peers on a timer (default False).
+
+    Persisted counterpart of the `MEMEX_SYNC_AUTO` env var: `setup --sync` turns it
+    on so the always-on server reconciles periodically without an env var. The
+    serve lifespan starts the loop if EITHER this or the env flag is set.
+    """
+    return bool(_load_gate(path)["sync_auto"])
+
+
+def set_sync_auto(sync_auto: bool, path: Path | str | None = None) -> None:
+    """Persist the auto-sync choice, preserving the other gate flags."""
+    set_gate(sync_auto=sync_auto, path=path)
 
 
 def record_sync(

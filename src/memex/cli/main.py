@@ -1275,7 +1275,7 @@ def setup(
     if autostart:
         planned.append("install the always-on live-capture service")
     if serve_sync_on:
-        planned.append("make the service sync-reachable over Tailscale (multi-device)")
+        planned.append("make the service sync-reachable over Tailscale and auto-sync your devices")
     if ingest:
         planned.append("index your local Claude Code sessions")
     planned.append("show the Chrome extension pairing token")
@@ -1288,12 +1288,13 @@ def setup(
 
     # Persist the sync-reachable choice only now that the user has confirmed, so a
     # declined setup never leaves the gate flipped (the autostart service runs
-    # plain `serve`, which reads this flag). --sync turns it on (and the master
-    # gate); --no-sync turns both off; omitted leaves the saved choice untouched.
+    # plain `serve`, which reads these flags). --sync turns on the master gate,
+    # sync-reachable serve, AND periodic auto-sync (set-and-forget); --no-sync
+    # turns all off; omitted leaves the saved choice untouched.
     if sync is True:
-        sync_state.set_gate(enabled=True, serve_sync=True)
+        sync_state.set_gate(enabled=True, serve_sync=True, sync_auto=True)
     elif sync is False:
-        sync_state.set_gate(enabled=False, serve_sync=False)
+        sync_state.set_gate(enabled=False, serve_sync=False, sync_auto=False)
 
     results: list[tuple[str, str, str]] = []
 
@@ -1375,6 +1376,10 @@ def setup(
                 "  [yellow]No Tailscale address detected yet.[/yellow] Start Tailscale, then "
                 "run [bold]memex sync serve[/bold] to print the connect line."
             )
+        console.print(
+            f"  Paired devices auto-reconcile every {settings.sync_interval_seconds // 60} min "
+            "while both are online; run [bold]memex sync now[/bold] to sync immediately."
+        )
 
     console.print(
         "\n[dim]Re-run `memex token` to see the token again, or `memex doctor` to "
