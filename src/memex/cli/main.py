@@ -436,6 +436,12 @@ def serve(
 
     sync_addr = _resolve_serve_sync_address(sync)
     if sync_addr is not None:
+        # Sync mode must serve both loopback and the Tailscale address, so it always
+        # binds 0.0.0.0; a custom --host cannot be honored here.
+        if host != "127.0.0.1":
+            console.print(
+                f"[yellow]Note:[/yellow] --sync binds 0.0.0.0; the --host {host} value is ignored."
+            )
         # Bind all interfaces so ONE server answers both loopback (the extension)
         # and the Tailscale address; the Host allow-list + token are the real gate
         # (binding 0.0.0.0 only opens the socket). Resolve the allow-list now so an
@@ -472,6 +478,10 @@ def serve(
             f"[bold]Memex serve[/bold] (sync-reachable) on [cyan]http://{host}:{port}[/cyan]"
         )
         console.print(f"  loopback capture + multi-device sync at [cyan]{url}[/cyan].")
+        console.print(
+            "  [yellow]This port is now reachable on every network interface;[/yellow] "
+            "the access token is the only gate, so keep it secret."
+        )
         console.print("  On another device, run:")
         # Echo the token in the connect line only to an interactive terminal, so a
         # daemon log never captures it; otherwise point to `memex token`.
@@ -1247,15 +1257,16 @@ def setup(
     """
     from memex.transports import http_ingest
 
-    # Apply the sync-reachable choice up front so the autostart service (which runs
-    # plain `serve`, reading the persisted flag) comes up in the right mode.
-    # --sync turns it on (and the master gate); --no-sync turns both off; omitted
-    # leaves the saved choice, so a plain re-run never silently undoes --sync.
+    # What the sync-reachable choice WOULD be after applying the flag, computed
+    # without writing yet so the plan can mention it. --sync -> on, --no-sync ->
+    # off, omitted -> the saved choice. The actual gate write happens only AFTER
+    # the user confirms (declining must not leave the gate flipped).
     if sync is True:
-        sync_state.set_gate(enabled=True, serve_sync=True)
+        serve_sync_on = True
     elif sync is False:
-        sync_state.set_gate(enabled=False, serve_sync=False)
-    serve_sync_on = sync_state.is_serve_sync() and sync_state.is_enabled()
+        serve_sync_on = False
+    else:
+        serve_sync_on = sync_state.is_serve_sync() and sync_state.is_enabled()
 
     console.print("[bold]Memex setup[/bold]\n")
     planned = []
@@ -1274,6 +1285,15 @@ def setup(
     console.print()
     if not yes and not typer.confirm("Proceed?", default=True):
         raise typer.Exit(code=0)
+
+    # Persist the sync-reachable choice only now that the user has confirmed, so a
+    # declined setup never leaves the gate flipped (the autostart service runs
+    # plain `serve`, which reads this flag). --sync turns it on (and the master
+    # gate); --no-sync turns both off; omitted leaves the saved choice untouched.
+    if sync is True:
+        sync_state.set_gate(enabled=True, serve_sync=True)
+    elif sync is False:
+        sync_state.set_gate(enabled=False, serve_sync=False)
 
     results: list[tuple[str, str, str]] = []
 

@@ -721,6 +721,7 @@ class TestServeSyncMode:
         captured: dict[str, object] = {}
 
         def fake_run(app, host, port, **kw):  # type: ignore[no-untyped-def]
+            captured["app"] = app
             captured["host"] = host
             captured["port"] = port
 
@@ -729,16 +730,20 @@ class TestServeSyncMode:
 
     def test_plain_serve_stays_loopback(self, isolated, monkeypatch) -> None:
         from memex.config import settings
+        from memex.transports import http_ingest
 
         captured = self._patch_uvicorn(monkeypatch)
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0, result.output
         assert captured["host"] == "127.0.0.1"
         assert settings.ingest_allowed_hosts == "127.0.0.1,localhost"
+        # Plain mode serves the prebuilt module-level app (no rebuild).
+        assert captured["app"] is http_ingest.app
 
     def test_serve_sync_binds_all_and_allowlists_tailscale(self, isolated, monkeypatch) -> None:
         from memex.config import settings
         from memex.sync import state as sync_state
+        from memex.transports import http_ingest
 
         captured = self._patch_uvicorn(monkeypatch)
         monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.9.9.9")
@@ -750,11 +755,17 @@ class TestServeSyncMode:
         # Allow-list widened to the Tailscale IP, loopback preserved.
         assert "100.9.9.9" in settings.ingest_allowed_hosts
         assert "127.0.0.1" in settings.ingest_allowed_hosts
+        # The app was REBUILT after the allow-list mutation (not the prebuilt one),
+        # so TrustedHostMiddleware actually sees the Tailscale host.
+        assert captured["app"] is not http_ingest.app
         # --sync flips the master gate on (explicit intent).
         assert sync_state.is_enabled() is True
-        # Connect line printed (token omitted under non-tty, so never in a daemon log).
+        # Connect line printed, but the TOKEN is never echoed to a non-tty stream
+        # (the daemon-log-leak lesson); CliRunner's stdout is not a tty.
         assert "memex sync connect" in result.output
         assert "http://100.9.9.9:5777" in result.output
+        token = http_ingest.load_or_create_ingest_token()
+        assert token not in result.output
 
     def test_serve_sync_without_tailscale_falls_back_to_loopback(
         self, isolated, monkeypatch
@@ -852,3 +863,14 @@ class TestSetupSyncMode:
         assert result.exit_code == 0, result.output
         assert sync_state.is_enabled() is False
         assert sync_state.is_serve_sync() is False
+
+    def test_declining_setup_does_not_persist_the_gate(self, isolated, monkeypatch) -> None:
+        # Declining "Proceed?" must NOT leave the sync gate flipped (consent bug):
+        # the gate is written only after confirmation. No -y; answer "n".
+        from memex.sync import state as sync_state
+
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.4.4.4")
+        result = runner.invoke(app, ["setup", *_SETUP_SKIP, "--sync"], input="n\n")
+        assert result.exit_code == 0, result.output
+        assert sync_state.is_serve_sync() is False
+        assert sync_state.is_enabled() is False
