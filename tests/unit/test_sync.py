@@ -711,9 +711,11 @@ class TestAutoSync:
     @pytest.fixture(autouse=True)
     def _enable_and_isolate(self, monkeypatch) -> None:
         # Enable the gate (off by default) and keep record_sync off the real
-        # per-user history file.
+        # per-user history file. File sync defaults to off so the loop never reads
+        # the real per-user gate; the file-sync tests override resolve_sync_dir.
         monkeypatch.setattr(http_ingest, "_sync_enabled_override", True)
         monkeypatch.setattr(http_ingest.sync_state, "record_sync", lambda *a, **k: None)
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: None)
 
     def test_skips_when_disabled(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
@@ -762,6 +764,47 @@ class TestAutoSync:
         http_ingest._auto_sync_once(db_path=tmp_path / "memex.db")
         assert called == []
 
+    def test_file_sync_runs_with_no_network_peers(self, tmp_path, monkeypatch) -> None:
+        # The dual-boot case: no paired network peer, but a shared folder is set.
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: tmp_path / "shared")
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_device_name", lambda: "thisdev")
+        seen: list[str] = []
+
+        def fake_sync_once(conn, sync_dir, device, model, dim):
+            seen.append(str(sync_dir))
+            return http_ingest.file_sync.FileSyncSummary(
+                device=device,
+                peers_seen=1,
+                pulled=2,
+                failed=0,
+                would_push=0,
+                forks=0,
+                incompatible=0,
+                exported=True,
+            )
+
+        monkeypatch.setattr(http_ingest.file_sync, "sync_once", fake_sync_once)
+        http_ingest._auto_sync_once(db_path=tmp_path / "memex.db")
+        assert seen == [str(tmp_path / "shared")]
+
+    def test_file_sync_skipped_when_lock_busy(self, tmp_path, monkeypatch) -> None:
+        from memex import ingest_lock
+
+        db = tmp_path / "memex.db"
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: tmp_path / "shared")
+        called: list[str] = []
+        monkeypatch.setattr(
+            http_ingest.file_sync, "sync_once", lambda *a, **k: called.append("synced")
+        )
+        handle = ingest_lock.acquire_nonblocking(db)
+        try:
+            http_ingest._auto_sync_once(db_path=db)
+        finally:
+            ingest_lock.release(handle)
+        assert called == []  # a live ingest holds the lock; the file tick is skipped too
+
 
 # --------------------------------------------------------------------------
 # Phase 3: master gate state
@@ -796,6 +839,38 @@ class TestSyncState:
         sync_state.set_enabled(False, p)
         assert sync_state.is_serve_sync(p) is True
         assert sync_state.is_enabled(p) is False
+
+    def test_sync_dir_default_none(self, tmp_path) -> None:
+        assert sync_state.get_sync_dir(tmp_path / "sync_state.json") is None
+        assert sync_state.get_device_name(tmp_path / "sync_state.json") is None
+
+    def test_sync_dir_and_device_roundtrip(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_sync_dir("/mnt/win/memex", p)
+        sync_state.set_device_name("linux-box", p)
+        assert sync_state.get_sync_dir(p) == "/mnt/win/memex"
+        assert sync_state.get_device_name(p) == "linux-box"
+
+    def test_file_sync_config_preserves_flags(self, tmp_path) -> None:
+        # Writing the file-sync config must not clobber the booleans, and the
+        # booleans must not clobber the file-sync config (both share the gate file).
+        p = tmp_path / "sync_state.json"
+        sync_state.set_gate(
+            enabled=True, sync_auto=True, sync_dir="/shared", device_name="d", path=p
+        )
+        sync_state.set_enabled(False, p)  # toggling the gate keeps the file config
+        assert sync_state.get_sync_dir(p) == "/shared"
+        assert sync_state.get_device_name(p) == "d"
+        sync_state.set_serve_sync(True, p)  # unrelated flag keeps the file config too
+        assert sync_state.get_sync_dir(p) == "/shared"
+        # And the file config write left the booleans it did not touch intact.
+        assert sync_state.is_sync_auto(p) is True
+
+    def test_clearing_sync_dir(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_sync_dir("/shared", p)
+        sync_state.set_sync_dir(None, p)
+        assert sync_state.get_sync_dir(p) is None
 
     def test_set_serve_sync_preserves_enabled(self, tmp_path) -> None:
         p = tmp_path / "sync_state.json"

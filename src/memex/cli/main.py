@@ -37,6 +37,7 @@ from memex.core.repos import find_repo_root, match_text, parse_repo, resolve_rep
 from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
 from memex.proctitle import set_process_title
+from memex.sync import file_sync
 from memex.sync import state as sync_state
 
 app = typer.Typer(
@@ -1204,6 +1205,28 @@ def _setup_ingest() -> tuple[str, str, str]:
     return ("Claude Code index", "OK", detail)
 
 
+def _setup_file_sync(sync_dir: Path, device_name: str) -> tuple[str, str, str]:
+    """Create the shared folder and run an initial file sync (export + import).
+
+    The persisted config (gate `sync_dir`/`device_name`) is written by the caller
+    before this runs, so the always-on `serve` picks file sync up via its auto-sync
+    loop with no service change. Never aborts setup: a failure is a WARN row.
+    """
+    try:
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        embedder = get_default_embedder()
+        model, dim = embedder.model_name, embedder.dim
+        conn = connect_and_init(None)
+        try:
+            summary = file_sync.sync_once(conn, sync_dir, device_name, model, dim)
+        finally:
+            conn.close()
+    except Exception as e:
+        return ("File sync", "WARN", f"{type(e).__name__}: {e}")
+    detail = f"device {device_name}, pulled {summary.pulled} from {summary.peers_seen} peer file(s)"
+    return ("File sync", "OK", detail)
+
+
 @app.command("setup")
 def setup(
     yes: Annotated[
@@ -1240,6 +1263,22 @@ def setup(
             "persisted). Omitted keeps your saved choice; --no-sync turns it off.",
         ),
     ] = None,
+    sync_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--sync-dir",
+            help="Enable file-based sync (the dual-boot / offline mode) using this "
+            "shared folder. Point every device at the same folder (its path on that OS).",
+        ),
+    ] = None,
+    device_name: Annotated[
+        str | None,
+        typer.Option(
+            "--device-name",
+            help="Name for this device's snapshot file in --sync-dir (default: hostname). "
+            "Give two devices distinct names if their hostnames collide.",
+        ),
+    ] = None,
 ) -> None:
     """Wire Memex into Claude Code end to end, in one command.
 
@@ -1268,6 +1307,13 @@ def setup(
     else:
         serve_sync_on = sync_state.is_serve_sync() and sync_state.is_enabled()
 
+    # File-based sync (dual-boot mode): a shared folder, no network. Resolve the
+    # device name now so the plan can name it; the actual write waits for consent.
+    file_dir_resolved = sync_dir.expanduser() if sync_dir is not None else None
+    file_device: str | None = None
+    if file_dir_resolved is not None:
+        file_device = (device_name or socket.gethostname() or "device").strip() or "device"
+
     console.print("[bold]Memex setup[/bold]\n")
     planned = []
     if mcp:
@@ -1276,6 +1322,8 @@ def setup(
         planned.append("install the always-on live-capture service")
     if serve_sync_on:
         planned.append("make the service sync-reachable over Tailscale and auto-sync your devices")
+    if file_dir_resolved is not None:
+        planned.append(f"set up file-based sync (dual-boot) in {file_dir_resolved}")
     if ingest:
         planned.append("index your local Claude Code sessions")
     planned.append("show the Chrome extension pairing token")
@@ -1295,6 +1343,17 @@ def setup(
         sync_state.set_gate(enabled=True, serve_sync=True, sync_auto=True)
     elif sync is False:
         sync_state.set_gate(enabled=False, serve_sync=False, sync_auto=False)
+
+    # File-based sync (dual-boot) needs the master gate + auto-sync on (it rides the
+    # same auto-sync loop) but NOT serve_sync (it opens no network port). Persisted
+    # after the network-sync write so it wins if both were somehow requested.
+    if file_dir_resolved is not None:
+        sync_state.set_gate(
+            enabled=True,
+            sync_auto=True,
+            sync_dir=str(file_dir_resolved),
+            device_name=file_device,
+        )
 
     results: list[tuple[str, str, str]] = []
 
@@ -1335,6 +1394,10 @@ def setup(
                 else "on; start Tailscale for an address",
             )
         )
+
+    # 4b. File-based sync (dual-boot): create the shared folder + initial sync.
+    if file_dir_resolved is not None and file_device is not None:
+        results.append(_setup_file_sync(file_dir_resolved, file_device))
 
     # 5. Index local Claude Code sessions.
     if ingest:
@@ -1379,6 +1442,28 @@ def setup(
         console.print(
             f"  Paired devices auto-reconcile every {settings.sync_interval_seconds // 60} min "
             "while both are online; run [bold]memex sync now[/bold] to sync immediately."
+        )
+
+    if file_dir_resolved is not None:
+        console.print("\n[bold]File-based sync is on[/bold] (dual-boot / offline mode).")
+        console.print(
+            f"  This device ([cyan]{file_device}[/cyan]) syncs through the shared folder:"
+        )
+        console.print(f"    [cyan]{file_dir_resolved}[/cyan]")
+        console.print(
+            "  On your OTHER OS, point it at the SAME folder (its path there), with its own name:"
+        )
+        console.print(
+            "    [bold cyan]memex setup --sync-dir <that-folder> "
+            "--device-name <other-name>[/bold cyan]"
+        )
+        console.print(
+            "  The folder must be readable from both OSes (on a dual-boot, put it on the "
+            "Windows/NTFS partition: Linux reads NTFS, Windows cannot read ext4)."
+        )
+        console.print(
+            f"  Each boot auto-syncs every {settings.sync_interval_seconds // 60} min; run "
+            "[bold]memex sync now[/bold] to sync immediately."
         )
 
     console.print(

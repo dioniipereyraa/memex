@@ -42,21 +42,44 @@ logger = logging.getLogger("memex.sync.state")
 
 
 def _default_gate() -> dict[str, Any]:
-    return {"enabled": False, "serve_sync": False, "sync_auto": False}
+    return {
+        "enabled": False,
+        "serve_sync": False,
+        "sync_auto": False,
+        "sync_dir": None,
+        "device_name": None,
+    }
+
+
+def _clean_str(value: Any) -> str | None:
+    """A non-blank string, or None (used for the optional file-sync config)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _load_gate(path: Path | str | None = None) -> dict[str, Any]:
-    """Read the gate file into a normalized {enabled, serve_sync, sync_auto} dict.
+    """Read the gate file into a normalized gate dict.
 
-    Missing/corrupt/half-written file reads as the all-off default (fail closed),
-    and an unknown extra key is dropped so the on-disk shape stays canonical.
+    Holds the three booleans (enabled, serve_sync, sync_auto) plus the optional
+    file-sync config (sync_dir, device_name) that `memex setup --sync-dir`
+    persists. Missing/corrupt/half-written file reads as the all-off default (fail
+    closed), and an unknown extra key is dropped so the on-disk shape stays
+    canonical.
     """
     data = _load_json_object(state_path(path), "state") or {}
     return {
         "enabled": bool(data.get("enabled", False)),
         "serve_sync": bool(data.get("serve_sync", False)),
         "sync_auto": bool(data.get("sync_auto", False)),
+        "sync_dir": _clean_str(data.get("sync_dir")),
+        "device_name": _clean_str(data.get("device_name")),
     }
+
+
+# Sentinel so `set_gate` can tell "leave sync_dir/device_name as is" (default)
+# apart from "clear it to None" (an explicit caller intent, e.g. teardown).
+_UNSET = object()
 
 
 def set_gate(
@@ -64,6 +87,8 @@ def set_gate(
     enabled: bool | None = None,
     serve_sync: bool | None = None,
     sync_auto: bool | None = None,
+    sync_dir: Any = _UNSET,
+    device_name: Any = _UNSET,
     path: Path | str | None = None,
 ) -> None:
     """Update one or more gate flags atomically, preserving the rest.
@@ -71,7 +96,9 @@ def set_gate(
     The only writer of the gate file. Read-modify-write so toggling one flag
     (`enable`/`disable` touch only `enabled`; a plain re-run never touches
     `serve_sync`/`sync_auto`) never clobbers the others. `setup --sync/--no-sync`
-    writes all three together.
+    writes the booleans together; `setup --sync-dir` writes the file-sync config.
+    `sync_dir`/`device_name` are left untouched unless passed explicitly (pass
+    None to clear them).
     """
     gate = _load_gate(path)
     if enabled is not None:
@@ -80,6 +107,10 @@ def set_gate(
         gate["serve_sync"] = bool(serve_sync)
     if sync_auto is not None:
         gate["sync_auto"] = bool(sync_auto)
+    if sync_dir is not _UNSET:
+        gate["sync_dir"] = _clean_str(sync_dir)
+    if device_name is not _UNSET:
+        gate["device_name"] = _clean_str(device_name)
     _write_json_object(state_path(path), gate)
 
 
@@ -158,6 +189,36 @@ def is_sync_auto(path: Path | str | None = None) -> bool:
 def set_sync_auto(sync_auto: bool, path: Path | str | None = None) -> None:
     """Persist the auto-sync choice, preserving the other gate flags."""
     set_gate(sync_auto=sync_auto, path=path)
+
+
+def get_sync_dir(path: Path | str | None = None) -> str | None:
+    """The persisted file-sync shared directory, or None if not configured.
+
+    Set by `memex setup --sync-dir`. File sync (the dual-boot mode) exports/imports
+    snapshot files here instead of talking to a peer over the network.
+    """
+    value = _load_gate(path)["sync_dir"]
+    return value if isinstance(value, str) else None
+
+
+def set_sync_dir(sync_dir: str | None, path: Path | str | None = None) -> None:
+    """Persist the file-sync shared directory, preserving the other gate fields."""
+    set_gate(sync_dir=sync_dir, path=path)
+
+
+def get_device_name(path: Path | str | None = None) -> str | None:
+    """The persisted device name used to name this device's snapshot file.
+
+    Set by `memex setup --sync-dir`. None falls back to the hostname (see
+    `file_sync.resolve_device_name`).
+    """
+    value = _load_gate(path)["device_name"]
+    return value if isinstance(value, str) else None
+
+
+def set_device_name(device_name: str | None, path: Path | str | None = None) -> None:
+    """Persist this device's file-sync name, preserving the other gate fields."""
+    set_gate(device_name=device_name, path=path)
 
 
 def record_sync(

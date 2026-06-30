@@ -69,7 +69,7 @@ from memex.core.embeddings import Embedder, EmbedderError, get_default_embedder
 from memex.core.ingest.pipeline import ingest_single_conversation
 from memex.core.models import Source
 from memex.core.storage.db import connect_and_init
-from memex.sync import client, peers, records
+from memex.sync import client, file_sync, peers, records
 from memex.sync import state as sync_state
 
 logger = logging.getLogger("memex.http_ingest")
@@ -672,7 +672,9 @@ def _auto_sync_once(db_path: Path | None = None) -> None:
     if not _sync_is_enabled():
         return
     targets = peers.load_peers()
-    if not targets:
+    sync_dir = file_sync.resolve_sync_dir()
+    # Nothing to do if neither a network peer nor a file-sync directory is set up.
+    if not targets and sync_dir is None:
         return
     lock_handle = ingest_lock.acquire_nonblocking(db_path or settings.db_path)
     if lock_handle is None:
@@ -705,6 +707,30 @@ def _auto_sync_once(db_path: Path | None = None) -> None:
                     summary.pulled,
                     summary.pushed,
                 )
+        # File-based sync (dual-boot): import from / export to the shared folder.
+        # No network peer needs to be online; the other OS left its snapshot on
+        # disk. Recorded under a `file:<device>` breadcrumb so `status` can show it.
+        if sync_dir is not None:
+            device = file_sync.resolve_device_name()
+            try:
+                fsum = file_sync.sync_once(conn, sync_dir, device, model, dim)
+            except Exception:
+                logger.exception("auto-sync: file sync failed for %s", sync_dir)
+            else:
+                with contextlib.suppress(OSError):
+                    sync_state.record_sync(
+                        f"file:{device}",
+                        pulled=fsum.pulled,
+                        pushed=fsum.would_push,
+                        failed=fsum.failed,
+                    )
+                if fsum.pulled or fsum.exported:
+                    logger.info(
+                        "auto-sync file: pulled %d from %d peer file(s), exported=%s",
+                        fsum.pulled,
+                        fsum.peers_seen,
+                        fsum.exported,
+                    )
     finally:
         conn.close()
         ingest_lock.release(lock_handle)
@@ -727,8 +753,10 @@ async def _lifespan(_app: Starlette) -> Any:
     task: asyncio.Task[None] | None = None
     # Start the loop if the auto-sync env flag OR the persisted gate flag is set
     # (the persisted one is what `memex setup --sync` turns on, so a set-once
-    # install auto-syncs without an env var). Per-tick still respects the master gate.
-    if settings.sync_auto or sync_state.is_sync_auto():
+    # install auto-syncs without an env var), or if a file-sync directory is
+    # configured (the dual-boot mode, which also rides this loop). Per-tick still
+    # respects the master gate.
+    if settings.sync_auto or sync_state.is_sync_auto() or file_sync.resolve_sync_dir() is not None:
         logger.info("auto-sync enabled (every %ss)", settings.sync_interval_seconds)
         task = asyncio.create_task(_auto_sync_loop())
     try:

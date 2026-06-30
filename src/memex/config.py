@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -190,6 +191,18 @@ class Settings(BaseSettings):
     # advertised cap (see `sync.client._resolve_budget`).
     sync_max_batch_bytes: int = Field(
         default=8 * 1024 * 1024, alias="MEMEX_SYNC_MAX_BATCH_BYTES", ge=64 * 1024
+    )
+    # File-based sync (the dual-boot mode): a shared directory where each device
+    # exports a snapshot of its store and imports the others'. Off unless set.
+    # Normally persisted by `memex setup --sync-dir` in the gate file; this env
+    # var is an override (tests / advanced). See `sync/file_sync.py`.
+    sync_dir: Path | None = Field(default=None, alias="MEMEX_SYNC_DIR")
+    # Name for this device's snapshot file (`<device_name>.memexsync.gz`). Defaults
+    # to the hostname; give two devices distinct names if their hostnames collide
+    # (else they would overwrite each other's snapshot). `setup --sync-dir`
+    # persists the chosen name, which takes precedence over this default.
+    device_name: str = Field(
+        default_factory=lambda: socket.gethostname() or "device", alias="MEMEX_DEVICE_NAME"
     )
 
     # Auto-summaries with Claude Haiku. Opt-in: OFF by default to avoid

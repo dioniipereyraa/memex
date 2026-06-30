@@ -4,6 +4,17 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
+## [0.4.4] - 2026-06-30
+
+### Added
+- **File-based sync for dual-boot (and any devices never online together).** Network sync needs both devices powered on at once, which never happens on a dual-boot machine (Linux and Windows on the same disk, one at a time). The new mode syncs through a **shared folder** instead of a live connection: each OS exports a gzip snapshot of its store to the folder and imports the others'. No server, no port, no token, no third device. Set it up with `memex setup --sync-dir <shared-folder> --device-name <name>` on each OS, pointed at the same physical folder (on a dual-boot, put it on the Windows/NTFS partition: Linux reads NTFS, Windows cannot read ext4). The folder is created if missing and the choice is persisted, so it is one command per OS.
+  - It rides the same auto-sync loop as network sync, so once configured each OS syncs through the folder on boot and every `MEMEX_SYNC_INTERVAL_SECONDS`, and `memex sync now` (or the new `memex sync file-sync`) syncs immediately.
+  - Convergence is last-writer-wins by update time, identical to the network mode (same `select_reconcile` + `insert_record` core; vectors travel so the receiver never re-embeds). A device only ever writes its own `<device>.memexsync.gz` and reads the others', so they never clash; a same-timestamp fork is left untouched and reported.
+  - `MEMEX_SYNC_DIR` / `MEMEX_DEVICE_NAME` override the persisted folder/name (tests, advanced). `memex sync status` shows the file-sync folder, device name, and last sync.
+
+### Security
+- A snapshot file in the shared folder is treated as attacker-shaped input (same trust as a paired peer): the insert path re-asserts the per-conversation chunk cap, the list-type guards, and the embedding-dimension check, and the reader bounds each decompressed line so a crafted gzip cannot exhaust memory. The snapshot carries conversation text and vectors, so the shared folder must be a location only you can read.
+
 ## [0.4.3] - 2026-06-28
 
 ### Added

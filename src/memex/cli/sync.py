@@ -32,7 +32,7 @@ from memex.cli._net import detect_tailscale_ip, merge_hosts
 from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
 from memex.core.storage.db import connect_and_init
-from memex.sync import client, peers
+from memex.sync import client, file_sync, peers
 from memex.sync import state as sync_state
 from memex.sync.peers import Peer
 
@@ -243,9 +243,23 @@ def status(
     except EmbedderError as e:
         console.print(f"[yellow]Local embedding unavailable:[/yellow] {e}")
 
+    # File-based sync (dual-boot mode), if configured.
+    file_dir = file_sync.resolve_sync_dir()
+    if file_dir is not None:
+        device = file_sync.resolve_device_name()
+        fhist = sync_state.get_peer_history(f"file:{device}")
+        console.print(
+            f"File sync: [green]on[/green] (device [cyan]{device}[/cyan], folder "
+            f"[cyan]{file_dir}[/cyan], last {_format_last_sync(fhist)})"
+        )
+
     known = peers.load_peers()
     if not known:
-        console.print("[yellow]No peers paired.[/yellow] Use `memex sync pair`.")
+        if file_dir is None:
+            console.print(
+                "[yellow]No peers paired.[/yellow] Use `memex sync connect` (network) or "
+                "`memex setup --sync-dir` (dual-boot)."
+            )
         return
 
     table = Table(title="Sync peers")
@@ -468,6 +482,69 @@ def _reconcile_targets(targets: list[Peer], db_path: Path | None) -> None:
         conn.close()
 
 
+def _file_sync_run(db_path: Path | None) -> None:
+    """Import from / export to the shared folder + report. Shared by `file-sync`/`now`."""
+    sync_dir = file_sync.resolve_sync_dir()
+    if sync_dir is None:
+        console.print(
+            "[yellow]File sync is not configured.[/yellow] Run "
+            "`memex setup --sync-dir <shared-folder>` (the dual-boot mode)."
+        )
+        raise typer.Exit(code=2)
+    device = file_sync.resolve_device_name()
+    local_model, local_dim = _local_identity()
+    conn = connect_and_init(db_path)
+    console.print(
+        f"\n[bold]File sync[/bold] (device [cyan]{device}[/cyan]) via [cyan]{sync_dir}[/cyan]..."
+    )
+    try:
+        summary = file_sync.sync_once(conn, sync_dir, device, local_model, local_dim)
+    except OSError as e:
+        console.print(f"  [red]Could not access the shared folder:[/red] {e}")
+        raise typer.Exit(code=2) from e
+    finally:
+        conn.close()
+    console.print(
+        f"  {summary.peers_seen} peer file(s), [green]pulled {summary.pulled}[/green]"
+        + (f", [red]failed {summary.failed}[/red]" if summary.failed else "")
+        + (", exported snapshot" if summary.exported else ", snapshot unchanged")
+        + "."
+    )
+    if summary.would_push:
+        console.print(
+            f"  [dim]{summary.would_push} local conversation(s) will reach the other "
+            "device(s) when they next sync (they pull your snapshot).[/dim]"
+        )
+    if summary.forks:
+        console.print(
+            f"  [yellow]{summary.forks} conflict(s)[/yellow] (same timestamp, different "
+            "content) left untouched. Reload the chat on the authoritative device so its "
+            "timestamp advances, then sync again."
+        )
+    if summary.incompatible:
+        console.print(
+            f"  [yellow]{summary.incompatible} snapshot(s) skipped[/yellow] for an embedding "
+            "model/dim mismatch (every device must use the same embedding model)."
+        )
+
+
+@sync_app.command("file-sync")
+def file_sync_cmd(
+    db_path: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the SQLite database."),
+    ] = None,
+) -> None:
+    """Sync now via the shared folder (the dual-boot / offline mode).
+
+    Imports any peer snapshots in the shared folder, then re-exports this device's
+    snapshot, so a device that is never online at the same time as the others
+    still converges. Configure the folder once with `memex setup --sync-dir`.
+    """
+    _require_enabled()
+    _file_sync_run(db_path)
+
+
 @sync_app.command("reconcile")
 def reconcile(
     peer_name: Annotated[
@@ -495,17 +572,40 @@ def sync_now(
         typer.Option("--db", help="Path to the SQLite database."),
     ] = None,
 ) -> None:
-    """Sync with your paired devices right now (an immediate two-way reconcile).
+    """Sync with your devices right now (network peers and/or the shared folder).
 
-    The same as `reconcile`, named for the common case: push the conversation you
-    just had to your other devices (and pull theirs) without waiting for the
-    auto-sync tick. It propagates what is ALREADY indexed locally; a claude.ai
-    chat is indexed when the extension captures it (on open/reload), so reload the
-    chat first if you want its latest turns included. The terminal cannot read
-    claude.ai directly, so `now` never reaches into the browser itself.
+    The common-case command: push the conversation you just had to your other
+    devices (and pull theirs) without waiting for the auto-sync tick. It covers
+    both modes: a two-way reconcile with every paired network peer, and, when a
+    shared folder is configured (`memex setup --sync-dir`, the dual-boot mode), a
+    file sync against it.
+
+    It propagates what is ALREADY indexed locally; a claude.ai chat is indexed
+    when the extension captures it (on open/reload), so reload the chat first if
+    you want its latest turns included. The terminal cannot read claude.ai
+    directly, so `now` never reaches into the browser itself.
     """
     _require_enabled()
-    _reconcile_targets(_resolve_targets(peer_name), db_path)
+    targets = peers.load_peers()
+    if peer_name is not None:
+        targets = [p for p in targets if p.name == peer_name]
+        if not targets:
+            console.print(f"[red]No peer named {peer_name!r}.[/red] See `memex sync peers`.")
+            raise typer.Exit(code=2)
+    sync_dir = file_sync.resolve_sync_dir()
+    # With a --peer filter the user means that one network peer; only fold in file
+    # sync for an unfiltered run.
+    do_file = sync_dir is not None and peer_name is None
+    if not targets and not do_file:
+        console.print(
+            "[yellow]Nothing to sync.[/yellow] Pair a device with `memex sync connect`, "
+            "or set up the dual-boot mode with `memex setup --sync-dir <shared-folder>`."
+        )
+        raise typer.Exit(code=2)
+    if targets:
+        _reconcile_targets(targets, db_path)
+    if do_file:
+        _file_sync_run(db_path)
 
 
 def _default_peer_name(url: str) -> str:

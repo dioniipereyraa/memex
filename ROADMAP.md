@@ -248,9 +248,26 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   (safe fallback for an older peer); an oversized single conversation is skipped +
   reported, not fatal; new `MEMEX_SYNC_MAX_BATCH_BYTES` (default 8 MB). 587 tests
   green. On branch `fix/sync-size-aware-batching` (pending `0.4.1` publish).
+- [x] **File-based sync for dual-boot / never-online-together (`0.4.4`,
+  2026-06-30).** Network sync needs both devices online at once, which never
+  happens on a dual-boot machine (Linux + Windows on one disk). Added a second
+  sync mode over a SHARED FOLDER instead of a live connection: each OS exports a
+  gzip snapshot of its store (`<device>.memexsync.gz`) and imports the others'.
+  No server, no port, no token, no third device. New `sync/file_sync.py` reuses
+  the transport-agnostic core unchanged (`select_reconcile` LWW + `insert_record`
+  + `local_manifest`); a device only writes its own file and reads the others'
+  (never clash); convergence is eventual over boots; a same-timestamp fork is left
+  untouched + reported, like the network mode. Rides the existing serve auto-sync
+  loop (no service-template change). `memex setup --sync-dir <folder>
+  [--device-name <name>]` creates the folder, persists `sync_dir`/`device_name` in
+  the gate, enables the gate + auto-sync, does an initial export/import, and prints
+  the one command for the other OS. New `memex sync file-sync`; `memex sync now`
+  folds it in; `status` shows it. Anti-gzip-bomb line cap + per-file resilience;
+  `insert_record` re-asserts the same guards as the network path. 30 new tests
+  (24 file-sync + 6 sync), 649 green.
 - [ ] **Phase 4 (future, optional): cloud relay / accounts** for async handoff
   without both devices on. Out of scope until the project grows; the local P2P
-  mode stays the default/private path.
+  mode (network + file-based) stays the default/private path.
 - [ ] **Deferred (optional, not blocking graduation):** a per-device provenance
   tag + a `memex search --device` filter so a query can scope to one machine (the
   plan's optional token-economy item). Dedup by uuid already holds (one row per

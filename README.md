@@ -161,6 +161,11 @@ The choice is saved, so the service stays sync-reachable across reboots without
 re-running anything. Full flow, security model, and the manual one-shot
 alternative are in [Syncing across your devices](#syncing-across-your-devices).
 
+For a **dual-boot machine** (Linux and Windows that are never on at the same time),
+use file-based sync instead: `memex setup --sync-dir <shared-folder>` on each OS,
+pointed at the same folder. No Tailscale, no two devices online at once. See
+[Dual-boot or never-online-together](#dual-boot-or-never-online-together-file-based-sync).
+
 ## First run
 
 The fast path is one command:
@@ -518,6 +523,47 @@ peer that is offline and backing off while an ingest is running. If you did not 
 `MEMEX_SYNC_AUTO=true` before `memex serve`; either the persisted flag or the env
 var starts the loop. It only runs while sync is enabled; turn the whole feature
 back off with `memex sync disable` (or `memex setup --no-sync`).
+
+### Dual-boot or never-online-together (file-based sync)
+
+Network sync needs both devices online at the same time. That never happens on a
+**dual-boot machine** (Linux and Windows on the same disk, only one running at a
+time), and is awkward for any pair of devices that are rarely on together. For
+that, memex has a second sync mode that uses a **shared folder** instead of a live
+connection: each OS exports a snapshot of its store to the folder and imports the
+others'. No server, no port, no token, no third device. It ships in memex `0.4.4`+.
+
+Point every OS at the **same** shared folder (one command per OS):
+
+```bash
+# On Linux (the Windows partition mounted at, e.g., /mnt/windows):
+memex setup --sync-dir /mnt/windows/memex-sync --device-name linux
+
+# On Windows (the SAME physical folder, its path there):
+memex setup --sync-dir C:\memex-sync --device-name windows
+```
+
+That is it. From then on each OS, when it boots, auto-syncs through the folder
+(every 15 minutes while running), and `memex sync now` syncs immediately. The
+folder is created for you if it does not exist, and the choice is persisted, so
+you set it up once.
+
+Where to put the folder on a dual-boot: it must be readable from **both** OSes, so
+put it on the **Windows / NTFS partition**. Linux reads and writes NTFS out of the
+box; Windows cannot read Linux's ext4. (For two separate machines that are rarely
+on together, any shared location works: a USB drive, or a cloud-synced folder like
+Dropbox.)
+
+How it converges: a device only ever writes its own `<device>.memexsync.gz` and
+reads the others', so they never clash. Sync is last-writer-wins by update time,
+exactly like the network mode, and a same-timestamp conflict (a fork) is left
+untouched and reported. The other OS's newer conversations land on your next boot
+(it left its snapshot on disk), and yours reach it on its next boot. Give the two
+OSes **distinct `--device-name` values** if their hostnames are the same, or they
+would overwrite each other's snapshot. The snapshot carries your conversation text
+and vectors, so keep the shared folder somewhere only you can read (the same "only
+share what you control" rule as pairing a peer). The two modes are independent: you
+can use file sync, network sync, or both.
 
 ## Running always-on
 
