@@ -192,6 +192,17 @@ class Settings(BaseSettings):
     sync_max_batch_bytes: int = Field(
         default=8 * 1024 * 1024, alias="MEMEX_SYNC_MAX_BATCH_BYTES", ge=64 * 1024
     )
+    # Trigger a sync shortly after the capture server ingests a chat, so a new
+    # conversation reaches your other devices without waiting for the periodic
+    # tick (or a manual `sync now`). Only fires while sync is enabled and a target
+    # (a paired peer or a file-sync folder) is configured. Debounced, so a burst of
+    # captures (a backfill, several open tabs) coalesces into ONE sync after the
+    # burst settles. Off-switch for anyone who wants captures never to sync
+    # automatically.
+    sync_on_capture: bool = Field(default=True, alias="MEMEX_SYNC_ON_CAPTURE")
+    sync_on_capture_debounce_seconds: int = Field(
+        default=10, alias="MEMEX_SYNC_ON_CAPTURE_DEBOUNCE_SECONDS", ge=1, le=600
+    )
     # File-based sync (the dual-boot mode): a shared directory where each device
     # exports a snapshot of its store and imports the others'. Off unless set.
     # Normally persisted by `memex setup --sync-dir` in the gate file; this env

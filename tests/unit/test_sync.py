@@ -3,6 +3,7 @@ the master enable gate, status, conflict forks, and the hardening guards."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import sys
@@ -1413,3 +1414,74 @@ class TestSyncServeCommand:
         result = CliRunner().invoke(sync_app, ["now"])
         assert result.exit_code == 2
         assert "disabled" in result.output.lower()
+
+
+# --------------------------------------------------------------------------
+# Debounced post-capture sync (auto-sync a chat right after it is captured)
+# --------------------------------------------------------------------------
+
+
+class TestPostCaptureSync:
+    @pytest.fixture(autouse=True)
+    def _base(self, monkeypatch) -> None:
+        # Enabled + feature on + a target present, so the default path schedules.
+        monkeypatch.setattr(http_ingest, "_post_capture_task", None, raising=False)
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", True)
+        monkeypatch.setattr(http_ingest.settings, "sync_on_capture", True)
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [PEER])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: None)
+
+    async def test_no_task_when_sync_disabled(self, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
+        http_ingest._schedule_post_capture_sync()
+        assert http_ingest._post_capture_task is None
+
+    async def test_no_task_when_feature_off(self, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest.settings, "sync_on_capture", False)
+        http_ingest._schedule_post_capture_sync()
+        assert http_ingest._post_capture_task is None
+
+    async def test_no_task_without_target(self, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: None)
+        http_ingest._schedule_post_capture_sync()
+        assert http_ingest._post_capture_task is None
+
+    async def test_file_dir_alone_is_a_target(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: tmp_path)
+        http_ingest._schedule_post_capture_sync()
+        task = http_ingest._post_capture_task
+        assert task is not None
+        task.cancel()
+        await asyncio.sleep(0)
+
+    async def test_schedules_task(self) -> None:
+        http_ingest._schedule_post_capture_sync()
+        task = http_ingest._post_capture_task
+        assert task is not None and not task.done()
+        task.cancel()
+        await asyncio.sleep(0)
+
+    async def test_coalesces_a_burst(self) -> None:
+        # A second capture cancels the first pending timer: a burst = ONE sync.
+        http_ingest._schedule_post_capture_sync()
+        first = http_ingest._post_capture_task
+        http_ingest._schedule_post_capture_sync()
+        second = http_ingest._post_capture_task
+        assert first is not second
+        await asyncio.sleep(0)  # let the cancelled first timer settle
+        assert first.done()
+        second.cancel()
+        await asyncio.sleep(0)
+
+    async def test_debounced_runs_auto_sync(self, monkeypatch) -> None:
+        ran: list[str] = []
+
+        async def _no_sleep(_seconds) -> None:
+            return
+
+        monkeypatch.setattr(http_ingest.asyncio, "sleep", _no_sleep)
+        monkeypatch.setattr(http_ingest, "_auto_sync_once", lambda: ran.append("synced"))
+        await http_ingest._debounced_post_capture_sync()
+        assert ran == ["synced"]

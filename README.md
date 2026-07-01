@@ -462,8 +462,16 @@ is set up and caught up in one step.
 **Set-and-forget:** `memex setup --sync` also enables **auto-sync**, so paired
 devices reconcile by themselves every 15 minutes while both are online (no env var,
 no cron). It is overlap sync, not a cloud relay: if the other device is off, that
-tick is skipped and catches up next time both are on. To sync immediately between
-ticks (e.g. to push the chat you are having right now), run:
+tick is skipped and catches up next time both are on. On top of the timer, a
+capture also **triggers a sync a few seconds after it lands**: when the Chrome
+extension captures a chat and Memex indexes it, that new conversation is pushed to
+your other devices right away (no need to run anything). A burst of captures (a
+backfill, several open tabs) is coalesced into one sync once it settles, and it
+only fires while both devices are on (for a dual-boot the other OS just picks up
+the change on its next boot). Turn just this off with `MEMEX_SYNC_ON_CAPTURE=false`;
+tune the coalescing window with `MEMEX_SYNC_ON_CAPTURE_DEBOUNCE_SECONDS` (default
+10). You can still sync immediately by hand between ticks (e.g. to push the chat
+you are having right now), with:
 
 ```bash
 memex sync now          # immediate two-way reconcile with every paired device

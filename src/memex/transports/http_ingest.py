@@ -384,6 +384,16 @@ async def ingest_conversation_endpoint(request: Request) -> JSONResponse:
             status_code=500,
         )
 
+    # A new/changed chat is now in the local store: debounce a sync so it reaches
+    # the user's other devices without waiting for the periodic tick. Fire-and-
+    # forget (never blocks or fails the capture response); no-op unless sync is on
+    # with a target. Guarded so a scheduling hiccup can never fail a capture.
+    if counts.get("conversations") or counts.get("chunks"):
+        try:
+            _schedule_post_capture_sync()
+        except Exception:
+            logger.exception("could not schedule post-capture sync (capture still ok)")
+
     return JSONResponse({"status": "ok", "uuid": payload.get("uuid"), **counts})
 
 
@@ -747,6 +757,57 @@ async def _auto_sync_loop() -> None:
         await asyncio.sleep(interval)
 
 
+# Debounced post-capture sync: after the capture server ingests a chat, propagate
+# it to the user's other devices without waiting for the periodic tick. A burst of
+# captures (a backfill, several open tabs) coalesces into ONE sync, fired once the
+# burst settles (each capture resets the timer), so a live chat reaches the other
+# devices in seconds rather than up to `sync_interval_seconds`.
+_post_capture_task: asyncio.Task[None] | None = None
+
+
+def _has_sync_target() -> bool:
+    """Whether a sync would have somewhere to go (a paired peer or a file folder)."""
+    try:
+        if peers.load_peers():
+            return True
+    except OSError:
+        pass
+    return file_sync.resolve_sync_dir() is not None
+
+
+async def _debounced_post_capture_sync() -> None:
+    """Wait out the debounce window, then run one sync off the event loop."""
+    try:
+        await asyncio.sleep(max(1, settings.sync_on_capture_debounce_seconds))
+    except asyncio.CancelledError:
+        return  # a newer capture rescheduled us, or the server is shutting down
+    try:
+        await asyncio.to_thread(_auto_sync_once)
+    except Exception:
+        logger.exception("post-capture sync failed")
+
+
+def _schedule_post_capture_sync() -> None:
+    """Debounce a sync after a capture: cancel any pending one and start a fresh timer.
+
+    Cheap and safe to call on every successful ingest. Short-circuits when the
+    feature is off, sync is disabled, or there is no target, so a single-device or
+    non-sync user schedules nothing. Requires a running event loop (the capture
+    server); a no-op if called without one (e.g. a unit test hitting the endpoint
+    without the app lifespan).
+    """
+    global _post_capture_task
+    if not settings.sync_on_capture or not _sync_is_enabled() or not _has_sync_target():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if _post_capture_task is not None and not _post_capture_task.done():
+        _post_capture_task.cancel()
+    _post_capture_task = loop.create_task(_debounced_post_capture_sync())
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app: Starlette) -> Any:
     """Start the auto-sync background task if enabled; cancel it on shutdown."""
@@ -766,6 +827,11 @@ async def _lifespan(_app: Starlette) -> Any:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        # Cancel any pending debounced post-capture sync too.
+        if _post_capture_task is not None and not _post_capture_task.done():
+            _post_capture_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _post_capture_task
 
 
 def build_app() -> Starlette:
