@@ -301,6 +301,14 @@ Then confirm the right binary: `which memex` (macOS/Linux) or `where memex` (Win
 
 **The one-command installer fails with a shell error.** The installer is POSIX `sh`. If you are on a very old or unusual shell and the pipe fails, fetch and run it with bash instead: `curl -LsSf <url>/install-pypi.sh | bash`.
 
+**Windows: `uv tool install` fails with "Acceso denegado (os error 5)" copying `memex-mcp.exe`.** Two causes, usually together:
+- **Claude Code / Claude Desktop is running** and its MCP child process holds the running `.exe`. Close Claude Code and Claude Desktop, then retry.
+- **Windows Defender blocks writing a brand-new `.exe`** even when nothing holds it. The tell: the destination file does not exist yet (`Test-Path "$env:USERPROFILE\.local\bin\memex-mcp.exe"` is `False`) but the copy still fails. Add a Defender exclusion for `%USERPROFILE%\.local\bin` and `%APPDATA%\uv`.
+
+Then re-run with `uv tool install --force memex-chats` (or `uv tool install --reinstall --refresh <spec>` when updating from a branch).
+
+**Windows: a paired device times out reaching your sync port (5777).** In sync-reachable mode the always-on server binds `0.0.0.0:5777`, but Windows Firewall silently drops inbound connections (the peer just times out, never "connection refused") until a rule allows the port. `memex setup --sync` adds it for you (idempotent, best-effort); if setup was not elevated it prints the one-time admin command to run yourself: `New-NetFirewallRule -DisplayName "Memex sync 5777" -Direction Inbound -Protocol TCP -LocalPort 5777 -Action Allow`.
+
 **The first backfill (or first ingest) is slow.** The first embed downloads a ~130 MB quantized model; that is one-time, later runs are fast. The backfill is incremental and safe to re-run, so a slow or interrupted first pass simply resumes where it left off.
 
 **Ingest uses too much memory.** Peak RAM scales with the embed batch size. Lower it: set `MEMEX_EMBED_BATCH_SIZE=1` (about 0.67 GB peak) in your environment or `.env`.

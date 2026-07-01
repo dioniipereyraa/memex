@@ -65,13 +65,24 @@ logger = logging.getLogger("memex.sync.file_sync")
 SNAPSHOT_SUFFIX = ".memexsync.gz"
 FORMAT_VERSION = 1
 
-# Anti-gzip-bomb guard: the most a single decompressed line (one record) may grow
-# to while streaming. Set well above the largest legitimate single-conversation
-# record (max_chunks_per_conversation chunks * a vector + text each, ~tens of MB),
-# but far below "inflate a tiny gzip into GBs". Unlike the network path, file sync
-# has no per-request body cap, so a big record is allowed; this only stops a
-# crafted/absurd line from exhausting memory.
+# Anti-gzip-bomb guards. A snapshot is attacker-shaped (anyone who can write the
+# shared folder), and gzip reaches ~1000:1 on repetitive JSON, so the decompressed
+# stream needs hard ceilings even when the compressed file is tiny:
+#  - `_MAX_HEADER_BYTES`: the header (first) line is the ONLY line parsed whole
+#    into memory (json.loads, then the reconcile diff builds dicts over its
+#    manifest), so it gets a tight cap. A manifest is just uuid+hash+timestamp+
+#    count per conversation (~240 bytes each), so 32 MB still admits ~140k
+#    conversations, far beyond any real store, while bounding the parse blow-up.
+#  - `_MAX_LINE_BYTES`: each subsequent RECORD line is streamed and parsed one at
+#    a time (memory stays bounded per record), so it keeps a generous cap, above
+#    the largest legitimate single-conversation record (~tens of MB) but far below
+#    "inflate a tiny gzip into GBs".
+#  - `_MAX_TOTAL_BYTES`: a running budget on the WHOLE decompressed stream, so a
+#    bomb of many small lines cannot force unbounded decompression. Set well above
+#    the largest legitimate full-store snapshot.
+_MAX_HEADER_BYTES = 32 * 1024 * 1024
 _MAX_LINE_BYTES = 256 * 1024 * 1024
+_MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 # Read the decompressed stream in fixed blocks (bounds the buffer while splitting
 # lines, independent of how the gzip is framed).
 _READ_BLOCK = 1024 * 1024
@@ -140,17 +151,26 @@ def _manifest_fingerprint(manifest: list[dict[str, Any]]) -> str:
 
 
 def _iter_decompressed_lines(fh: gzip.GzipFile) -> Iterator[str]:
-    """Yield decompressed lines, capping any single line at `_MAX_LINE_BYTES`.
+    """Yield decompressed lines under three anti-gzip-bomb bounds.
 
     Reads the gzip stream in fixed blocks and splits on newlines manually rather
     than trusting `for line in gzip_file`, so a snapshot with no newline (or one
-    enormous line) cannot inflate into unbounded memory.
+    enormous line) cannot inflate into unbounded memory. The HEADER (first) line
+    gets the tight `_MAX_HEADER_BYTES` cap (it is parsed whole into memory), each
+    RECORD line the generous `_MAX_LINE_BYTES` cap (it is streamed one at a time),
+    and the WHOLE stream a running `_MAX_TOTAL_BYTES` budget. Raises `ValueError`
+    on any breach; the caller (`read_header` / `import_once`) skips that file.
     """
     buf = b""
+    total = 0
+    yielded = 0
     while True:
         block = fh.read(_READ_BLOCK)
         if not block:
             break
+        total += len(block)
+        if total > _MAX_TOTAL_BYTES:
+            raise ValueError(f"snapshot exceeds {_MAX_TOTAL_BYTES} decompressed bytes; refusing")
         buf += block
         while True:
             nl = buf.find(b"\n")
@@ -160,8 +180,12 @@ def _iter_decompressed_lines(fh: gzip.GzipFile) -> Iterator[str]:
             buf = buf[nl + 1 :]
             if line:
                 yield line.decode("utf-8")
-        if len(buf) > _MAX_LINE_BYTES:
-            raise ValueError(f"snapshot line exceeds {_MAX_LINE_BYTES} bytes; refusing")
+                yielded += 1
+        # The first (still-unyielded) line is the header, capped tighter than the
+        # record lines that follow it.
+        cap = _MAX_HEADER_BYTES if yielded == 0 else _MAX_LINE_BYTES
+        if len(buf) > cap:
+            raise ValueError(f"snapshot line exceeds {cap} bytes; refusing")
     if buf:
         yield buf.decode("utf-8")
 
@@ -183,7 +207,10 @@ def read_header(path: Path) -> dict[str, Any] | None:
             return None
     except FileNotFoundError:
         return None
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
+        # RecursionError: a header whose JSON is nested absurdly deep (a crafted
+        # snapshot). Caught like a corrupt file so it fails soft to None instead
+        # of propagating out of the import loop.
         logger.warning("Could not read snapshot header %s: %s", path, e)
         return None
 
@@ -288,36 +315,39 @@ def import_once(
     peer_files = list_peer_snapshots(sync_dir, device_name)
 
     for path in peer_files:
-        header = read_header(path)
-        if header is None:
-            continue
-        if header.get("embed_model") != model or header.get("embed_dim") != dim:
-            logger.warning(
-                "Skipping snapshot %s: embed mismatch (file %s/%s, local %s/%s).",
-                path.name,
-                header.get("embed_model"),
-                header.get("embed_dim"),
-                model,
-                dim,
-            )
-            incompatible += 1
-            continue
-        remote_manifest = header.get("manifest")
-        if not isinstance(remote_manifest, list):
-            logger.warning("Snapshot %s has no usable manifest; skipping.", path.name)
-            continue
-        to_pull, to_push, file_forks = records.select_reconcile(
-            records.local_manifest(conn), remote_manifest
-        )
-        would_push += len(to_push)
-        forks += len(file_forks)
-        if not to_pull:
-            continue
-        wanted = set(to_pull)
-        # Stream the wanted records. A read error (a truncated/over-large line, an
-        # I/O fault on a synced folder) aborts THIS file's import with a logged
-        # error rather than crashing the whole sync; other peer files still run.
+        # One guard around the WHOLE per-file body (header read + diff + record
+        # stream), so a single poisoned/corrupt snapshot (an over-deep header, a
+        # truncated/over-large line, an I/O fault on a synced folder) is skipped
+        # with a logged error while every OTHER peer file still syncs. Without it,
+        # a raise from read_header/select_reconcile would abort the whole loop and
+        # the healthy peers would silently stop converging.
         try:
+            header = read_header(path)
+            if header is None:
+                continue
+            if header.get("embed_model") != model or header.get("embed_dim") != dim:
+                logger.warning(
+                    "Skipping snapshot %s: embed mismatch (file %s/%s, local %s/%s).",
+                    path.name,
+                    header.get("embed_model"),
+                    header.get("embed_dim"),
+                    model,
+                    dim,
+                )
+                incompatible += 1
+                continue
+            remote_manifest = header.get("manifest")
+            if not isinstance(remote_manifest, list):
+                logger.warning("Snapshot %s has no usable manifest; skipping.", path.name)
+                continue
+            to_pull, to_push, file_forks = records.select_reconcile(
+                records.local_manifest(conn), remote_manifest
+            )
+            would_push += len(to_push)
+            forks += len(file_forks)
+            if not to_pull:
+                continue
+            wanted = set(to_pull)
             for record in _iter_records(path, wanted):
                 try:
                     records.insert_record(conn, record, dim)
@@ -329,8 +359,9 @@ def import_once(
                         path.name,
                     )
                     failed += 1
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RecursionError) as e:
             logger.warning("Stopped reading snapshot %s early: %s", path.name, e)
+            continue
 
     return FileSyncSummary(
         device=device_name,

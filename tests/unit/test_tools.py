@@ -775,6 +775,23 @@ class TestListRecentChats:
         result = tools.list_recent_chats(db, limit=9999)
         assert result["count"] <= 100
 
+    def test_long_summary_is_truncated(self, db: sqlite3.Connection) -> None:
+        # Like search_chats/find_related: summaries can weigh 2-3k chars, and up
+        # to 100 of them in one list response would blow the MCP client token cap.
+        conv = Conversation(
+            uuid="big-summary",
+            title="Conv",
+            summary="S" * 3000,
+            source=Source.CONVERSATIONS,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        repo.insert_conversation(db, conv)
+        result = tools.list_recent_chats(db, limit=10)
+        summary = result["chats"][0]["summary"]
+        assert len(summary) < 3000
+        assert summary.endswith("…[truncated]")
+
     def test_invalid_source_returns_error(self, db: sqlite3.Connection) -> None:
         result = tools.list_recent_chats(db, source="basura")
         assert "error" in result

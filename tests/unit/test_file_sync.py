@@ -284,6 +284,57 @@ class TestSafety:
             fh.write("x" * 500)  # one 500-byte line, no newline, over the 64 cap
         assert file_sync.read_header(path) is None
 
+    def test_oversized_header_refused(self, tmp_path, monkeypatch) -> None:
+        # The header line is parsed whole into memory (json.loads + the diff), so
+        # it has a tighter cap than record lines. An over-cap header must be
+        # refused (read_header None), never parsed, even if it is under the record
+        # cap. Shrink the header cap for a cheap check.
+        monkeypatch.setattr(file_sync, "_MAX_HEADER_BYTES", 64)
+        path = tmp_path / "bighdr.memexsync.gz"
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            fh.write(json.dumps({"format": 1, "pad": "x" * 500}))  # >64B header, no NL
+        assert file_sync.read_header(path) is None
+
+    def test_deeply_nested_header_refused(self, tmp_path) -> None:
+        # A header whose JSON is nested absurdly deep makes json.loads raise
+        # RecursionError (a tiny file, so no size cap catches it). read_header must
+        # catch it and fail soft to None, not propagate out of the import loop.
+        path = tmp_path / "nested.memexsync.gz"
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            fh.write("[" * 5000 + "]" * 5000)
+        assert file_sync.read_header(path) is None
+
+    def test_total_decompression_budget_refused(self, tmp_path, monkeypatch) -> None:
+        # Many small lines (each under the per-line cap) must still be bounded by
+        # the total-decompressed-bytes budget, so a bomb of small lines cannot
+        # force unbounded decompression. Shrink the total budget for the test.
+        monkeypatch.setattr(file_sync, "_MAX_TOTAL_BYTES", 256 * 1024)
+        path = tmp_path / "manylines.memexsync.gz"
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            fh.write(json.dumps({"format": 1}) + "\n")
+            for _ in range(50):
+                fh.write("y" * 20000 + "\n")  # ~1 MB decompressed total
+        with pytest.raises(ValueError, match="decompressed bytes"):
+            list(file_sync._iter_records(path, {"never"}))
+
+    def test_poisoned_early_file_does_not_abort_other_peers(self, tmp_path) -> None:
+        # A poisoned snapshot that sorts BEFORE a healthy one (glob is sorted) must
+        # skip only itself; the healthy peer must still import. Before the fix a
+        # RecursionError from the poisoned header propagated out of the whole loop,
+        # so the healthy peer silently stopped converging.
+        a, b = _conn(), _conn()
+        _seed(a, "c1", "h1", _dt(24))
+        # Healthy peer file, name sorts LAST.
+        file_sync.export_snapshot(a, tmp_path, "zzz-good", MODEL, DIM)
+        # Poisoned file, name sorts FIRST, with a RecursionError-triggering header.
+        poisoned = tmp_path / "aaa-bad.memexsync.gz"
+        with gzip.open(poisoned, "wt", encoding="utf-8") as fh:
+            fh.write("[" * 5000 + "]" * 5000)
+        sb = file_sync.import_once(b, tmp_path, "devb", MODEL, DIM)
+        assert sb.peers_seen == 2
+        assert sb.pulled == 1  # the healthy peer's conversation still imported
+        assert repo.get_conversation(b, "c1") is not None
+
     def test_malformed_record_line_skipped(self, tmp_path) -> None:
         # A valid header followed by a non-JSON record line: the record is skipped.
         path = tmp_path / "mix.memexsync.gz"

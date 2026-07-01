@@ -6,6 +6,17 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-07-01: Broad security audit (multi-agent) + fixes (0.4.4)
+
+A fresh security audit (it had been a while since the last red-team rounds), run as a multi-agent workflow: finders per dimension (file sync, network sync, capture + auto-sync, MCP tools, install/services, redaction/storage, remote OAuth) in parallel, each finding adversarially verified by an independent skeptic to drop false positives and already-accepted residuals. Still 0.4.4, branch `feature/install-sync-reachable`.
+
+- **Result: 5 findings confirmed and fixed, no data-exposure holes.** All are availability/robustness on already-trusted boundaries (a shared sync folder / a paired peer are "only share/pair what you control"). The remote connector dimension found nothing (the 4 prior rounds still hold); network sync, capture, and install/services surfaced only false positives (e.g. the firewall rule "breadth" is the already-accepted `0.0.0.0` exposure; the auto-sync lock "leak" is released on process exit; the messages-not-capped-in-`insert_record` is bounded by the body cap).
+- **[medium] File-sync gzip-bomb via the header.** The only guard was a 256 MB per-line cap, but the header line (the whole manifest) is `json.loads`'d into memory, and a 256 MB decompressed header inflates to ~GBs of Python dicts -> OOM of the always-on serve on the next auto-sync tick. Fix (`sync/file_sync.py`): a tight header cap (`_MAX_HEADER_BYTES` 32 MB, still ~140k conversations), a running total-decompressed budget (`_MAX_TOTAL_BYTES` 4 GB) so a many-small-lines bomb also aborts, and `read_header` now catches `RecursionError` (a hyper-nested header) and fails soft.
+- **[low] File-sync per-file resilience.** `read_header` + `select_reconcile` ran OUTSIDE the per-file try in `import_once`, so a poisoned file that sorts first (glob is sorted) aborted the WHOLE loop (every later peer + the self-export), silently stalling a healthy device's convergence. Fix: wrap the entire per-file body so one bad snapshot skips only itself.
+- **[medium x2] Redaction ReDoS.** Two rules had the lone unbounded lazy quantifiers among `_RULES`/`_ASSIGNMENT_RE`: `otpauth://[^\s]*?[?&]secret=` and the `x-[a-z-]*?(?:key|token|...)` header branch. On a crafted whitespace-free blob reaching the `claude_code` ingest path both are O(n^2) (measured ~12 s and ~8 s at ~160 KB / 32 KB, blocking ingest under the single-flight lock). Fixed by bounding them (`{0,256}?` / `{0,32}?`); verified linear (sub-0.1 s) and still matching real otpauth URIs and `X-Api-Key:`-style headers.
+- **[low] `list_recent_chats` response bound.** It emitted `summary` verbatim while the sibling read tools truncate to `SEARCH_SUMMARY_MAX_CHARS` (500); up to 100 long summaries in one response could overflow the MCP client token cap. Truncated to match.
+- **Validation.** +7 regression tests (2 ReDoS timing, 4 file-sync anti-bomb/isolation, 1 list truncation), **675 green**, ruff + format + core mypy clean. Empirically re-measured each ReDoS before/after and confirmed the file-sync caps reject a crafted header/total while a valid header still parses. Fixes are localized hardening; no architecture/structure change (the user's explicit constraint). Mistakes log + `docs/internal/security-notes.md` updated.
+
 ## 2026-07-01: Live dual-boot validation + MCP write tools + Windows firewall (0.4.4)
 
 Validated file sync on the user's REAL dual-boot and folded in two follow-ups the test surfaced. Still 0.4.4, branch `feature/install-sync-reachable`.

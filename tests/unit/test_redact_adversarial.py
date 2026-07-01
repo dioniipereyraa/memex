@@ -175,6 +175,27 @@ class TestPerfQuadraticRegression:
         redact_secrets(blob)
         assert time.perf_counter() - start < 6.0
 
+    def test_packed_otpauth_prefixes_fast(self):
+        # The `otp-secret` rule used an UNBOUNDED lazy `[^\s]*?` before
+        # `[?&]secret=`, the lone rule breaking the module's bounded-quantifier
+        # invariant. A whitespace-free run of `otpauth://` with no `secret=` made
+        # each anchor expand to end-of-input: clean O(n^2) (~12 s at 16k reps).
+        # Bounded to `{0,256}?` now; must stay near-linear.
+        blob = "otpauth://" * 20000  # ~200 KB, no newlines, no `secret=`
+        start = time.perf_counter()
+        redact_secrets(blob)
+        assert time.perf_counter() - start < 3.0
+
+    def test_packed_x_header_prefixes_fast(self):
+        # The assignment rule's `x-[a-z-]*?(?:key|token|...)` branch had an
+        # unbounded lazy quantifier over a class containing both `x` and `-`, so a
+        # contiguous `x-x-x-...` run backtracked quadratically (~8 s at 16k pairs).
+        # Bounded to `{0,32}?` now; must stay near-linear.
+        blob = "x-" * 20000  # ~40 KB run of `x-` with no trailing `[:=]` value
+        start = time.perf_counter()
+        redact_secrets(blob)
+        assert time.perf_counter() - start < 3.0
+
 
 class TestMustRedact:
     @pytest.mark.parametrize("secret,line", MUST_REDACT)
