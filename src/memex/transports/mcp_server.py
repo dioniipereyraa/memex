@@ -296,8 +296,158 @@ def find_related(
     return _serialize(result)
 
 
+# --------------------------------------------------------------------------
+# Write / maintenance tools. Registered ONLY on the local stdio server (never
+# the remote claude.ai connector) so Claude Code can index + sync on request
+# instead of the user dropping to a terminal. They mutate the store / reach the
+# network, so exposing them to a remote client would be a much larger surface.
+# --------------------------------------------------------------------------
+
+
+def index_terminal_sessions() -> str:
+    """Index the user's local Claude Code / terminal sessions into Memex now.
+
+    Runs the same incremental scan as `memex ingest-claude-code`: reads
+    `~/.claude/projects/**/*.jsonl` and ingests new or changed sessions
+    (source `claude_code`) so they become searchable. Unchanged sessions are
+    skipped, so this is cheap. The CURRENT session is captured up to what
+    Claude Code has flushed to its transcript on disk.
+
+    USE when the user asks to index / capture / save their terminal or Claude
+    Code work into their memory ("indexá esta charla", "index my sessions",
+    "guardá esta conversación en memex"). To also send it to the user's other
+    devices, follow with `sync_now`.
+
+    Returns:
+        JSON with `status` and, on success, `indexed` (new sessions),
+        `unchanged`, `messages`, `chunks`, `errors`.
+    """
+    from pathlib import Path
+
+    from memex import ingest_lock
+    from memex.config import settings
+    from memex.core.embeddings.lazy import LazyEmbedder
+    from memex.core.ingest.pipeline import ingest_claude_code_sessions
+
+    # Share the single-flight ingest lock with the CLI / backstop / capture
+    # worker so two ingests never load the embedding model at once. Non-blocking:
+    # if one is already running, report it rather than stack a second model load.
+    lock = ingest_lock.acquire_nonblocking(settings.db_path)
+    if lock is None:
+        return _serialize(
+            {"status": "busy", "message": "Another Memex ingest is running; try again shortly."}
+        )
+    try:
+        root = Path.home() / ".claude" / "projects"
+        if not root.exists():
+            return _serialize({"status": "empty", "message": f"No sessions found at {root}."})
+        # Lazy embedder shared with the search path: the model loads only if there
+        # is something new to embed, so a no-op scan stays cheap.
+        summary = ingest_claude_code_sessions(_get_conn(), LazyEmbedder(_get_embedder), root)
+        return _serialize(
+            {
+                "status": "ok",
+                "indexed": summary.conversations,
+                "unchanged": summary.skipped_unchanged_conversations,
+                "messages": summary.messages,
+                "chunks": summary.chunks,
+                "errors": len(summary.errors),
+            }
+        )
+    except Exception as e:
+        logger.exception("Error in index_terminal_sessions")
+        return _serialize({"error": f"Internal error ({type(e).__name__})."})
+    finally:
+        ingest_lock.release(lock)
+
+
+def sync_now() -> str:
+    """Sync Memex with the user's other devices now (paired peers + shared folder).
+
+    Runs an immediate two-way reconcile with every paired device and, if a
+    shared sync folder is configured (the dual-boot mode), a file sync. It
+    propagates what is ALREADY indexed locally, so to include the CURRENT
+    terminal session, call `index_terminal_sessions` first.
+
+    USE when the user asks to sync / push / send their conversations to their
+    other devices now ("sincronizá con mis dispositivos", "sync now", "mandá
+    esto a la mac"). Requires sync to be enabled (`memex setup --sync` or
+    `memex sync enable`).
+
+    Returns:
+        JSON with `status` and, on success, `peers` (per-device pulled/pushed/
+        forks) and `file_sync` (folder pulled/forks), or a message explaining
+        why nothing ran (disabled, or no target configured).
+    """
+    from memex.sync import client, file_sync, peers
+    from memex.sync import state as sync_state
+
+    if not sync_state.is_enabled():
+        return _serialize(
+            {
+                "status": "disabled",
+                "message": "Sync is off. Turn it on with `memex setup --sync` "
+                "or `memex sync enable`.",
+            }
+        )
+    conn = _get_conn()
+    embedder = _get_embedder()  # model_name/dim only; sync never re-embeds
+    model, dim = embedder.model_name, embedder.dim
+
+    peer_results: list[dict[str, Any]] = []
+    for peer in peers.load_peers():
+        try:
+            s = client.reconcile(conn, peer, local_model=model, local_dim=dim)
+        except Exception:
+            logger.exception("sync_now: reconcile with %s failed", peer.name)
+            peer_results.append({"peer": peer.name, "error": "unreachable_or_failed"})
+            continue
+        if s.refused_mismatch:
+            peer_results.append({"peer": peer.name, "refused": "embedding model/dim mismatch"})
+        else:
+            peer_results.append(
+                {
+                    "peer": peer.name,
+                    "pulled": s.pulled,
+                    "pushed": s.pushed,
+                    "failed": s.failed,
+                    "forks": s.forks,
+                }
+            )
+
+    file_result: dict[str, Any] | None = None
+    sync_dir = file_sync.resolve_sync_dir()
+    if sync_dir is not None:
+        try:
+            fs = file_sync.sync_once(conn, sync_dir, file_sync.resolve_device_name(), model, dim)
+            file_result = {
+                "folder": str(sync_dir),
+                "pulled": fs.pulled,
+                "failed": fs.failed,
+                "forks": fs.forks,
+            }
+        except Exception:
+            logger.exception("sync_now: file sync failed")
+            file_result = {"folder": str(sync_dir), "error": "file_sync_failed"}
+
+    if not peer_results and file_result is None:
+        return _serialize(
+            {
+                "status": "no_targets",
+                "message": "No paired devices or shared folder. Pair one with "
+                "`memex sync connect`, or set up file sync with `memex setup --sync-dir`.",
+            }
+        )
+    return _serialize({"status": "ok", "peers": peer_results, "file_sync": file_result})
+
+
 def build_server(*, auth: AuthProvider | None = None) -> FastMCP:
-    """Create a FastMCP server with the 4 Memex tools registered.
+    """Create a FastMCP server with the Memex tools registered.
+
+    The 4 read tools are always registered. The write/maintenance tools
+    (`index_terminal_sessions`, `sync_now`) are registered ONLY for the local
+    stdio server (`auth is None`), never the remote claude.ai connector, since
+    they mutate the store and reach the network.
 
     Args:
         auth: Optional auth provider. `None` for stdio (the local client
@@ -307,4 +457,7 @@ def build_server(*, auth: AuthProvider | None = None) -> FastMCP:
     server: FastMCP = FastMCP("memex", auth=auth)
     for fn in (search_chats, get_chat, list_recent_chats, find_related):
         server.tool(fn, run_in_thread=False)
+    if auth is None:
+        for write_fn in (index_terminal_sessions, sync_now):
+            server.tool(write_fn, run_in_thread=False)
     return server

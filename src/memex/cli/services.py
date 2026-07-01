@@ -508,6 +508,53 @@ def _windows_register_task(task_name: str, render: Callable[[], str]) -> str | N
     return None
 
 
+def windows_ensure_sync_firewall(port: int = 5777) -> tuple[bool, str]:
+    """Best-effort: ensure an inbound TCP allow rule for the sync port on Windows.
+
+    In sync-reachable mode the always-on serve binds `0.0.0.0:<port>`, but Windows
+    Firewall silently drops inbound connections (a peer just times out) until a
+    rule allows the port. This adds one, idempotently by rule name. Needs admin; if
+    it cannot add it (setup not elevated), returns the exact one-time command so the
+    user runs it themselves. Never raises: returns (ok, message).
+    """
+    rule = f"Memex sync {port}"
+    manual = (
+        f'run once in an admin PowerShell: New-NetFirewallRule -DisplayName "{rule}" '
+        f"-Direction Inbound -Protocol TCP -LocalPort {port} -Action Allow"
+    )
+    try:
+        present = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if present.returncode == 0:
+            return True, f"firewall port {port} already open (rule '{rule}')"
+        added = subprocess.run(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                f"name={rule}",
+                "dir=in",
+                "action=allow",
+                "protocol=TCP",
+                f"localport={port}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if added.returncode == 0:
+            return True, f"opened inbound TCP {port} (rule '{rule}')"
+        return False, f"could not open TCP {port} (needs admin); {manual}"
+    except (OSError, subprocess.SubprocessError):
+        return False, f"could not run netsh; {manual}"
+
+
 def windows_install_wheel(action: str) -> list[str]:
     """install/uninstall/status the Scheduled Tasks for a wheel install.
 

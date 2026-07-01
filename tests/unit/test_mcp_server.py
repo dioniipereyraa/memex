@@ -140,3 +140,109 @@ class TestExceptionHandling:
             # Crucially, it does NOT leak the raw message (which could carry paths/secrets).
             assert "secret" not in payload["error"]
             assert ".env" not in payload["error"]
+
+
+# --------------------------------------------------------------------------
+# Write / maintenance tools (local stdio only): index_terminal_sessions, sync_now
+# --------------------------------------------------------------------------
+
+LOCAL_ONLY_TOOLS = ("index_terminal_sessions", "sync_now")
+
+
+async def _has_tool(srv, name: str) -> bool:
+    """True if `name` is registered on `srv` (get_tool may return None or raise)."""
+    try:
+        return await srv.get_tool(name) is not None
+    except Exception:
+        return False
+
+
+class TestWriteTools:
+    @pytest.mark.asyncio
+    async def test_local_server_registers_write_tools(self, server) -> None:
+        for name in LOCAL_ONLY_TOOLS:
+            tool = await server.get_tool(name)
+            assert tool is not None and tool.description
+
+    @pytest.mark.asyncio
+    async def test_stdio_entrypoint_has_write_tools(self) -> None:
+        for name in LOCAL_ONLY_TOOLS:
+            assert await _has_tool(stdio.server, name)
+
+    @pytest.mark.asyncio
+    async def test_remote_server_excludes_write_tools(self) -> None:
+        # SECURITY: the write/sync tools must never be exposed on the remote
+        # (authed) claude.ai connector, only the local stdio server.
+        from unittest.mock import MagicMock
+
+        from fastmcp.server.auth import AuthProvider
+
+        remote = build_server(auth=MagicMock(spec=AuthProvider))
+        for name in TOOL_NAMES:  # read tools still present
+            assert await _has_tool(remote, name)
+        for name in LOCAL_ONLY_TOOLS:  # write tools absent
+            assert not await _has_tool(remote, name)
+
+    def test_sync_now_refuses_when_disabled(self, monkeypatch) -> None:
+        monkeypatch.setattr("memex.sync.state.is_enabled", lambda *a, **k: False)
+        payload = json.loads(mcp_server.sync_now())
+        assert payload["status"] == "disabled"
+
+    def test_sync_now_no_targets(self, monkeypatch, mcp_server_with_temp_db) -> None:
+        monkeypatch.setattr("memex.sync.state.is_enabled", lambda *a, **k: True)
+        monkeypatch.setattr("memex.sync.peers.load_peers", lambda *a, **k: [])
+        monkeypatch.setattr("memex.sync.file_sync.resolve_sync_dir", lambda: None)
+        payload = json.loads(mcp_server.sync_now())
+        assert payload["status"] == "no_targets"
+
+    def test_sync_now_reconciles_peer(self, monkeypatch, mcp_server_with_temp_db) -> None:
+        from memex.sync import client as sync_client
+        from memex.sync.peers import Peer
+
+        monkeypatch.setattr("memex.sync.state.is_enabled", lambda *a, **k: True)
+        monkeypatch.setattr(
+            "memex.sync.peers.load_peers",
+            lambda *a, **k: [Peer(name="mac", url="http://127.0.0.1:5777", token="t")],
+        )
+        monkeypatch.setattr("memex.sync.file_sync.resolve_sync_dir", lambda: None)
+        monkeypatch.setattr(
+            "memex.sync.client.reconcile",
+            lambda conn, peer, *, local_model, local_dim: sync_client.ReconcileSummary(
+                peer=peer.name, pulled=2, pushed=1, failed=0
+            ),
+        )
+        payload = json.loads(mcp_server.sync_now())
+        assert payload["status"] == "ok"
+        assert payload["peers"][0]["peer"] == "mac"
+        assert payload["peers"][0]["pulled"] == 2
+        assert payload["peers"][0]["pushed"] == 1
+
+    def test_sync_now_reports_file_sync(self, monkeypatch, mcp_server_with_temp_db) -> None:
+        import memex.sync.file_sync as fsmod
+
+        monkeypatch.setattr("memex.sync.state.is_enabled", lambda *a, **k: True)
+        monkeypatch.setattr("memex.sync.peers.load_peers", lambda *a, **k: [])
+        monkeypatch.setattr("memex.sync.file_sync.resolve_sync_dir", lambda: "/shared")
+        monkeypatch.setattr("memex.sync.file_sync.resolve_device_name", lambda: "mac")
+        monkeypatch.setattr(
+            "memex.sync.file_sync.sync_once",
+            lambda *a, **k: fsmod.FileSyncSummary(
+                device="mac",
+                peers_seen=1,
+                pulled=3,
+                failed=0,
+                would_push=0,
+                forks=0,
+                incompatible=0,
+                exported=True,
+            ),
+        )
+        payload = json.loads(mcp_server.sync_now())
+        assert payload["status"] == "ok"
+        assert payload["file_sync"]["pulled"] == 3
+        assert payload["file_sync"]["folder"] == "/shared"
+
+    def test_index_terminal_sessions_busy_lock(self, monkeypatch) -> None:
+        monkeypatch.setattr("memex.ingest_lock.acquire_nonblocking", lambda *a, **k: None)
+        payload = json.loads(mcp_server.index_terminal_sessions())
+        assert payload["status"] == "busy"

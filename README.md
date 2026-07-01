@@ -217,7 +217,7 @@ Once `memex setup` finishes, nothing else needs launching: the capture server an
 the indexers run in the background. You use Memex three ways.
 
 **1. From Claude Code (the main way).** Setup registers the MCP server, so Claude
-Code can search your whole history through four tools:
+Code can search your whole history and keep it fresh through these tools:
 
 | Tool | What it does |
 |---|---|
@@ -225,9 +225,14 @@ Code can search your whole history through four tools:
 | `get_chat` | Fetch a full conversation by id |
 | `list_recent_chats` | Your most recent conversations |
 | `find_related` | Conversations related to a topic or snippet |
+| `index_terminal_sessions` | Index your local Claude Code sessions now (so the current one becomes searchable) |
+| `sync_now` | Sync with your other devices now (paired peers + the dual-boot shared folder) |
 
 Just ask Claude Code naturally ("what did we decide about X in my claude.ai
-chats?") and it calls these. To have context injected automatically at the start
+chats?", "index this session", "sync this to my other devices") and it calls
+these. `index_terminal_sessions` and `sync_now` are local-only (never exposed to
+the remote claude.ai connector). Note `sync_now` sends what is already indexed, so
+to include the session you are in, ask Claude to `index_terminal_sessions` first. To have context injected automatically at the start
 of a session, add the optional [SessionStart hook](#proactive-context-injection-sessionstart-hook).
 
 **2. From the terminal.** `memex search "..."`, `memex stats`, `memex doctor`,
@@ -308,6 +313,10 @@ Then confirm the right binary: `which memex` (macOS/Linux) or `where memex` (Win
 - `get_chat(uuid, messages_limit=10, messages_offset=0)` fetches a conversation with its messages, paginated. `raw_content` is omitted; each message is truncated to 1500 chars to stay inside the client's token budget (worst-case response ~17k chars). Long chats are paginated with `messages_offset`; max `messages_limit` is 100.
 - `list_recent_chats(limit=10, source?)` lists the latest chats ordered by last update.
 - `find_related(context, limit=5, repo?)` takes free-form text (a paragraph, a file contents, the current discussion) and returns chats that are semantically related. Pure vector search, no FTS, capped at 4000 input chars. Useful when you want "more like this" without typing a keyword query.
+
+The stdio server (`memex-mcp`, used by Claude Code) also exposes two **write/maintenance** tools, so you can ask Claude to keep your memory fresh instead of dropping to a terminal. They are **local-only**: never registered on the remote claude.ai connector (they mutate the store and reach the network).
+- `index_terminal_sessions()` runs the incremental `ingest-claude-code` scan (indexes new/changed local Claude Code sessions, including the current one up to what is flushed to its transcript). Shares the single-flight ingest lock; returns counts.
+- `sync_now()` runs an immediate two-way reconcile with every paired device and, if a shared folder is configured, a file sync. Requires sync enabled. It propagates what is ALREADY indexed, so to include the current session call `index_terminal_sessions` first.
 
 Search is also reachable from the CLI with `memex search "query" --mode {hybrid|semantic|lexical}`. For databases created before the hybrid FTS5 work, run `memex reindex-fts` once to populate the lexical index.
 

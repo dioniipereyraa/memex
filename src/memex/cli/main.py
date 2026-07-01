@@ -1394,6 +1394,15 @@ def setup(
                 else "on; start Tailscale for an address",
             )
         )
+        # Windows drops inbound to 0.0.0.0:5777 until a firewall rule allows it, so
+        # a peer times out even though the serve is up. Open it here (idempotent;
+        # falls back to a printed admin command if setup is not elevated). No-op on
+        # macOS/Linux, where sync-reachable needs no firewall change.
+        if sys.platform == "win32":
+            from memex.cli import services
+
+            fw_ok, fw_msg = services.windows_ensure_sync_firewall(5777)
+            results.append(("Firewall", "OK" if fw_ok else "WARN", fw_msg))
 
     # 4b. File-based sync (dual-boot): create the shared folder + initial sync.
     if file_dir_resolved is not None and file_device is not None:

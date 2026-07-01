@@ -6,6 +6,17 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-07-01: Live dual-boot validation + MCP write tools + Windows firewall (0.4.4)
+
+Validated file sync on the user's REAL dual-boot and folded in two follow-ups the test surfaced. Still 0.4.4, branch `feature/install-sync-reachable`.
+
+- **Dual-boot file sync VALIDATED LIVE.** Linux: mounted the Windows NTFS partition (`ntfs-3g`, the kernel `ntfs3` was absent), added an `/etc/fstab` entry (`nofail`, `uid=1000`) so it auto-mounts, then `memex setup --sync-dir /mnt/windows/memex-sync --device-name linux` (wrote `linux.memexsync.gz`). Windows: reinstalled 0.4.4 from the branch, `memex setup --sync-dir C:\memex-sync --device-name windows` -> **File sync pulled 161 conversations from Linux's snapshot**. The dual-boot mode works on real hardware. Gotcha to remember: the NTFS write test must pass first (Fast Startup / hibernation leaves NTFS read-only).
+- **Mac<->Windows network sync re-validated (and two real snags fixed live).** From the Mac, `sync status --check` showed Windows `offline` even though Tailscale ping worked. Root causes: (1) the Mac's stored `windows` peer token was STALE (Windows regenerated its token on the reinstall) -> re-paired with `sync connect` using the new token; (2) the Mac's HTTP to `:5777` TIMED OUT (not refused) = **Windows Firewall dropping inbound** -> opened the port. After both, `reconcile` pulled 2 / pushed 14, and I retrieved a Windows CLI session from the Mac and summarized it (a chat about VW EA888/EA113 engines + buying a cheap car in Argentina). End-to-end cross-device recall proven: chat on Windows CLI -> indexed -> network sync -> read on the Mac.
+- **Local MCP write tools (user-requested).** The Windows-side Claude in that session literally could not honor "sincronizá este chat" because the MCP only had read tools. Added `index_terminal_sessions` (runs the ingest-claude-code scan, shares the ingest lock) and `sync_now` (reconcile peers + file sync, requires the gate) to `mcp_server.py`, registered in `build_server` ONLY when `auth is None` (stdio). Security-critical: a test asserts the remote (authed) server EXCLUDES them, since they mutate the store + reach the network. Now "indexá esta charla" / "sincronizá con mis dispositivos" work from Claude Code without a terminal.
+- **Windows firewall auto-open.** `services.windows_ensure_sync_firewall(port)` (best-effort netsh, idempotent by rule name, falls back to a printed admin command if not elevated); `setup --sync` on Windows calls it and adds a "Firewall" row. This is the fix for the live snag above so a fresh Windows install is reachable without hand-opening the port. No-op on macOS/Linux and for file-sync (no network). Flagged for live Windows validation (written from the Mac).
+- **Validation.** 11 new tests (7 MCP write-tool incl. the remote-excludes security check + 4 firewall), **668 green**, ruff + format + core mypy clean.
+- **Next.** Live-validate the firewall auto-open on Windows; then the PR (deferred by the user until publish) -> tag/publish 0.4.4.
+
 ## 2026-06-30: File-based sync for dual-boot (0.4.4)
 
 The user runs a dual-boot machine (Linux + Windows on the same disk, never on at the same time), so network sync (overlap sync, both devices online at once) can never reconcile the two OSes directly. Built a second sync mode that uses a **shared folder** instead of a live connection. On branch `feature/install-sync-reachable` (same branch as 0.4.3, bumped to 0.4.4).

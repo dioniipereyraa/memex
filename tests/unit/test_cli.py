@@ -880,3 +880,56 @@ class TestSetupSyncMode:
         assert sync_state.is_serve_sync() is False
         assert sync_state.is_enabled() is False
         assert sync_state.is_sync_auto() is False
+
+
+class TestWindowsSyncFirewall:
+    """`windows_ensure_sync_firewall` best-effort rule (mocked netsh)."""
+
+    @staticmethod
+    def _fake_run(show_rc: int, add_rc: int):
+        import subprocess
+
+        def run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            rc = show_rc if "show" in cmd else add_rc
+            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+        return run
+
+    def test_rule_already_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        monkeypatch.setattr(subprocess, "run", self._fake_run(0, 0))
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert ok and "already open" in msg
+
+    def test_adds_rule_when_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        monkeypatch.setattr(subprocess, "run", self._fake_run(1, 0))
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert ok and "opened inbound TCP 5777" in msg
+
+    def test_reports_manual_command_when_not_admin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        monkeypatch.setattr(subprocess, "run", self._fake_run(1, 1))
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert not ok and "admin" in msg and "New-NetFirewallRule" in msg
+
+    def test_netsh_missing_is_not_fatal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        def boom(*a, **k):  # type: ignore[no-untyped-def]
+            raise FileNotFoundError("netsh")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert not ok and "netsh" in msg
