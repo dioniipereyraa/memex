@@ -262,9 +262,13 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   [--device-name <name>]` creates the folder, persists `sync_dir`/`device_name` in
   the gate, enables the gate + auto-sync, does an initial export/import, and prints
   the one command for the other OS. New `memex sync file-sync`; `memex sync now`
-  folds it in; `status` shows it. Anti-gzip-bomb line cap + per-file resilience;
-  `insert_record` re-asserts the same guards as the network path. 30 new tests
-  (24 file-sync + 6 sync), 649 green.
+  folds it in; `status` shows it. Anti-gzip-bomb decompression caps (after the
+  2026-07-01 audit + the 2026-07-02 robustness round: header 32 MB, record line
+  96 MB, 4 GB total stream) + full per-file isolation (any corruption in one
+  snapshot, truncated gzip included, skips only that file and the device's own
+  snapshot self-heals); `insert_record` re-asserts the same guards as the
+  network path. 30 new tests at landing (24 file-sync + 6 sync) plus the
+  hardening rounds' regressions; 681 green as of 2026-07-02.
 - [ ] **Phase 4 (future, optional): cloud relay / accounts** for async handoff
   without both devices on. Out of scope until the project grows; the local P2P
   mode (network + file-based) stays the default/private path.

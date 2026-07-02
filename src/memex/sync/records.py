@@ -78,7 +78,11 @@ def local_manifest(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def _by_uuid(manifest: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for item in manifest:
-        if isinstance(item, dict) and item.get("uuid"):
+        # A manifest is attacker-shaped on both transports (a pushed body, a
+        # snapshot header). The uuid must be a non-empty string: anything else
+        # (a list, a number) would be unhashable here or poison the diff, and a
+        # raise from the diff escapes the callers' per-file/per-peer guards.
+        if isinstance(item, dict) and isinstance(item.get("uuid"), str) and item["uuid"]:
             out[item["uuid"]] = item
     return out
 

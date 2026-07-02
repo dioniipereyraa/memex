@@ -986,6 +986,25 @@ class TestReconcileForks:
         assert to_push == []
         assert forks == ["c"]
 
+    def test_non_string_uuid_manifest_entries_are_ignored(self) -> None:
+        # A manifest is attacker-shaped (a pushed body, a snapshot header). A
+        # non-string uuid (a list is unhashable, a number poisons the diff) must
+        # be dropped by the diff, never raise out of it: a raise would escape the
+        # per-file guard in file sync and abort the whole import loop.
+        t = "2026-06-24T12:00:00+00:00"
+        local = [{"uuid": "mine", "content_hash": "a", "updated_at": t}]
+        remote = [
+            {"uuid": ["not", "hashable"], "content_hash": "x", "updated_at": t},
+            {"uuid": 7, "content_hash": "x", "updated_at": t},
+            {"uuid": "", "content_hash": "x", "updated_at": t},
+            {"uuid": "theirs", "content_hash": "b", "updated_at": t},
+        ]
+        to_pull, to_push, forks = records.select_reconcile(local, remote)
+        assert to_pull == ["theirs"]
+        assert to_push == ["mine"]
+        assert forks == []
+        assert records.select_to_transfer(local, remote) == ["theirs"]
+
     def test_reconcile_reports_fork_and_overwrites_neither(self, source_client) -> None:
         # Same uuid on both, SAME updated_at, different content: a fork. Neither
         # side is overwritten and the summary reports it.

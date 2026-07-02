@@ -68,20 +68,24 @@ FORMAT_VERSION = 1
 # Anti-gzip-bomb guards. A snapshot is attacker-shaped (anyone who can write the
 # shared folder), and gzip reaches ~1000:1 on repetitive JSON, so the decompressed
 # stream needs hard ceilings even when the compressed file is tiny:
-#  - `_MAX_HEADER_BYTES`: the header (first) line is the ONLY line parsed whole
-#    into memory (json.loads, then the reconcile diff builds dicts over its
-#    manifest), so it gets a tight cap. A manifest is just uuid+hash+timestamp+
-#    count per conversation (~240 bytes each), so 32 MB still admits ~140k
-#    conversations, far beyond any real store, while bounding the parse blow-up.
-#  - `_MAX_LINE_BYTES`: each subsequent RECORD line is streamed and parsed one at
-#    a time (memory stays bounded per record), so it keeps a generous cap, above
-#    the largest legitimate single-conversation record (~tens of MB) but far below
-#    "inflate a tiny gzip into GBs".
+#  - `_MAX_HEADER_BYTES`: the header (first) line is parsed whole AND the
+#    reconcile diff then builds more dicts over its manifest, so it gets the
+#    tightest cap. A manifest is just uuid+hash+timestamp+count per conversation
+#    (~240 bytes each), so 32 MB still admits ~140k conversations, far beyond
+#    any real store, while bounding the parse blow-up.
+#  - `_MAX_LINE_BYTES`: each subsequent RECORD line is streamed one at a time,
+#    but each is still `json.loads`'d WHOLE before the uuid filter, and
+#    adversarial container-heavy JSON inflates ~24x into Python objects (measured;
+#    same blow-up that motivated the header cap). So this cap must bound the parse
+#    inflation too, not just raw bytes: 96 MB stays well above the largest
+#    legitimate single-conversation record (~57 MB at the 5000-chunk cap) while
+#    keeping the worst-case transient parse near ~2 GB instead of ~6 GB at the
+#    previous 256 MB.
 #  - `_MAX_TOTAL_BYTES`: a running budget on the WHOLE decompressed stream, so a
 #    bomb of many small lines cannot force unbounded decompression. Set well above
 #    the largest legitimate full-store snapshot.
 _MAX_HEADER_BYTES = 32 * 1024 * 1024
-_MAX_LINE_BYTES = 256 * 1024 * 1024
+_MAX_LINE_BYTES = 96 * 1024 * 1024
 _MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 # Read the decompressed stream in fixed blocks (bounds the buffer while splitting
 # lines, independent of how the gzip is framed).
@@ -156,10 +160,11 @@ def _iter_decompressed_lines(fh: gzip.GzipFile) -> Iterator[str]:
     Reads the gzip stream in fixed blocks and splits on newlines manually rather
     than trusting `for line in gzip_file`, so a snapshot with no newline (or one
     enormous line) cannot inflate into unbounded memory. The HEADER (first) line
-    gets the tight `_MAX_HEADER_BYTES` cap (it is parsed whole into memory), each
-    RECORD line the generous `_MAX_LINE_BYTES` cap (it is streamed one at a time),
-    and the WHOLE stream a running `_MAX_TOTAL_BYTES` budget. Raises `ValueError`
-    on any breach; the caller (`read_header` / `import_once`) skips that file.
+    gets the tight `_MAX_HEADER_BYTES` cap (its manifest feeds the diff), each
+    RECORD line the `_MAX_LINE_BYTES` cap (parsed whole too, one at a time, so the
+    cap also bounds a single line's parse inflation), and the WHOLE stream a
+    running `_MAX_TOTAL_BYTES` budget. Raises `ValueError` on any breach; the
+    caller (`read_header` / `import_once`) skips that file.
     """
     buf = b""
     total = 0
@@ -207,10 +212,14 @@ def read_header(path: Path) -> dict[str, Any] | None:
             return None
     except FileNotFoundError:
         return None
-    except (OSError, ValueError, RecursionError) as e:
-        # RecursionError: a header whose JSON is nested absurdly deep (a crafted
-        # snapshot). Caught like a corrupt file so it fails soft to None instead
-        # of propagating out of the import loop.
+    except Exception as e:
+        # Catch everything, not a curated tuple: real corruption raises well
+        # outside (OSError, ValueError). A TRUNCATED gzip (partial copy on a
+        # cloud-synced folder / USB, power cut) raises EOFError, a bit-flipped
+        # deflate stream zlib.error, a hyper-nested header RecursionError, and
+        # none of those subclass OSError. Fail soft to None so a bad file reads
+        # as absent: `import_once` skips a peer's, and `export_snapshot` REWRITES
+        # this device's own (self-heal instead of a crash it can never get past).
         logger.warning("Could not read snapshot header %s: %s", path, e)
         return None
 
@@ -359,7 +368,13 @@ def import_once(
                         path.name,
                     )
                     failed += 1
-        except (OSError, ValueError, RecursionError) as e:
+        except Exception as e:
+            # Catch everything, not a curated tuple: a truncated gzip raises
+            # EOFError, a bit-flipped deflate stream zlib.error, and a crafted
+            # manifest can surface type errors from the diff; none subclass
+            # OSError/ValueError. A miss here means one bad file aborts EVERY
+            # later peer and the self-export, every tick, until a human deletes
+            # the file.
             logger.warning("Stopped reading snapshot %s early: %s", path.name, e)
             continue
 

@@ -363,6 +363,86 @@ class TestSafety:
         assert sb.pulled == 0
         assert repo.get_conversation(b, "c1") is None
 
+    def test_truncated_gzip_peer_skips_only_itself(self, tmp_path) -> None:
+        # A partially-copied peer file (cloud-synced folder, USB, power cut mid
+        # copy) makes gzip raise EOFError, which is NOT an OSError subclass. It
+        # must skip only that file: the healthy peer sorting after it still
+        # imports, and read_header fails soft to None.
+        a, b = _conn(), _conn()
+        _seed(a, "c1", "h1", _dt(24))
+        file_sync.export_snapshot(a, tmp_path, "zzz-good", MODEL, DIM)
+        full = (tmp_path / "zzz-good.memexsync.gz").read_bytes()
+        (tmp_path / "aaa-truncated.memexsync.gz").write_bytes(full[: len(full) // 2])
+        assert file_sync.read_header(tmp_path / "aaa-truncated.memexsync.gz") is None
+        sb = file_sync.import_once(b, tmp_path, "devb", MODEL, DIM)
+        assert sb.peers_seen == 2
+        assert sb.pulled == 1
+        assert repo.get_conversation(b, "c1") is not None
+
+    def test_bitflipped_gzip_peer_skips_only_itself(self, tmp_path) -> None:
+        # Corruption INSIDE the deflate stream raises zlib.error (not OSError,
+        # not BadGzipFile). Whatever the exact exception, the poisoned file must
+        # skip only itself.
+        a, b = _conn(), _conn()
+        _seed(a, "c1", "h1", _dt(24))
+        file_sync.export_snapshot(a, tmp_path, "zzz-good", MODEL, DIM)
+        blob = bytearray((tmp_path / "zzz-good.memexsync.gz").read_bytes())
+        for i in range(len(blob) // 2, len(blob) // 2 + 8):
+            blob[i] ^= 0xFF
+        (tmp_path / "aaa-corrupt.memexsync.gz").write_bytes(bytes(blob))
+        sb = file_sync.import_once(b, tmp_path, "devb", MODEL, DIM)
+        assert sb.peers_seen == 2
+        assert sb.pulled == 1
+        assert repo.get_conversation(b, "c1") is not None
+
+    def test_non_string_manifest_uuid_skipped(self, tmp_path) -> None:
+        # A crafted header whose manifest carries a non-string uuid (a list is
+        # unhashable) must not blow up the diff and abort the import loop; the
+        # bad entries are ignored and the healthy peer still imports.
+        a, b = _conn(), _conn()
+        _seed(a, "c1", "h1", _dt(24))
+        file_sync.export_snapshot(a, tmp_path, "zzz-good", MODEL, DIM)
+        header = {
+            "format": 1,
+            "device": "aaa-bad",
+            "embed_model": MODEL,
+            "embed_dim": DIM,
+            "manifest": [
+                {"uuid": ["not", "hashable"], "content_hash": "h", "updated_at": "2026"},
+                {"uuid": 7, "content_hash": "h", "updated_at": "2026"},
+            ],
+        }
+        with gzip.open(tmp_path / "aaa-bad.memexsync.gz", "wt", encoding="utf-8") as fh:
+            fh.write(json.dumps(header) + "\n")
+        sb = file_sync.import_once(b, tmp_path, "devb", MODEL, DIM)
+        assert sb.peers_seen == 2
+        assert sb.pulled == 1
+        assert repo.get_conversation(b, "c1") is not None
+
+    def test_sync_once_still_exports_past_bad_peer_file(self, tmp_path) -> None:
+        # A bad peer file must not stop sync_once from writing this device's own
+        # snapshot (before the fix the raise skipped the export, so the OTHER
+        # device also stopped receiving updates).
+        b = _conn()
+        _seed(b, "c-local", "h1", _dt(24))
+        (tmp_path / "aaa-truncated.memexsync.gz").write_bytes(b"\x1f\x8b\x08\x00trunc")
+        summary = file_sync.sync_once(b, tmp_path, "devb", MODEL, DIM)
+        assert summary.exported is True
+        assert (tmp_path / "devb.memexsync.gz").exists()
+
+    def test_export_self_heals_own_truncated_snapshot(self, tmp_path) -> None:
+        # export_snapshot reads its OWN file for the fingerprint skip-check. A
+        # truncated own file must read as absent and be REWRITTEN (self-heal),
+        # never crash the export forever.
+        a = _conn()
+        _seed(a, "c1", "h1", _dt(24))
+        file_sync.export_snapshot(a, tmp_path, "deva", MODEL, DIM)
+        own = tmp_path / "deva.memexsync.gz"
+        own.write_bytes(own.read_bytes()[:20])
+        _, exported = file_sync.export_snapshot(a, tmp_path, "deva", MODEL, DIM)
+        assert exported is True
+        assert file_sync.read_header(own) is not None  # valid again
+
 
 # --------------------------------------------------------------------------
 # Resolution of dir/device from settings + persisted state
