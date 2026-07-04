@@ -439,6 +439,55 @@ class TestServices:
         assert any("MemexServe" in line for line in lines)
         assert any("MemexIngest" in line for line in lines)
 
+    def test_windows_wheel_install_restarts_only_the_serve_task(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/Run` is ignored for a running task (IgnoreNew) and the serve reads the
+        persisted sync flags only at startup, so the serve task gets `/End` before
+        `/Run`; the periodic ingest task is never killed mid-run."""
+        import subprocess
+
+        from memex.cli import services
+
+        calls: list[tuple[str, str]] = []  # (verb, task name)
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[0] == "schtasks" and "/TN" in cmd:
+                calls.append((cmd[1], cmd[cmd.index("/TN") + 1]))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        services.windows_install_wheel("install")
+        serve_verbs = [verb for verb, task in calls if task == "MemexServe"]
+        ingest_verbs = [verb for verb, task in calls if task == "MemexIngest"]
+        assert serve_verbs == ["/Create", "/End", "/Run"]
+        assert ingest_verbs == ["/Create", "/Run"]
+
+    def test_linux_wheel_install_restarts_the_unit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`enable --now` does not restart a running unit, and the serve reads the
+        persisted sync flags only at startup: install must `restart` so a
+        `setup --sync` after a plain `setup` rebinds the running serve."""
+        import subprocess
+
+        from memex.cli import services
+
+        cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(services, "_systemd_user_dir", lambda: tmp_path / "systemd")
+        monkeypatch.setattr(services, "data_dir", lambda: tmp_path / "data")
+        lines = services.linux_install_wheel("install")
+        systemctl = [cmd for cmd in cmds if cmd and cmd[0] == "systemctl"]
+        assert ["systemctl", "--user", "restart", services.LINUX_UNIT_NAME] in systemctl
+        assert not any("--now" in cmd for cmd in systemctl)
+        assert any("installed" in line for line in lines)
+
 
 class TestHeadlessStreams:
     """`serve` must survive pythonw, where sys.stdout/stderr are None."""
