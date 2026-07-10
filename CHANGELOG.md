@@ -4,7 +4,7 @@ All notable changes to Memex are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). `0.1.0` is the first alpha release; before it the project lived in `0.0.x`.
 
-## [0.5.0] - unreleased
+## [0.5.0] - 2026-07-10
 
 Folds in the internal milestones 0.4.3 (2026-06-28) and 0.4.4 (2026-06-30), which were never uploaded to PyPI: on PyPI this release follows 0.4.2 directly.
 
