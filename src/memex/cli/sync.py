@@ -230,7 +230,7 @@ def status(
     enabled = sync_state.is_enabled()
     console.print(f"Sync: {'[green]enabled[/green]' if enabled else '[yellow]disabled[/yellow]'}")
     console.print(
-        f"Auto-sync: {'on' if settings.sync_auto else 'off'} "
+        f"Auto-sync: {'on' if sync_state.auto_sync_effective() else 'off'} "
         f"(every {settings.sync_interval_seconds}s, only while enabled and `serve` is running)"
     )
 

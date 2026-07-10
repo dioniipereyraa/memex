@@ -812,12 +812,11 @@ def _schedule_post_capture_sync() -> None:
 async def _lifespan(_app: Starlette) -> Any:
     """Start the auto-sync background task if enabled; cancel it on shutdown."""
     task: asyncio.Task[None] | None = None
-    # Start the loop if the auto-sync env flag OR the persisted gate flag is set
-    # (the persisted one is what `memex setup --sync` turns on, so a set-once
-    # install auto-syncs without an env var), or if a file-sync directory is
-    # configured (the dual-boot mode, which also rides this loop). Per-tick still
-    # respects the master gate.
-    if settings.sync_auto or sync_state.is_sync_auto() or file_sync.resolve_sync_dir() is not None:
+    # The env flag / persisted `setup --sync` gate / file-sync-dir condition lives
+    # in ONE shared helper that `sync status` also renders, so the report can
+    # never drift from what the serve does. Per-tick still respects the master
+    # gate.
+    if sync_state.auto_sync_effective():
         logger.info("auto-sync enabled (every %ss)", settings.sync_interval_seconds)
         task = asyncio.create_task(_auto_sync_loop())
     try:

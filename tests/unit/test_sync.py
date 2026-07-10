@@ -900,6 +900,21 @@ class TestSyncState:
         sync_state.set_sync_auto(False, p)
         assert sync_state.is_sync_auto(p) is False
 
+    def test_auto_sync_effective_reads_all_three_sources(self, tmp_path, monkeypatch) -> None:
+        # The ONE condition the serve lifespan and `sync status` share: the env
+        # flag, the persisted `setup --sync` gate, or a configured file-sync dir.
+        monkeypatch.setattr(sync_state.settings, "sync_auto", False)
+        monkeypatch.setattr(sync_state.settings, "sync_dir", None)
+        assert sync_state.auto_sync_effective() is False
+        sync_state.set_sync_auto(True)
+        assert sync_state.auto_sync_effective() is True
+        sync_state.set_sync_auto(False)
+        monkeypatch.setattr(sync_state.settings, "sync_auto", True)
+        assert sync_state.auto_sync_effective() is True
+        monkeypatch.setattr(sync_state.settings, "sync_auto", False)
+        sync_state.set_gate(sync_dir=str(tmp_path))
+        assert sync_state.auto_sync_effective() is True
+
     def test_corrupt_state_fails_closed_for_serve_sync(self, tmp_path) -> None:
         p = tmp_path / "sync_state.json"
         p.write_text("{ not valid json", encoding="utf-8")
@@ -1127,6 +1142,18 @@ class TestSyncCLI:
         assert sync_state.is_enabled() is True
         result = CliRunner().invoke(sync_app, ["status"])
         assert "enabled" in result.output
+
+    def test_status_auto_sync_reflects_persisted_gate(self, isolated, monkeypatch) -> None:
+        # Regression: status rendered only the MEMEX_SYNC_AUTO env flag, so it
+        # said "off" while the serve lifespan (env OR persisted OR sync-dir) was
+        # actually running the loop. Both must render the shared helper.
+        monkeypatch.setattr(sync_state.settings, "sync_auto", False)
+        monkeypatch.setattr(sync_state.settings, "sync_dir", None)
+        result = CliRunner().invoke(sync_app, ["status"])
+        assert "Auto-sync: off" in result.output
+        sync_state.set_sync_auto(True)
+        result = CliRunner().invoke(sync_app, ["status"])
+        assert "Auto-sync: on" in result.output
 
     def test_disable_turns_it_off(self, isolated) -> None:
         CliRunner().invoke(sync_app, ["enable"])

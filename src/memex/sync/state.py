@@ -191,6 +191,20 @@ def set_sync_auto(sync_auto: bool, path: Path | str | None = None) -> None:
     set_gate(sync_auto=sync_auto, path=path)
 
 
+def auto_sync_effective() -> bool:
+    """Whether the serve's auto-sync loop should run, the lifespan's exact condition.
+
+    True when the `MEMEX_SYNC_AUTO` env flag, the persisted `setup --sync` choice,
+    or a configured file-sync directory (the dual-boot mode rides the same loop)
+    is set. ONE definition shared by the serve lifespan and `sync status`, so what
+    status reports can never drift from what the serve actually does (status used
+    to read only the env flag and showed "off" while the loop was running).
+    """
+    from memex.sync import file_sync  # local import: file_sync imports this module
+
+    return settings.sync_auto or is_sync_auto() or file_sync.resolve_sync_dir() is not None
+
+
 def get_sync_dir(path: Path | str | None = None) -> str | None:
     """The persisted file-sync shared directory, or None if not configured.
 
