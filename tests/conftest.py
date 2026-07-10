@@ -12,6 +12,24 @@ from memex.core.models import Chunk, Conversation, Message, Project, Sender, Sou
 from memex.core.storage.db import connect_and_init
 
 
+@pytest.fixture(autouse=True)
+def _isolate_machine_state(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ningun test puede leer o escribir el estado real de la maquina de dev.
+
+    `settings.db_path` (y todo lo derivado de su carpeta: `sync_state.json`,
+    peers, history, token) apunta a un tmp por test. Sin esto, un dev que activo
+    sync de verdad (gate ON + peers reales) rompe los tests de defaults de
+    `serve` y hace que cada lifespan de TestClient arranque el auto-sync real
+    contra peers apagados (timeouts de red por test). Un test que necesita una
+    ruta concreta la sigue pisando con su propio monkeypatch.
+    """
+    from memex.config import settings
+
+    monkeypatch.setattr(settings, "db_path", tmp_path_factory.mktemp("machine-state") / "memex.db")
+
+
 @pytest.fixture
 def db() -> Iterator[sqlite3.Connection]:
     """Conexión SQLite in-memory con sqlite-vec cargado y schema aplicado."""

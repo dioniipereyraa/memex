@@ -95,7 +95,7 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     # otpauth:// URIs carry the TOTP secret in the `secret=` query param.
     (
         "otp-secret",
-        re.compile(r"(?P<pre>otpauth://[^\s]*?[?&]secret=)(?P<val>[A-Za-z0-9]{8,128})"),
+        re.compile(r"(?P<pre>otpauth://[^\s]{0,256}?[?&]secret=)(?P<val>[A-Za-z0-9]{8,128})"),
     ),
     # Credentials embedded in a URL: scheme://[user]:pass@host -> keep user +
     # host, mask only the password. The user may be empty (`scheme://:pass@`,
@@ -119,7 +119,7 @@ _ASSIGNMENT_RE = re.compile(
     r"access[_-]?key|client[_-]?secret|auth[_-]?token|private[_-]?key|encryption[_-]?key|"
     r"db[_-]?pass|database[_-]?url|redis[_-]?url|conn(?:ection)?[_-]?string|dsn|credential|"
     r"account[_-]?key|app[_-]?key|private[_-]?token|auth[_-]?key|totp|otp[_-]?secret|"
-    r"x-[a-z-]*?(?:key|token|secret|pass|auth)|signing[_-]?key)(?P=kq)\s*[:=]\s*)"
+    r"x-[a-z-]{0,32}?(?:key|token|secret|pass|auth)|signing[_-]?key)(?P=kq)\s*[:=]\s*)"
     r"(?:(?P<q>['\"])(?P<qval>(?:(?!(?P=q)).){6,512})(?P=q)|(?P<bval>[^\s'\"]{6,512}))"
 )
 

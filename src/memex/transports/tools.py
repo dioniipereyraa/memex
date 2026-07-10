@@ -572,7 +572,10 @@ def list_recent_chats(
             {
                 "uuid": c.uuid,
                 "title": c.title,
-                "summary": c.summary,
+                # Truncate like search_chats/find_related: some summaries weigh
+                # 2-3k chars, and up to LIST_LIMIT_MAX of them in one response
+                # would blow the MCP client's token cap.
+                "summary": _truncate(c.summary, SEARCH_SUMMARY_MAX_CHARS),
                 "source": c.source.value,
                 "project_uuid": c.project_uuid,
                 "created_at": c.created_at.isoformat(),

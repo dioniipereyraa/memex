@@ -248,9 +248,30 @@ Full design (locked decisions, cross-cutting principles, all sub-phases) in
   (safe fallback for an older peer); an oversized single conversation is skipped +
   reported, not fatal; new `MEMEX_SYNC_MAX_BATCH_BYTES` (default 8 MB). 587 tests
   green. On branch `fix/sync-size-aware-batching` (pending `0.4.1` publish).
+- [x] **File-based sync for dual-boot / never-online-together (`0.4.4`,
+  2026-06-30).** Network sync needs both devices online at once, which never
+  happens on a dual-boot machine (Linux + Windows on one disk). Added a second
+  sync mode over a SHARED FOLDER instead of a live connection: each OS exports a
+  gzip snapshot of its store (`<device>.memexsync.gz`) and imports the others'.
+  No server, no port, no token, no third device. New `sync/file_sync.py` reuses
+  the transport-agnostic core unchanged (`select_reconcile` LWW + `insert_record`
+  + `local_manifest`); a device only writes its own file and reads the others'
+  (never clash); convergence is eventual over boots; a same-timestamp fork is left
+  untouched + reported, like the network mode. Rides the existing serve auto-sync
+  loop (no service-template change). `memex setup --sync-dir <folder>
+  [--device-name <name>]` creates the folder, persists `sync_dir`/`device_name` in
+  the gate, enables the gate + auto-sync, does an initial export/import, and prints
+  the one command for the other OS. New `memex sync file-sync`; `memex sync now`
+  folds it in; `status` shows it. Anti-gzip-bomb decompression caps (after the
+  2026-07-01 audit + the 2026-07-02 robustness round: header 32 MB, record line
+  96 MB, 4 GB total stream) + full per-file isolation (any corruption in one
+  snapshot, truncated gzip included, skips only that file and the device's own
+  snapshot self-heals); `insert_record` re-asserts the same guards as the
+  network path. 30 new tests at landing (24 file-sync + 6 sync) plus the
+  hardening rounds' regressions; 681 green as of 2026-07-02.
 - [ ] **Phase 4 (future, optional): cloud relay / accounts** for async handoff
   without both devices on. Out of scope until the project grows; the local P2P
-  mode stays the default/private path.
+  mode (network + file-based) stays the default/private path.
 - [ ] **Deferred (optional, not blocking graduation):** a per-device provenance
   tag + a `memex search --device` filter so a query can scope to one machine (the
   plan's optional token-economy item). Dedup by uuid already holds (one row per
@@ -279,6 +300,33 @@ tight); no re-embedding, no new daemon, no aggressive polling; reuse the audited
 uuid).
 
 ---
+
+## Queued for future updates (approved, not scheduled)
+
+- **Windows SessionEnd hook (queued 2026-07-10).** `scripts/session-end-hook.sh`
+  is bash, so "close the conversation and it gets indexed" works on macOS and
+  Linux only. Ship a PowerShell equivalent (`session-end-hook.ps1`) plus the
+  `~/.claude/settings.json` wiring docs for Windows. Until then, Windows relies
+  on the `MemexIngest` 15-minute task, asking Claude (`index_terminal_sessions`),
+  or the manual command.
+- **Linux installer-scheduled ingest backstop (queued 2026-07-10).** `memex
+  setup` / `install-service` schedules the 15-minute backstop on macOS (the
+  `com.memex.ingest-claude-code` launchd agent) and Windows (the `MemexIngest`
+  task), but on Linux it installs only the serve unit. Add a systemd user
+  service + timer so Linux gets the same set-and-forget indexing.
+- **Setup wires the SessionEnd hook (nice-to-have, fits both).** Today the hook
+  is a manual `~/.claude/settings.json` edit; `memex setup` could offer to add
+  it (and remove it on `--no-...`), in line with "few commands, zero-fuss setup".
+- **`memex token --rotate` (queued 2026-07-10, after a live rotation).** Today
+  rotation is delete-the-file + restart-the-service + re-pair, and the live run
+  hit every sharp edge: the serve caches the token in RAM at first use and never
+  re-reads the file (a recreated file diverges silently until restart), and the
+  hidden token prompt on Windows PowerShell mangles pastes. A `--rotate` that
+  regenerates, bounces the serve, and prints once would remove the error class.
+  Related hardening: the serve should re-read the token file on mtime change
+  (same pattern as the OAuth allow-list reload), and `sync connect` should
+  validate the token against `/sync/manifest` BEFORE persisting the peer (a
+  failed connect currently overwrites a good pairing with a bad token).
 
 ## Out of scope
 

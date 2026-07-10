@@ -123,6 +123,49 @@ uv sync               # installs Python 3.13 + dependencies into .venv
 uv run memex doctor   # verify
 ```
 
+### Upgrading (already have memex)
+
+Upgrade with the **same tool that installed it**, or the new version will not land
+on your PATH. A previous install owns the `memex` executable, so installing again
+with a different manager fails with "Executables already exist" and `memex` keeps
+running the old version. (This is the usual reason `memex sync` seems to "not
+exist" after an upgrade: an old pipx-owned `memex` shadowed a newer `uv tool`
+install.)
+
+```bash
+# 1. Find which tool owns it:
+which memex            # macOS / Linux
+Get-Command memex      # Windows (PowerShell)
+
+# 2. Upgrade with that tool:
+pipx upgrade memex-chats        # if pipx owns it
+uv tool upgrade memex-chats     # if uv owns it
+```
+
+If you want to switch managers, uninstall the old one first (`pipx uninstall
+memex-chats` or `uv tool uninstall memex-chats`), then reinstall. After upgrading,
+`memex --version` shows the new version and `memex doctor` should pass.
+
+### Multi-device (optional)
+
+To make Claude one memory across several machines, install
+[Tailscale](https://tailscale.com) **first** (so each device has a stable private
+address), then opt in once per device:
+
+```bash
+memex setup --sync     # opt-in, persisted: the always-on service is sync-reachable
+```
+
+It prints the single `memex sync connect ...` line to run on your other devices.
+The choice is saved, so the service stays sync-reachable across reboots without
+re-running anything. Full flow, security model, and the manual one-shot
+alternative are in [Syncing across your devices](#syncing-across-your-devices).
+
+For a **dual-boot machine** (Linux and Windows that are never on at the same time),
+use file-based sync instead: `memex setup --sync-dir <shared-folder>` on each OS,
+pointed at the same folder. No Tailscale, no two devices online at once. See
+[Dual-boot or never-online-together](#dual-boot-or-never-online-together-file-based-sync).
+
 ## First run
 
 The fast path is one command:
@@ -168,6 +211,55 @@ installed the published PyPI package instead, drop the `uv run` prefix.)
 > with `MEMEX_DB_PATH` / `MEMEX_EXPORTS_DIR`. `memex doctor` prints the resolved
 > path.
 
+## Using Memex (after setup)
+
+Once `memex setup` finishes, nothing else needs launching: the capture server and
+the indexers run in the background. You use Memex three ways.
+
+**1. From Claude Code (the main way).** Setup registers the MCP server, so Claude
+Code can search your whole history and keep it fresh through these tools:
+
+| Tool | What it does |
+|---|---|
+| `search_chats` | Semantic + keyword search across your claude.ai chats AND Claude Code sessions |
+| `get_chat` | Fetch a full conversation by id |
+| `list_recent_chats` | Your most recent conversations |
+| `find_related` | Conversations related to a topic or snippet |
+| `index_terminal_sessions` | Index your local Claude Code sessions now (so the current one becomes searchable) |
+| `sync_now` | Sync with your other devices now (paired peers + the dual-boot shared folder) |
+
+Just ask Claude Code naturally ("what did we decide about X in my claude.ai
+chats?", "index this session", "sync this to my other devices") and it calls
+these. `index_terminal_sessions` and `sync_now` are local-only (never exposed to
+the remote claude.ai connector). Note `sync_now` sends what is already indexed, so
+to include the session you are in, ask Claude to `index_terminal_sessions` first. To have context injected automatically at the start
+of a session, add the optional [SessionStart hook](#proactive-context-injection-sessionstart-hook).
+
+**2. From the terminal.** `memex search "..."`, `memex stats`, `memex doctor`,
+`memex token` (re-print the extension pairing token), `memex --version`.
+
+**3. Capture (automatic, you run nothing).** The Chrome extension indexes a
+claude.ai chat as you open or reload it (and its "Backfill" button imports your old
+history once); your Claude Code sessions are indexed when a session ends, plus a
+15-minute backstop.
+
+### How fresh is the data (real-time)?
+
+| Path | Latency |
+|---|---|
+| A claude.ai chat into your local index | Near-instant: captured as you open/reload the chat (embedded in seconds) |
+| A Claude Code session into your local index | At session end, plus a 15-minute backstop |
+| Available to Claude Code on the **same** machine | Immediate (it reads the same local DB the capture writes) |
+| **Across devices** | **Not live.** Periodic + overlap: see below |
+
+Same-machine is essentially real-time. **Cross-device is not a live relay** (it is
+peer-to-peer with no cloud): paired devices auto-reconcile every 15 minutes while
+both are online, and you can force it immediately with **`memex sync now`**. A
+claude.ai chat is captured by the extension on open/reload, so to sync the latest
+turns of an in-progress chat, reload it (so the extension re-captures it), then run
+`memex sync now`. The terminal cannot read claude.ai directly, so the extension is
+always what captures; sync only propagates what is already indexed locally.
+
 ## Embeddings backend
 
 Default is fastembed (zero-config). To route through a local Ollama instead
@@ -209,6 +301,16 @@ Then confirm the right binary: `which memex` (macOS/Linux) or `where memex` (Win
 
 **The one-command installer fails with a shell error.** The installer is POSIX `sh`. If you are on a very old or unusual shell and the pipe fails, fetch and run it with bash instead: `curl -LsSf <url>/install-pypi.sh | bash`.
 
+**Windows: `uv tool install` fails with "Acceso denegado (os error 5)" copying `memex-mcp.exe`.** Two causes, usually together:
+- **Claude Code / Claude Desktop is running** and its MCP child process holds the running `.exe`. Close Claude Code and Claude Desktop, then retry.
+- **Windows Defender blocks writing a brand-new `.exe`** even when nothing holds it. The tell: the destination file does not exist yet (`Test-Path "$env:USERPROFILE\.local\bin\memex-mcp.exe"` is `False`) but the copy still fails. Add a Defender exclusion for `%USERPROFILE%\.local\bin` and `%APPDATA%\uv`.
+
+Then re-run with `uv tool install --force memex-chats` (or `uv tool install --reinstall --refresh <spec>` when updating from a branch).
+
+**Windows: a paired device times out reaching your sync port (5777).** In sync-reachable mode the always-on server binds `0.0.0.0:5777`, but Windows Firewall silently drops inbound connections (the peer just times out, never "connection refused") until a rule allows the port. `memex setup --sync` adds it for you (idempotent, best-effort); if setup was not elevated it prints the one-time admin command to run yourself: `New-NetFirewallRule -DisplayName "Memex sync 5777" -Direction Inbound -Protocol TCP -LocalPort 5777 -Action Allow`.
+
+**Sync times out even though `tailscale ping` works.** If `tailscale ping <peer>` succeeds but regular ping/TCP (and memex sync) time out in BOTH directions, the problem is a local TUN/routing conflict on one of the machines, not memex and not the firewall rule: another VPN-style adapter (Hamachi, another VPN, a virtual switch) is swallowing the OS traffic that should ride the Tailscale interface. Disable or remove the other adapter and restart the Tailscale service. (Seen live: a Hamachi adapter installed for game hosting broke a Windows box's Tailscale traffic while `tailscale ping` kept working.)
+
 **The first backfill (or first ingest) is slow.** The first embed downloads a ~130 MB quantized model; that is one-time, later runs are fast. The backfill is incremental and safe to re-run, so a slow or interrupted first pass simply resumes where it left off.
 
 **Ingest uses too much memory.** Peak RAM scales with the embed batch size. Lower it: set `MEMEX_EMBED_BATCH_SIZE=1` (about 0.67 GB peak) in your environment or `.env`.
@@ -221,6 +323,10 @@ Then confirm the right binary: `which memex` (macOS/Linux) or `where memex` (Win
 - `get_chat(uuid, messages_limit=10, messages_offset=0)` fetches a conversation with its messages, paginated. `raw_content` is omitted; each message is truncated to 1500 chars to stay inside the client's token budget (worst-case response ~17k chars). Long chats are paginated with `messages_offset`; max `messages_limit` is 100.
 - `list_recent_chats(limit=10, source?)` lists the latest chats ordered by last update.
 - `find_related(context, limit=5, repo?)` takes free-form text (a paragraph, a file contents, the current discussion) and returns chats that are semantically related. Pure vector search, no FTS, capped at 4000 input chars. Useful when you want "more like this" without typing a keyword query.
+
+The stdio server (`memex-mcp`, used by Claude Code) also exposes two **write/maintenance** tools, so you can ask Claude to keep your memory fresh instead of dropping to a terminal. They are **local-only**: never registered on the remote claude.ai connector (they mutate the store and reach the network).
+- `index_terminal_sessions()` runs the incremental `ingest-claude-code` scan (indexes new/changed local Claude Code sessions, including the current one up to what is flushed to its transcript). Shares the single-flight ingest lock; returns counts.
+- `sync_now()` runs an immediate two-way reconcile with every paired device and, if a shared folder is configured, a file sync. Requires sync enabled. It propagates what is ALREADY indexed, so to include the current session call `index_terminal_sessions` first.
 
 Search is also reachable from the CLI with `memex search "query" --mode {hybrid|semantic|lexical}`. For databases created before the hybrid FTS5 work, run `memex reindex-fts` once to populate the lexical index.
 
@@ -295,7 +401,7 @@ Security model in short: loopback bind + tunnel, OAuth proxy over GitHub with a 
 
 ## Indexing Claude Code / terminal sessions (Phase 6)
 
-Memex also indexes your local Claude Code and terminal sessions, so a single search covers both halves of your history: what you discussed on claude.ai and what you built with Claude Code. Claude Code records each session as a JSONL file under `~/.claude/projects/`; Memex reads them directly (no extension, no network).
+Memex also indexes your local Claude Code and terminal sessions, so a single search covers both halves of your history: what you discussed on claude.ai and what you built with Claude Code. Claude Code records each session as a JSONL file under `~/.claude/projects/`; Memex reads them directly (no extension, no network). This covers Claude Code wherever it runs, the terminal CLI and the VS Code / JetBrains extensions alike: they all write the same transcripts.
 
 ```bash
 uv run memex ingest-claude-code        # scans ~/.claude/projects/**/*.jsonl
@@ -309,9 +415,15 @@ These sessions are stored under the `claude_code` source, searchable like any ot
 - **What is indexed:** your prompts, the assistant replies, and tool calls as `[tool_use: ...]` / `[result]` markers. Excluded: assistant internal reasoning (`thinking`), parallel sub-agent side threads, and CLI plumbing (slash-command echoes, bash wrappers). Everything stays in the local SQLite DB.
 - **Secret redaction.** Session logs capture real terminal output and file contents, which often contain credentials. Before storing, Memex masks common secret shapes (API keys, bearer/JWT tokens, PEM private keys, `KEY=`/`SECRET=` assignments, URLs with embedded passwords) as `[REDACTED:...]`, and does not persist the raw block content for this source. Best-effort, not a guarantee: it catches well-known formats so third-party credentials that were never really part of a conversation stay out of the index (this matters because the remote connector can surface indexed text to claude.ai).
 
-### Automatic sync (keep Claude Code sessions fresh)
+### Getting a Claude Code session indexed
 
-`memex ingest-claude-code` is manual. To index sessions automatically, use two complementary mechanisms (both run in the background at low priority, and the embedding model only loads when there is something new, so they barely cost anything):
+A session becomes searchable once its transcript is scanned. Day to day there are three ways to trigger that yourself:
+
+- **Ask Claude.** Say "index this session" and Claude calls the `index_terminal_sessions` MCP tool (the current conversation is captured up to what Claude Code has flushed to its transcript at that point). Follow with "sync my devices" (`sync_now`) if you want it on your other machines right away.
+- **Close the conversation.** With the SessionEnd hook below installed, ending the Claude Code chat (just the conversation, not the whole terminal) ingests that session the moment it closes.
+- **Run the command.** `memex ingest-claude-code` scans everything new right now.
+
+Even if you do none of these, the periodic backstop below picks up new and grown sessions within about 15 minutes of their last write. The two automatic mechanisms complement each other (both run in the background at low priority, and the embedding model only loads when there is something new, so they barely cost anything):
 
 1. **SessionEnd hook** — ingests a session the moment it closes (no delay, nothing lost). Add to `~/.claude/settings.json`:
    ```json
@@ -333,7 +445,9 @@ These sessions are stored under the `claude_code` source, searchable like any ot
      > ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
    launchctl load ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
    ```
-   It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. On Linux, run the same script from a systemd user timer or cron; the script is OS-agnostic. (On Windows, the hook needs a PowerShell equivalent of `session-end-hook.sh`, not yet included; until then, schedule `memex ingest-claude-code` with Task Scheduler.)
+   It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. A PyPI install does not need these manual steps on macOS or Windows: `memex setup` (or `memex install-service`) already schedules the backstop there (the `com.memex.ingest-claude-code` launchd agent / the `MemexIngest` Scheduled Task). On Linux the installer sets up only the serve, so wire the backstop yourself with a systemd user timer or cron running `memex ingest-claude-code`.
+
+   Per-OS state of the two mechanisms: the SessionEnd hook script is bash, so it works on macOS and Linux; on Windows it needs a PowerShell equivalent of `session-end-hook.sh`, not yet included, so there the ways in are the backstop task, asking Claude, or the manual command.
 
 ## Syncing across your devices
 
@@ -349,34 +463,73 @@ The whole feature is **off by default** and exposes nothing until you turn it on
 While it is off, the sync endpoints return 404 and the sync commands refuse, so a
 normal single-device install has no extra surface.
 
-It is **one command per device**. On the device that has the conversations, start
-a reachable endpoint (this enables sync, binds to your
-[Tailscale](https://tailscale.com) address, allow-lists it, and prints the exact
-command to run on the other device):
+### Set it up once (recommended)
+
+Install [Tailscale](https://tailscale.com) on each device first, then opt in once:
 
 ```bash
-# SOURCE device (the one with the conversations you want):
+memex setup --sync
+```
+
+This is the normal setup plus one thing: it turns sync on and makes your
+**always-on capture service** sync-reachable on this device's Tailscale address
+(it binds `0.0.0.0` so one server still answers the local extension, with the Host
+allow-list pinned to loopback + your Tailscale IP, resolved at startup, and the
+per-install token gating access). The choice is **persisted**: set it once and the
+service comes up sync-reachable on every reboot, so you never hand-run a serve
+command. It prints the single line to run on each other device:
+
+```bash
+memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
+```
+
+`connect` turns sync on there, pairs, and runs a two-way reconcile, so that device
+is set up and caught up in one step.
+
+**Set-and-forget:** `memex setup --sync` also enables **auto-sync**, so paired
+devices reconcile by themselves every 15 minutes while both are online (no env var,
+no cron). It is overlap sync, not a cloud relay: if the other device is off, that
+tick is skipped and catches up next time both are on. On top of the timer, a
+capture also **triggers a sync a few seconds after it lands**: when the Chrome
+extension captures a chat and Memex indexes it, that new conversation is pushed to
+your other devices right away (no need to run anything). A burst of captures (a
+backfill, several open tabs) is coalesced into one sync once it settles, and it
+only fires while both devices are on (for a dual-boot the other OS just picks up
+the change on its next boot). Turn just this off with `MEMEX_SYNC_ON_CAPTURE=false`;
+tune the coalescing window with `MEMEX_SYNC_ON_CAPTURE_DEBOUNCE_SECONDS` (default
+10). You can still sync immediately by hand between ticks (e.g. to push the chat
+you are having right now), with:
+
+```bash
+memex sync now          # immediate two-way reconcile with every paired device
+```
+
+`memex sync now` propagates what is already indexed locally; a claude.ai chat is
+indexed when the extension captures it (on open/reload), so reload an in-progress
+chat first if you want its latest turns included. `memex sync status` shows what is
+paired and the last sync; `memex sync reconcile` is the same as `now`. Turn the
+whole thing back off (loopback-only, sync + auto-sync off) with `memex setup
+--no-sync`. Tune the interval with `MEMEX_SYNC_INTERVAL_SECONDS` (default 900).
+
+### One-shot (without changing your setup)
+
+If you would rather not make the service permanently reachable, start a temporary
+endpoint on the device that has the conversations:
+
+```bash
+# SOURCE device:
 memex sync serve
 # -> Memex sync serve reachable at http://100.x.y.z:5777
 #    On the other device, run this one command:
 #      memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
 ```
 
-Paste that one line on the other device. `connect` turns sync on, pairs, and runs
-a two-way reconcile, so the device is set up and caught up in a single step:
-
-```bash
-# DESTINATION device (the one you want to pull into):
-memex sync connect --url http://100.x.y.z:5777 --token <TOKEN> --name my-mac
-memex sync status   # later: is sync on, who is paired, last sync
-```
-
 `memex sync serve` works the same on macOS, Linux, and Windows (it uses your
 Tailscale address, so there is no per-OS network setup and no `--host`/allow-list
 juggling). If you are not on Tailscale, pass `--host <address the other device can
-reach>`. It binds to that address only, so it runs alongside your always-on
-loopback capture server without a port clash; keep it up while the other device
-connects. Afterwards, `memex sync reconcile` re-syncs an already-paired device.
+reach>`. It binds to that address only and runs alongside your loopback capture
+server without a port clash; keep it up while the other device connects, then stop
+it with Ctrl+C. Afterwards, `memex sync reconcile` re-syncs an already-paired device.
 
 `reconcile` is the usual command: it syncs both ways and converges the two
 devices, keeping the newer copy of anything that exists on both (last writer wins
@@ -397,12 +550,80 @@ a trust decision (it shares an access token), so only pair devices you control.
 Never sync the SQLite file itself with a folder-sync tool; always use `memex
 sync`, which is consistent at the conversation level.
 
-To keep two devices in sync automatically, set `MEMEX_SYNC_AUTO=true` before
-`memex serve`: while sync is enabled it reconciles with each paired peer on
-startup and every `MEMEX_SYNC_INTERVAL_SECONDS` (default 900), skipping a peer
-that is offline and backing off while an ingest is running. It stays off unless
-you both set the flag and `enable` sync. Turn the whole feature back off any time
-with `memex sync disable`.
+Auto-sync (the every-15-minutes reconcile) is turned on for you by `memex setup
+--sync`; you do not need an env var. Under the hood it reconciles with each paired
+peer on startup and every `MEMEX_SYNC_INTERVAL_SECONDS` (default 900), skipping a
+peer that is offline and backing off while an ingest is running. If you did not use
+`setup --sync` (e.g. a manual/dev setup) you can still enable it with
+`MEMEX_SYNC_AUTO=true` before `memex serve`; either the persisted flag or the env
+var starts the loop. It only runs while sync is enabled; turn the whole feature
+back off with `memex sync disable` (or `memex setup --no-sync`).
+
+### Dual-boot or never-online-together (file-based sync)
+
+Network sync needs both devices online at the same time. That never happens on a
+**dual-boot machine** (Linux and Windows on the same disk, only one running at a
+time), and is awkward for any pair of devices that are rarely on together. For
+that, memex has a second sync mode that uses a **shared folder** instead of a live
+connection: each OS exports a snapshot of its store to the folder and imports the
+others'. No server, no port, no token, no third device. It ships in memex `0.4.4`+.
+
+Point every OS at the **same** shared folder (one command per OS):
+
+```bash
+# On Linux (the Windows partition mounted at, e.g., /mnt/windows):
+memex setup --sync-dir /mnt/windows/memex-sync --device-name linux
+
+# On Windows (the SAME physical folder, its path there):
+memex setup --sync-dir C:\memex-sync --device-name windows
+```
+
+That is it. From then on each OS, when it boots, auto-syncs through the folder
+(every 15 minutes while running), and `memex sync now` syncs immediately. The
+folder is created for you if it does not exist, and the choice is persisted, so
+you set it up once.
+
+Where to put the folder on a dual-boot: it must be readable from **both** OSes, so
+put it on the **Windows / NTFS partition**. Linux reads and writes NTFS out of the
+box; Windows cannot read Linux's ext4. (For two separate machines that are rarely
+on together, any shared location works: a USB drive, or a cloud-synced folder like
+Dropbox.)
+
+Dual-boot gotcha: Windows **Fast Startup** (and hibernation) leaves the NTFS
+partition dirty, so Linux mounts it **read-only**, and file sync needs to write
+its snapshot there (the initial export fails loudly if it cannot). If the folder
+mounts read-only on Linux, disable Fast Startup on Windows (or `powercfg /h off`)
+and shut Windows down fully once.
+
+How it converges: a device only ever writes its own `<device>.memexsync.gz` and
+reads the others', so they never clash. Sync is last-writer-wins by update time,
+exactly like the network mode, and a same-timestamp conflict (a fork) is left
+untouched and reported. The other OS's newer conversations land on your next boot
+(it left its snapshot on disk), and yours reach it on its next boot. Give the two
+OSes **distinct `--device-name` values** if their hostnames are the same, or they
+would overwrite each other's snapshot. The snapshot carries your conversation text
+and vectors, so keep the shared folder somewhere only you can read (the same "only
+share what you control" rule as pairing a peer). The two modes are independent: you
+can use file sync, network sync, or both.
+
+### Rotating a token
+
+Each device has one access token (the `ingest_token` file next to its database;
+`memex doctor` shows the folder). Rotate it whenever it was pasted somewhere it
+should not live: a chat, a screenshot, a ticket. There is no rotate command yet,
+and the running server reads the file only once, so the **order matters**:
+
+1. Delete the token file (`rm <data-dir>/ingest_token`; PowerShell:
+   `Remove-Item -Force $env:LOCALAPPDATA\memex\ingest_token`).
+2. **Restart the always-on serve** (macOS: `launchctl unload` then `load` on
+   `com.memex.serve`; Linux: `systemctl --user restart memex-serve`; Windows:
+   `schtasks /End /TN MemexServe` then `schtasks /Run /TN MemexServe`). Skipping
+   this leaves the OLD token accepted (it is cached in memory) and the new file
+   ignored.
+3. Run `memex token` to see the new value. Re-paste it into that machine's Chrome
+   extension popup, and **re-pair every device that dials this one**:
+   `memex sync connect --url http://<this-device>:5777 --name <name> --token "..."`
+   (passing `--token` avoids the hidden prompt, which is easy to mistype).
 
 ## Running always-on
 

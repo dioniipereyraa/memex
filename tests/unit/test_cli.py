@@ -439,6 +439,55 @@ class TestServices:
         assert any("MemexServe" in line for line in lines)
         assert any("MemexIngest" in line for line in lines)
 
+    def test_windows_wheel_install_restarts_only_the_serve_task(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/Run` is ignored for a running task (IgnoreNew) and the serve reads the
+        persisted sync flags only at startup, so the serve task gets `/End` before
+        `/Run`; the periodic ingest task is never killed mid-run."""
+        import subprocess
+
+        from memex.cli import services
+
+        calls: list[tuple[str, str]] = []  # (verb, task name)
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[0] == "schtasks" and "/TN" in cmd:
+                calls.append((cmd[1], cmd[cmd.index("/TN") + 1]))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        services.windows_install_wheel("install")
+        serve_verbs = [verb for verb, task in calls if task == "MemexServe"]
+        ingest_verbs = [verb for verb, task in calls if task == "MemexIngest"]
+        assert serve_verbs == ["/Create", "/End", "/Run"]
+        assert ingest_verbs == ["/Create", "/Run"]
+
+    def test_linux_wheel_install_restarts_the_unit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`enable --now` does not restart a running unit, and the serve reads the
+        persisted sync flags only at startup: install must `restart` so a
+        `setup --sync` after a plain `setup` rebinds the running serve."""
+        import subprocess
+
+        from memex.cli import services
+
+        cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(services, "_systemd_user_dir", lambda: tmp_path / "systemd")
+        monkeypatch.setattr(services, "data_dir", lambda: tmp_path / "data")
+        lines = services.linux_install_wheel("install")
+        systemctl = [cmd for cmd in cmds if cmd and cmd[0] == "systemctl"]
+        assert ["systemctl", "--user", "restart", services.LINUX_UNIT_NAME] in systemctl
+        assert not any("--now" in cmd for cmd in systemctl)
+        assert any("installed" in line for line in lines)
+
 
 class TestHeadlessStreams:
     """`serve` must survive pythonw, where sys.stdout/stderr are None."""
@@ -682,6 +731,13 @@ class TestHelpAndStructure:
         assert "ingest" in result.output
         assert "search" in result.output
 
+    def test_version_flag_prints_version(self) -> None:
+        from memex import __version__
+
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert __version__ in result.output
+
 
 class TestIngestLock:
     def test_second_acquire_is_blocked(self, tmp_path):
@@ -692,3 +748,237 @@ class TestIngestLock:
         second = _acquire_ingest_lock(db)
         assert first is not None
         assert second is None  # a second ingest must not run concurrently
+
+
+class TestServeSyncMode:
+    """`memex serve --sync` / the persisted serve_sync flag: bind 0.0.0.0 +
+    allow-list the Tailscale IP, gated by the master gate, resilient if Tailscale
+    is down."""
+
+    @pytest.fixture
+    def isolated(self, tmp_path, monkeypatch):
+        from memex.config import settings
+
+        # Gate + token under tmp; loopback-only allow-list to start.
+        monkeypatch.setattr(settings, "db_path", tmp_path / "memex.db")
+        monkeypatch.setattr(settings, "ingest_allowed_hosts", "127.0.0.1,localhost")
+        return tmp_path
+
+    def _patch_uvicorn(self, monkeypatch) -> dict:
+        import uvicorn
+
+        captured: dict[str, object] = {}
+
+        def fake_run(app, host, port, **kw):  # type: ignore[no-untyped-def]
+            captured["app"] = app
+            captured["host"] = host
+            captured["port"] = port
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+        return captured
+
+    def test_plain_serve_stays_loopback(self, isolated, monkeypatch) -> None:
+        from memex.config import settings
+        from memex.transports import http_ingest
+
+        captured = self._patch_uvicorn(monkeypatch)
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0, result.output
+        assert captured["host"] == "127.0.0.1"
+        assert settings.ingest_allowed_hosts == "127.0.0.1,localhost"
+        # Plain mode serves the prebuilt module-level app (no rebuild).
+        assert captured["app"] is http_ingest.app
+
+    def test_serve_sync_binds_all_and_allowlists_tailscale(self, isolated, monkeypatch) -> None:
+        from memex.config import settings
+        from memex.sync import state as sync_state
+        from memex.transports import http_ingest
+
+        captured = self._patch_uvicorn(monkeypatch)
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.9.9.9")
+        result = runner.invoke(app, ["serve", "--sync"])
+        assert result.exit_code == 0, result.output
+        # One server answers both loopback (extension) and the Tailscale IP (sync).
+        assert captured["host"] == "0.0.0.0"
+        assert captured["port"] == 5777
+        # Allow-list widened to the Tailscale IP, loopback preserved.
+        assert "100.9.9.9" in settings.ingest_allowed_hosts
+        assert "127.0.0.1" in settings.ingest_allowed_hosts
+        # The app was REBUILT after the allow-list mutation (not the prebuilt one),
+        # so TrustedHostMiddleware actually sees the Tailscale host.
+        assert captured["app"] is not http_ingest.app
+        # --sync flips the master gate on (explicit intent).
+        assert sync_state.is_enabled() is True
+        # Connect line printed, but the TOKEN is never echoed to a non-tty stream
+        # (the daemon-log-leak lesson); CliRunner's stdout is not a tty.
+        assert "memex sync connect" in result.output
+        assert "http://100.9.9.9:5777" in result.output
+        token = http_ingest.load_or_create_ingest_token()
+        assert token not in result.output
+
+    def test_serve_sync_without_tailscale_falls_back_to_loopback(
+        self, isolated, monkeypatch
+    ) -> None:
+        captured = self._patch_uvicorn(monkeypatch)
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: None)
+        result = runner.invoke(app, ["serve", "--sync"])
+        # Resilient: the always-on capture server still starts (on loopback).
+        assert result.exit_code == 0, result.output
+        assert captured["host"] == "127.0.0.1"
+        assert "no tailscale address" in result.output.lower()
+
+    def test_persisted_serve_sync_is_honored_without_flag(self, isolated, monkeypatch) -> None:
+        from memex.config import settings
+        from memex.sync import state as sync_state
+
+        sync_state.set_gate(enabled=True, serve_sync=True)  # as `setup --sync` would
+        captured = self._patch_uvicorn(monkeypatch)
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.7.7.7")
+        result = runner.invoke(app, ["serve"])  # no flag: reads the persisted choice
+        assert result.exit_code == 0, result.output
+        assert captured["host"] == "0.0.0.0"
+        assert "100.7.7.7" in settings.ingest_allowed_hosts
+
+    def test_no_sync_flag_forces_loopback_even_when_persisted(self, isolated, monkeypatch) -> None:
+        from memex.sync import state as sync_state
+
+        sync_state.set_gate(enabled=True, serve_sync=True)
+        captured = self._patch_uvicorn(monkeypatch)
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.7.7.7")
+        result = runner.invoke(app, ["serve", "--no-sync"])
+        assert result.exit_code == 0, result.output
+        assert captured["host"] == "127.0.0.1"
+
+    def test_serve_sync_skipped_when_gate_disabled(self, isolated, monkeypatch) -> None:
+        # serve_sync persisted but the master gate is off (user ran `sync disable`):
+        # without --sync, serve respects the disable and stays loopback.
+        from memex.sync import state as sync_state
+
+        sync_state.set_gate(enabled=False, serve_sync=True)
+        captured = self._patch_uvicorn(monkeypatch)
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.7.7.7")
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0, result.output
+        assert captured["host"] == "127.0.0.1"
+
+
+# Skip the heavy setup steps (MCP wiring, autostart, ingest) so the sync tests
+# exercise only the gate + connect-line logic.
+_SETUP_SKIP = ["--no-mcp", "--no-autostart", "--no-ingest"]
+
+
+class TestSetupSyncMode:
+    """`memex setup --sync`: persist the opt-in (gate + serve_sync), print the
+    one-command connect line; a plain re-run never undoes it."""
+
+    @pytest.fixture
+    def isolated(self, tmp_path, monkeypatch):
+        from memex.config import settings
+
+        monkeypatch.setattr(settings, "db_path", tmp_path / "memex.db")
+
+        class _Emb:
+            model_name = "fake"
+
+        monkeypatch.setattr("memex.cli.main.get_default_embedder", lambda: _Emb())
+        return tmp_path
+
+    def test_setup_sync_persists_flags_and_prints_connect(self, isolated, monkeypatch) -> None:
+        from memex.sync import state as sync_state
+
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.4.4.4")
+        result = runner.invoke(app, ["setup", "-y", *_SETUP_SKIP, "--sync"])
+        assert result.exit_code == 0, result.output
+        assert sync_state.is_enabled() is True
+        assert sync_state.is_serve_sync() is True
+        # --sync is set-and-forget: it also turns on persisted auto-sync.
+        assert sync_state.is_sync_auto() is True
+        # The connect line (token included: setup is interactive, decision #2) is shown.
+        assert "memex sync connect" in result.output
+        assert "http://100.4.4.4:5777" in result.output
+        # The auto-sync + on-demand hint is shown (substring robust to line-wrap).
+        assert "auto-reconcile" in result.output
+
+    def test_plain_setup_preserves_persisted_serve_sync(self, isolated, monkeypatch) -> None:
+        from memex.sync import state as sync_state
+
+        sync_state.set_gate(enabled=True, serve_sync=True)
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.4.4.4")
+        result = runner.invoke(app, ["setup", "-y", *_SETUP_SKIP])  # no flag
+        assert result.exit_code == 0, result.output
+        assert sync_state.is_serve_sync() is True  # not silently undone
+
+    def test_setup_no_sync_turns_it_off(self, isolated, monkeypatch) -> None:
+        from memex.sync import state as sync_state
+
+        sync_state.set_gate(enabled=True, serve_sync=True, sync_auto=True)
+        result = runner.invoke(app, ["setup", "-y", *_SETUP_SKIP, "--no-sync"])
+        assert result.exit_code == 0, result.output
+        assert sync_state.is_enabled() is False
+        assert sync_state.is_serve_sync() is False
+        assert sync_state.is_sync_auto() is False
+
+    def test_declining_setup_does_not_persist_the_gate(self, isolated, monkeypatch) -> None:
+        # Declining "Proceed?" must NOT leave the sync gate flipped (consent bug):
+        # the gate is written only after confirmation. No -y; answer "n".
+        from memex.sync import state as sync_state
+
+        monkeypatch.setattr("memex.cli.main.detect_tailscale_ip", lambda: "100.4.4.4")
+        result = runner.invoke(app, ["setup", *_SETUP_SKIP, "--sync"], input="n\n")
+        assert result.exit_code == 0, result.output
+        assert sync_state.is_serve_sync() is False
+        assert sync_state.is_enabled() is False
+        assert sync_state.is_sync_auto() is False
+
+
+class TestWindowsSyncFirewall:
+    """`windows_ensure_sync_firewall` best-effort rule (mocked netsh)."""
+
+    @staticmethod
+    def _fake_run(show_rc: int, add_rc: int):
+        import subprocess
+
+        def run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            rc = show_rc if "show" in cmd else add_rc
+            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+        return run
+
+    def test_rule_already_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        monkeypatch.setattr(subprocess, "run", self._fake_run(0, 0))
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert ok and "already open" in msg
+
+    def test_adds_rule_when_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        monkeypatch.setattr(subprocess, "run", self._fake_run(1, 0))
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert ok and "opened inbound TCP 5777" in msg
+
+    def test_reports_manual_command_when_not_admin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        monkeypatch.setattr(subprocess, "run", self._fake_run(1, 1))
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert not ok and "admin" in msg and "New-NetFirewallRule" in msg
+
+    def test_netsh_missing_is_not_fatal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from memex.cli import services
+
+        def boom(*a, **k):  # type: ignore[no-untyped-def]
+            raise FileNotFoundError("netsh")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        ok, msg = services.windows_ensure_sync_firewall(5777)
+        assert not ok and "netsh" in msg

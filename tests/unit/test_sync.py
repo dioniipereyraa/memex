@@ -3,6 +3,7 @@ the master enable gate, status, conflict forks, and the hardening guards."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import sys
@@ -711,9 +712,11 @@ class TestAutoSync:
     @pytest.fixture(autouse=True)
     def _enable_and_isolate(self, monkeypatch) -> None:
         # Enable the gate (off by default) and keep record_sync off the real
-        # per-user history file.
+        # per-user history file. File sync defaults to off so the loop never reads
+        # the real per-user gate; the file-sync tests override resolve_sync_dir.
         monkeypatch.setattr(http_ingest, "_sync_enabled_override", True)
         monkeypatch.setattr(http_ingest.sync_state, "record_sync", lambda *a, **k: None)
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: None)
 
     def test_skips_when_disabled(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
@@ -762,6 +765,47 @@ class TestAutoSync:
         http_ingest._auto_sync_once(db_path=tmp_path / "memex.db")
         assert called == []
 
+    def test_file_sync_runs_with_no_network_peers(self, tmp_path, monkeypatch) -> None:
+        # The dual-boot case: no paired network peer, but a shared folder is set.
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: tmp_path / "shared")
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_device_name", lambda: "thisdev")
+        seen: list[str] = []
+
+        def fake_sync_once(conn, sync_dir, device, model, dim):
+            seen.append(str(sync_dir))
+            return http_ingest.file_sync.FileSyncSummary(
+                device=device,
+                peers_seen=1,
+                pulled=2,
+                failed=0,
+                would_push=0,
+                forks=0,
+                incompatible=0,
+                exported=True,
+            )
+
+        monkeypatch.setattr(http_ingest.file_sync, "sync_once", fake_sync_once)
+        http_ingest._auto_sync_once(db_path=tmp_path / "memex.db")
+        assert seen == [str(tmp_path / "shared")]
+
+    def test_file_sync_skipped_when_lock_busy(self, tmp_path, monkeypatch) -> None:
+        from memex import ingest_lock
+
+        db = tmp_path / "memex.db"
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: tmp_path / "shared")
+        called: list[str] = []
+        monkeypatch.setattr(
+            http_ingest.file_sync, "sync_once", lambda *a, **k: called.append("synced")
+        )
+        handle = ingest_lock.acquire_nonblocking(db)
+        try:
+            http_ingest._auto_sync_once(db_path=db)
+        finally:
+            ingest_lock.release(handle)
+        assert called == []  # a live ingest holds the lock; the file tick is skipped too
+
 
 # --------------------------------------------------------------------------
 # Phase 3: master gate state
@@ -778,6 +822,103 @@ class TestSyncState:
         assert sync_state.is_enabled(p) is True
         sync_state.set_enabled(False, p)
         assert sync_state.is_enabled(p) is False
+
+    def test_serve_sync_default_disabled(self, tmp_path) -> None:
+        assert sync_state.is_serve_sync(tmp_path / "sync_state.json") is False
+
+    def test_serve_sync_roundtrip(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_serve_sync(True, p)
+        assert sync_state.is_serve_sync(p) is True
+        sync_state.set_serve_sync(False, p)
+        assert sync_state.is_serve_sync(p) is False
+
+    def test_set_enabled_preserves_serve_sync(self, tmp_path) -> None:
+        # enable/disable must never clobber the user's persisted serve_sync choice.
+        p = tmp_path / "sync_state.json"
+        sync_state.set_serve_sync(True, p)
+        sync_state.set_enabled(False, p)
+        assert sync_state.is_serve_sync(p) is True
+        assert sync_state.is_enabled(p) is False
+
+    def test_sync_dir_default_none(self, tmp_path) -> None:
+        assert sync_state.get_sync_dir(tmp_path / "sync_state.json") is None
+        assert sync_state.get_device_name(tmp_path / "sync_state.json") is None
+
+    def test_sync_dir_and_device_roundtrip(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_sync_dir("/mnt/win/memex", p)
+        sync_state.set_device_name("linux-box", p)
+        assert sync_state.get_sync_dir(p) == "/mnt/win/memex"
+        assert sync_state.get_device_name(p) == "linux-box"
+
+    def test_file_sync_config_preserves_flags(self, tmp_path) -> None:
+        # Writing the file-sync config must not clobber the booleans, and the
+        # booleans must not clobber the file-sync config (both share the gate file).
+        p = tmp_path / "sync_state.json"
+        sync_state.set_gate(
+            enabled=True, sync_auto=True, sync_dir="/shared", device_name="d", path=p
+        )
+        sync_state.set_enabled(False, p)  # toggling the gate keeps the file config
+        assert sync_state.get_sync_dir(p) == "/shared"
+        assert sync_state.get_device_name(p) == "d"
+        sync_state.set_serve_sync(True, p)  # unrelated flag keeps the file config too
+        assert sync_state.get_sync_dir(p) == "/shared"
+        # And the file config write left the booleans it did not touch intact.
+        assert sync_state.is_sync_auto(p) is True
+
+    def test_clearing_sync_dir(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_sync_dir("/shared", p)
+        sync_state.set_sync_dir(None, p)
+        assert sync_state.get_sync_dir(p) is None
+
+    def test_set_serve_sync_preserves_enabled(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_enabled(True, p)
+        sync_state.set_serve_sync(True, p)
+        assert sync_state.is_enabled(p) is True
+        assert sync_state.is_serve_sync(p) is True
+
+    def test_set_gate_sets_both_atomically(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_gate(enabled=True, serve_sync=True, path=p)
+        assert sync_state.is_enabled(p) is True
+        assert sync_state.is_serve_sync(p) is True
+
+    def test_sync_auto_default_disabled(self, tmp_path) -> None:
+        assert sync_state.is_sync_auto(tmp_path / "sync_state.json") is False
+
+    def test_sync_auto_roundtrip_and_preservation(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        sync_state.set_gate(enabled=True, serve_sync=True, sync_auto=True, path=p)
+        assert sync_state.is_sync_auto(p) is True
+        # Toggling one flag must not clobber sync_auto.
+        sync_state.set_enabled(False, p)
+        sync_state.set_serve_sync(False, p)
+        assert sync_state.is_sync_auto(p) is True
+        sync_state.set_sync_auto(False, p)
+        assert sync_state.is_sync_auto(p) is False
+
+    def test_auto_sync_effective_reads_all_three_sources(self, tmp_path, monkeypatch) -> None:
+        # The ONE condition the serve lifespan and `sync status` share: the env
+        # flag, the persisted `setup --sync` gate, or a configured file-sync dir.
+        monkeypatch.setattr(sync_state.settings, "sync_auto", False)
+        monkeypatch.setattr(sync_state.settings, "sync_dir", None)
+        assert sync_state.auto_sync_effective() is False
+        sync_state.set_sync_auto(True)
+        assert sync_state.auto_sync_effective() is True
+        sync_state.set_sync_auto(False)
+        monkeypatch.setattr(sync_state.settings, "sync_auto", True)
+        assert sync_state.auto_sync_effective() is True
+        monkeypatch.setattr(sync_state.settings, "sync_auto", False)
+        sync_state.set_gate(sync_dir=str(tmp_path))
+        assert sync_state.auto_sync_effective() is True
+
+    def test_corrupt_state_fails_closed_for_serve_sync(self, tmp_path) -> None:
+        p = tmp_path / "sync_state.json"
+        p.write_text("{ not valid json", encoding="utf-8")
+        assert sync_state.is_serve_sync(p) is False
 
     def test_record_and_get_history(self, tmp_path) -> None:
         h = tmp_path / "sync_history.json"
@@ -859,6 +1000,25 @@ class TestReconcileForks:
         assert to_pull == []
         assert to_push == []
         assert forks == ["c"]
+
+    def test_non_string_uuid_manifest_entries_are_ignored(self) -> None:
+        # A manifest is attacker-shaped (a pushed body, a snapshot header). A
+        # non-string uuid (a list is unhashable, a number poisons the diff) must
+        # be dropped by the diff, never raise out of it: a raise would escape the
+        # per-file guard in file sync and abort the whole import loop.
+        t = "2026-06-24T12:00:00+00:00"
+        local = [{"uuid": "mine", "content_hash": "a", "updated_at": t}]
+        remote = [
+            {"uuid": ["not", "hashable"], "content_hash": "x", "updated_at": t},
+            {"uuid": 7, "content_hash": "x", "updated_at": t},
+            {"uuid": "", "content_hash": "x", "updated_at": t},
+            {"uuid": "theirs", "content_hash": "b", "updated_at": t},
+        ]
+        to_pull, to_push, forks = records.select_reconcile(local, remote)
+        assert to_pull == ["theirs"]
+        assert to_push == ["mine"]
+        assert forks == []
+        assert records.select_to_transfer(local, remote) == ["theirs"]
 
     def test_reconcile_reports_fork_and_overwrites_neither(self, source_client) -> None:
         # Same uuid on both, SAME updated_at, different content: a fork. Neither
@@ -982,6 +1142,18 @@ class TestSyncCLI:
         assert sync_state.is_enabled() is True
         result = CliRunner().invoke(sync_app, ["status"])
         assert "enabled" in result.output
+
+    def test_status_auto_sync_reflects_persisted_gate(self, isolated, monkeypatch) -> None:
+        # Regression: status rendered only the MEMEX_SYNC_AUTO env flag, so it
+        # said "off" while the serve lifespan (env OR persisted OR sync-dir) was
+        # actually running the loop. Both must render the shared helper.
+        monkeypatch.setattr(sync_state.settings, "sync_auto", False)
+        monkeypatch.setattr(sync_state.settings, "sync_dir", None)
+        result = CliRunner().invoke(sync_app, ["status"])
+        assert "Auto-sync: off" in result.output
+        sync_state.set_sync_auto(True)
+        result = CliRunner().invoke(sync_app, ["status"])
+        assert "Auto-sync: on" in result.output
 
     def test_disable_turns_it_off(self, isolated) -> None:
         CliRunner().invoke(sync_app, ["enable"])
@@ -1147,33 +1319,52 @@ class TestSyncServeCommand:
         return tmp_path
 
     def test_merge_hosts_dedups_and_appends(self) -> None:
-        from memex.cli import sync as sync_cli
+        from memex.cli import _net
 
         assert (
-            sync_cli._merge_hosts("127.0.0.1,localhost", "100.1.2.3")
-            == "127.0.0.1,localhost,100.1.2.3"
+            _net.merge_hosts("127.0.0.1,localhost", "100.1.2.3") == "127.0.0.1,localhost,100.1.2.3"
         )
         # Already present: no duplicate.
-        assert sync_cli._merge_hosts("127.0.0.1,100.1.2.3", "100.1.2.3") == "127.0.0.1,100.1.2.3"
+        assert _net.merge_hosts("127.0.0.1,100.1.2.3", "100.1.2.3") == "127.0.0.1,100.1.2.3"
+        # Variadic: loopback + addr added together, order preserved.
+        assert (
+            _net.merge_hosts("127.0.0.1,localhost", "127.0.0.1", "localhost", "100.1.2.3")
+            == "127.0.0.1,localhost,100.1.2.3"
+        )
 
     def test_detect_tailscale_ip_parses_first_line(self, monkeypatch) -> None:
-        from memex.cli import sync as sync_cli
+        from memex.cli import _net
 
         class _R:
             returncode = 0
             stdout = "100.70.96.57\nfd7a:1234::1\n"
 
-        monkeypatch.setattr(sync_cli.subprocess, "run", lambda *a, **k: _R())
-        assert sync_cli._detect_tailscale_ip() == "100.70.96.57"
+        monkeypatch.setattr(_net.subprocess, "run", lambda *a, **k: _R())
+        assert _net.detect_tailscale_ip() == "100.70.96.57"
 
     def test_detect_tailscale_ip_missing_cli_is_none(self, monkeypatch) -> None:
-        from memex.cli import sync as sync_cli
+        from memex.cli import _net
 
         def _boom(*a, **k):
             raise FileNotFoundError
 
-        monkeypatch.setattr(sync_cli.subprocess, "run", _boom)
-        assert sync_cli._detect_tailscale_ip() is None
+        monkeypatch.setattr(_net.subprocess, "run", _boom)
+        monkeypatch.setattr(_net, "_TAILSCALE_FALLBACK_PATHS", ())
+        monkeypatch.setattr(_net.shutil, "which", lambda _name: None)
+        assert _net.detect_tailscale_ip() is None
+
+    def test_detect_tailscale_ip_uses_app_bundle_fallback(self, tmp_path, monkeypatch) -> None:
+        # The macOS GUI app keeps its CLI off PATH; the bundle path is probed when
+        # `shutil.which` finds nothing, and preferred over the bare-name last resort.
+        from memex.cli import _net
+
+        fake_cli = tmp_path / "Tailscale"
+        fake_cli.write_text("")
+        monkeypatch.setattr(_net.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(_net, "_TAILSCALE_FALLBACK_PATHS", (str(fake_cli),))
+        cands = _net._tailscale_candidates()
+        assert str(fake_cli) in cands
+        assert cands.index(str(fake_cli)) < cands.index("tailscale")
 
     def test_serve_enables_allowlists_and_binds_to_addr(self, isolated, monkeypatch) -> None:
         import uvicorn
@@ -1207,7 +1398,7 @@ class TestSyncServeCommand:
     def test_serve_errors_when_no_address(self, isolated, monkeypatch) -> None:
         from memex.cli import sync as sync_cli
 
-        monkeypatch.setattr(sync_cli, "_detect_tailscale_ip", lambda: None)
+        monkeypatch.setattr(sync_cli, "detect_tailscale_ip", lambda: None)
         result = CliRunner().invoke(sync_app, ["serve"])
         assert result.exit_code == 2
         assert "Could not detect a reachable address" in result.output
@@ -1243,3 +1434,100 @@ class TestSyncServeCommand:
 
         assert sync_cli._default_peer_name("http://100.5.5.5:5777") == "100.5.5.5"
         assert sync_cli._default_peer_name("not a url") == "peer"
+
+    def test_now_reconciles_all_paired_peers(self, isolated, monkeypatch) -> None:
+        # `memex sync now` is the on-demand reconcile: it must hit each paired peer.
+        from memex.cli import sync as sync_cli
+
+        sync_state.set_enabled(True)
+        add_peer(Peer(name="mac", url="http://100.5.5.5:5777", token="tok"))
+        called: list[str] = []
+
+        def fake_reconcile(conn, peer, *, local_model, local_dim):
+            called.append(peer.name)
+            return client.ReconcileSummary(peer=peer.name, pulled=1, pushed=0, failed=0)
+
+        monkeypatch.setattr(sync_cli, "_local_identity", lambda: ("fake", 768))
+        monkeypatch.setattr(sync_cli.client, "reconcile", fake_reconcile)
+
+        result = CliRunner().invoke(sync_app, ["now"])
+        assert result.exit_code == 0, result.output
+        assert called == ["mac"]
+
+    def test_now_refuses_when_disabled(self, isolated) -> None:
+        # The master gate still guards the on-demand command.
+        sync_state.set_enabled(False)
+        result = CliRunner().invoke(sync_app, ["now"])
+        assert result.exit_code == 2
+        assert "disabled" in result.output.lower()
+
+
+# --------------------------------------------------------------------------
+# Debounced post-capture sync (auto-sync a chat right after it is captured)
+# --------------------------------------------------------------------------
+
+
+class TestPostCaptureSync:
+    @pytest.fixture(autouse=True)
+    def _base(self, monkeypatch) -> None:
+        # Enabled + feature on + a target present, so the default path schedules.
+        monkeypatch.setattr(http_ingest, "_post_capture_task", None, raising=False)
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", True)
+        monkeypatch.setattr(http_ingest.settings, "sync_on_capture", True)
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [PEER])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: None)
+
+    async def test_no_task_when_sync_disabled(self, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest, "_sync_enabled_override", False)
+        http_ingest._schedule_post_capture_sync()
+        assert http_ingest._post_capture_task is None
+
+    async def test_no_task_when_feature_off(self, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest.settings, "sync_on_capture", False)
+        http_ingest._schedule_post_capture_sync()
+        assert http_ingest._post_capture_task is None
+
+    async def test_no_task_without_target(self, monkeypatch) -> None:
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: None)
+        http_ingest._schedule_post_capture_sync()
+        assert http_ingest._post_capture_task is None
+
+    async def test_file_dir_alone_is_a_target(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(http_ingest.peers, "load_peers", lambda: [])
+        monkeypatch.setattr(http_ingest.file_sync, "resolve_sync_dir", lambda: tmp_path)
+        http_ingest._schedule_post_capture_sync()
+        task = http_ingest._post_capture_task
+        assert task is not None
+        task.cancel()
+        await asyncio.sleep(0)
+
+    async def test_schedules_task(self) -> None:
+        http_ingest._schedule_post_capture_sync()
+        task = http_ingest._post_capture_task
+        assert task is not None and not task.done()
+        task.cancel()
+        await asyncio.sleep(0)
+
+    async def test_coalesces_a_burst(self) -> None:
+        # A second capture cancels the first pending timer: a burst = ONE sync.
+        http_ingest._schedule_post_capture_sync()
+        first = http_ingest._post_capture_task
+        http_ingest._schedule_post_capture_sync()
+        second = http_ingest._post_capture_task
+        assert first is not second
+        await asyncio.sleep(0)  # let the cancelled first timer settle
+        assert first.done()
+        second.cancel()
+        await asyncio.sleep(0)
+
+    async def test_debounced_runs_auto_sync(self, monkeypatch) -> None:
+        ran: list[str] = []
+
+        async def _no_sleep(_seconds) -> None:
+            return
+
+        monkeypatch.setattr(http_ingest.asyncio, "sleep", _no_sleep)
+        monkeypatch.setattr(http_ingest, "_auto_sync_once", lambda: ran.append("synced"))
+        await http_ingest._debounced_post_capture_sync()
+        assert ran == ["synced"]

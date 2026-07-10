@@ -341,7 +341,7 @@ def linux_install_wheel(action: str) -> list[str]:
     unit_path.write_text(render_systemd_unit(logs), encoding="utf-8")
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)
     result = subprocess.run(
-        ["systemctl", "--user", "enable", "--now", LINUX_UNIT_NAME],
+        ["systemctl", "--user", "enable", LINUX_UNIT_NAME],
         check=False,
         capture_output=True,
         text=True,
@@ -349,6 +349,18 @@ def linux_install_wheel(action: str) -> list[str]:
     lines = [f"installed {LINUX_UNIT_NAME}", f"log: {logs / 'serve.log'}"]
     if result.returncode != 0:
         lines.append(f"systemctl enable failed: {(result.stderr or '').strip()}")
+    # `enable --now` does NOT restart an already-running unit, and the serve reads
+    # the persisted sync flags only at startup, so a `setup --sync` after a plain
+    # `setup` would leave the old loopback-bound process running until the next
+    # boot. `restart` starts a stopped unit and bounces a running one.
+    restarted = subprocess.run(
+        ["systemctl", "--user", "restart", LINUX_UNIT_NAME],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if restarted.returncode != 0:
+        lines.append(f"systemctl restart failed: {(restarted.stderr or '').strip()}")
     return lines
 
 
@@ -485,8 +497,16 @@ _WINDOWS_TASKS: tuple[tuple[str, Callable[[], str], str], ...] = (
 )
 
 
-def _windows_register_task(task_name: str, render: Callable[[], str]) -> str | None:
-    """Create one Scheduled Task from its XML. Returns an error string or None."""
+def _windows_register_task(
+    task_name: str, render: Callable[[], str], *, restart: bool = False
+) -> str | None:
+    """Create one Scheduled Task from its XML. Returns an error string or None.
+
+    With `restart=True` a running instance is stopped before the start: `/Run` is
+    ignored for a running task (MultipleInstancesPolicy IgnoreNew) and the
+    always-on serve reads the persisted sync flags only at startup, so re-running
+    setup with new flags must bounce it or the old bind survives until reboot.
+    """
     xml_path = ""
     with tempfile.NamedTemporaryFile("w", suffix=".xml", encoding="utf-16", delete=False) as handle:
         handle.write(render())
@@ -503,9 +523,58 @@ def _windows_register_task(task_name: str, render: Callable[[], str]) -> str | N
             os.unlink(xml_path)
     if result.returncode != 0:
         return (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
+    if restart:
+        subprocess.run(["schtasks", "/End", "/TN", task_name], check=False, capture_output=True)
     # Start it once now so it is up immediately (the triggers also cover logon).
     subprocess.run(["schtasks", "/Run", "/TN", task_name], check=False, capture_output=True)
     return None
+
+
+def windows_ensure_sync_firewall(port: int = 5777) -> tuple[bool, str]:
+    """Best-effort: ensure an inbound TCP allow rule for the sync port on Windows.
+
+    In sync-reachable mode the always-on serve binds `0.0.0.0:<port>`, but Windows
+    Firewall silently drops inbound connections (a peer just times out) until a
+    rule allows the port. This adds one, idempotently by rule name. Needs admin; if
+    it cannot add it (setup not elevated), returns the exact one-time command so the
+    user runs it themselves. Never raises: returns (ok, message).
+    """
+    rule = f"Memex sync {port}"
+    manual = (
+        f'run once in an admin PowerShell: New-NetFirewallRule -DisplayName "{rule}" '
+        f"-Direction Inbound -Protocol TCP -LocalPort {port} -Action Allow"
+    )
+    try:
+        present = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if present.returncode == 0:
+            return True, f"firewall port {port} already open (rule '{rule}')"
+        added = subprocess.run(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                f"name={rule}",
+                "dir=in",
+                "action=allow",
+                "protocol=TCP",
+                f"localport={port}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if added.returncode == 0:
+            return True, f"opened inbound TCP {port} (rule '{rule}')"
+        return False, f"could not open TCP {port} (needs admin); {manual}"
+    except (OSError, subprocess.SubprocessError):
+        return False, f"could not run netsh; {manual}"
 
 
 def windows_install_wheel(action: str) -> list[str]:
@@ -550,7 +619,9 @@ def windows_install_wheel(action: str) -> list[str]:
     # expects) and register it, replacing any existing task with /F.
     lines = []
     for task_name, render, runs in _WINDOWS_TASKS:
-        error = _windows_register_task(task_name, render)
+        # Only the always-on serve is bounced (it must pick up new sync flags);
+        # the periodic ingest is never killed mid-run, its next trigger suffices.
+        error = _windows_register_task(task_name, render, restart=task_name == WINDOWS_TASK_NAME)
         if error is not None:
             lines.append(f"FAILED to create task {task_name}: {error}")
         else:

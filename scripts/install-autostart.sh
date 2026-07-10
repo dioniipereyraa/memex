@@ -97,7 +97,10 @@ WantedBy=default.target
 UNIT
 
     systemctl --user daemon-reload
-    systemctl --user enable --now "$UNIT_NAME"
+    # enable + restart (not `enable --now`): --now does not restart a running
+    # unit, and the serve reads the persisted sync flags only at startup.
+    systemctl --user enable "$UNIT_NAME"
+    systemctl --user restart "$UNIT_NAME"
 
     echo "Installed $UNIT_NAME"
     echo "  unit:  $UNIT_PATH"

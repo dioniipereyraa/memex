@@ -17,6 +17,7 @@ Invoke as `uv run memex ...`, or `memex ...` if the .venv is active.
 
 from __future__ import annotations
 
+import socket
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -26,6 +27,7 @@ from rich.console import Console
 from rich.table import Table
 
 from memex import ingest_lock
+from memex.cli._net import LOOPBACK_HOSTS, detect_tailscale_ip, merge_hosts
 from memex.cli.sync import sync_app
 from memex.config import settings
 from memex.core.embeddings import EmbedderError, get_default_embedder
@@ -35,6 +37,8 @@ from memex.core.repos import find_repo_root, match_text, parse_repo, resolve_rep
 from memex.core.storage import repo
 from memex.core.storage.db import connect_and_init
 from memex.proctitle import set_process_title
+from memex.sync import file_sync
+from memex.sync import state as sync_state
 
 app = typer.Typer(
     help="Memex: index your Claude.ai chats for semantic + lexical retrieval.",
@@ -45,6 +49,30 @@ console = Console()
 
 # `memex sync ...`: pull conversations between the user's devices (experimental).
 app.add_typer(sync_app, name="sync")
+
+
+def _version_callback(value: bool) -> None:
+    """Print the installed Memex version and exit (for `memex --version`)."""
+    if value:
+        from memex import __version__
+
+        console.print(__version__)
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the installed Memex version and exit.",
+        ),
+    ] = False,
+) -> None:
+    """Memex: index your Claude.ai chats for semantic + lexical retrieval."""
 
 
 @app.command()
@@ -331,6 +359,36 @@ def _redirect_streams_if_headless(log_name: str = "serve.log") -> None:
         sys.stderr = stream
 
 
+def _resolve_serve_sync_address(sync: bool | None) -> str | None:
+    """Decide whether `serve` comes up sync-reachable, and on what address.
+
+    Returns the Tailscale address to allow-list/advertise when sync mode is on, or
+    None for the default loopback-only server. `--sync` forces it on (flipping the
+    master gate too, like `memex sync serve`); `--no-sync` forces it off; omitted
+    reads the persisted `serve_sync` choice, and only when the master gate is also
+    enabled, so `memex sync disable` reverts `serve` to loopback on the next start.
+
+    If sync mode is wanted but no Tailscale address is detectable, it degrades to
+    loopback with a warning rather than failing: the always-on capture server must
+    still start (a restart re-detects the address once Tailscale is up).
+    """
+    if sync is False:
+        return None
+    if sync is True:
+        if not sync_state.is_enabled():
+            sync_state.set_enabled(True)
+    elif not (sync_state.is_serve_sync() and sync_state.is_enabled()):
+        return None
+    addr = detect_tailscale_ip()
+    if not addr:
+        console.print(
+            "[yellow]Sync mode requested but no Tailscale address was detected[/yellow]; "
+            "serving loopback-only. Start Tailscale, then restart `memex serve`."
+        )
+        return None
+    return addr
+
+
 @app.command()
 def serve(
     host: Annotated[
@@ -345,13 +403,26 @@ def serve(
         Path | None,
         typer.Option("--db", help="Path to the SQLite database (default: settings.db_path)."),
     ] = None,
+    sync: Annotated[
+        bool | None,
+        typer.Option(
+            "--sync/--no-sync",
+            help="Come up sync-reachable on the Tailscale address (binds 0.0.0.0, "
+            "Host-pinned + token-gated). Omitted reads the persisted `memex setup --sync` choice.",
+        ),
+    ] = None,
 ) -> None:
     """Start the local HTTP server for live capture from the Chrome ext.
 
     The server listens for POSTs to `/ingest/conversation` that the Chrome
     extension sends every time you open a new chat on claude.ai. Keep it
-    running in a terminal (or as an OS service via `install-autostart.ps1`
-    on Windows).
+    running in a terminal (or as an OS service via `memex install-service`).
+
+    In sync mode (`--sync`, or the persisted `memex setup --sync` choice) the same
+    server is also reachable for multi-device sync on this device's Tailscale
+    address: it binds 0.0.0.0 so one server answers both loopback (the extension)
+    and the Tailscale IP, with the Host allow-list (loopback + the detected
+    Tailscale IP, resolved at startup) and the per-install token gating access.
 
     Sharing the SQLite DB with the MCP server is safe: both use WAL mode.
     """
@@ -364,11 +435,32 @@ def serve(
     from memex.core.storage.db import connect_and_init
     from memex.transports import http_ingest
 
+    sync_addr = _resolve_serve_sync_address(sync)
+    if sync_addr is not None:
+        # Sync mode must serve both loopback and the Tailscale address, so it always
+        # binds 0.0.0.0; a custom --host cannot be honored here.
+        if host != "127.0.0.1":
+            console.print(
+                f"[yellow]Note:[/yellow] --sync binds 0.0.0.0; the --host {host} value is ignored."
+            )
+        # Bind all interfaces so ONE server answers both loopback (the extension)
+        # and the Tailscale address; the Host allow-list + token are the real gate
+        # (binding 0.0.0.0 only opens the socket). Resolve the allow-list now so an
+        # IP change is picked up on restart, never baked into a service definition.
+        host = "0.0.0.0"
+        settings.ingest_allowed_hosts = merge_hosts(
+            settings.ingest_allowed_hosts, *LOOPBACK_HOSTS, sync_addr
+        )
+
     # If `--db` was passed, inject the connection before uvicorn starts.
     if db_path is not None:
         http_ingest._conn = connect_and_init(db_path, check_same_thread=False)
 
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    # Rebuild the app in sync mode so TrustedHostMiddleware picks up the Tailscale
+    # host (the module-level app was built with the loopback default).
+    serve_app = http_ingest.build_app() if sync_addr is not None else http_ingest.app
+
+    if sync_addr is None and host not in ("127.0.0.1", "localhost", "::1"):
         console.print(
             f"[yellow]Warning:[/yellow] binding to [bold]{host}[/bold] exposes live "
             "capture beyond loopback. The access token is required, but treat the "
@@ -380,7 +472,33 @@ def serve(
     token = http_ingest.load_or_create_ingest_token()
     http_ingest._token = token
 
-    console.print(f"[bold]Memex serve[/bold] listening on [cyan]http://{host}:{port}[/cyan]")
+    if sync_addr is not None:
+        url = f"http://{sync_addr}:{port}"
+        name = socket.gethostname() or "this-device"
+        console.print(
+            f"[bold]Memex serve[/bold] (sync-reachable) on [cyan]http://{host}:{port}[/cyan]"
+        )
+        console.print(f"  loopback capture + multi-device sync at [cyan]{url}[/cyan].")
+        console.print(
+            "  [yellow]This port is now reachable on every network interface;[/yellow] "
+            "the access token is the only gate, so keep it secret."
+        )
+        console.print("  On another device, run:")
+        # Echo the token in the connect line only to an interactive terminal, so a
+        # daemon log never captures it; otherwise point to `memex token`.
+        if sys.stdout is not None and sys.stdout.isatty():
+            console.print(
+                f"    [bold cyan]memex sync connect --url {url} "
+                f"--token {token} --name {name}[/bold cyan]"
+            )
+        else:
+            console.print(
+                f"    memex sync connect --url {url} --name {name}\n"
+                "    (it will prompt for the token; get it with `memex token` here)"
+            )
+    else:
+        console.print(f"[bold]Memex serve[/bold] listening on [cyan]http://{host}:{port}[/cyan]")
+
     console.print("Connect the Memex Chrome ext and start using claude.ai.")
     # Only echo the token to an interactive terminal. Under a daemon (launchd)
     # stdout is redirected to a file that may be world-readable, so printing the
@@ -391,7 +509,7 @@ def serve(
     else:
         console.print("Run `memex token` in a terminal to get the pairing token.")
     console.print("[dim]Ctrl+C to stop.[/dim]\n")
-    uvicorn.run(http_ingest.app, host=host, port=port, log_level="info")
+    uvicorn.run(serve_app, host=host, port=port, log_level="info")
 
 
 @app.command("serve-remote")
@@ -1087,6 +1205,28 @@ def _setup_ingest() -> tuple[str, str, str]:
     return ("Claude Code index", "OK", detail)
 
 
+def _setup_file_sync(sync_dir: Path, device_name: str) -> tuple[str, str, str]:
+    """Create the shared folder and run an initial file sync (export + import).
+
+    The persisted config (gate `sync_dir`/`device_name`) is written by the caller
+    before this runs, so the always-on `serve` picks file sync up via its auto-sync
+    loop with no service change. Never aborts setup: a failure is a WARN row.
+    """
+    try:
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        embedder = get_default_embedder()
+        model, dim = embedder.model_name, embedder.dim
+        conn = connect_and_init(None)
+        try:
+            summary = file_sync.sync_once(conn, sync_dir, device_name, model, dim)
+        finally:
+            conn.close()
+    except Exception as e:
+        return ("File sync", "WARN", f"{type(e).__name__}: {e}")
+    detail = f"device {device_name}, pulled {summary.pulled} from {summary.peers_seen} peer file(s)"
+    return ("File sync", "OK", detail)
+
+
 @app.command("setup")
 def setup(
     yes: Annotated[
@@ -1115,6 +1255,30 @@ def setup(
             help="Also install the claude.ai remote connector agent (needs .env config).",
         ),
     ] = False,
+    sync: Annotated[
+        bool | None,
+        typer.Option(
+            "--sync/--no-sync",
+            help="Make the always-on service sync-reachable over Tailscale (opt-in, "
+            "persisted). Omitted keeps your saved choice; --no-sync turns it off.",
+        ),
+    ] = None,
+    sync_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--sync-dir",
+            help="Enable file-based sync (the dual-boot / offline mode) using this "
+            "shared folder. Point every device at the same folder (its path on that OS).",
+        ),
+    ] = None,
+    device_name: Annotated[
+        str | None,
+        typer.Option(
+            "--device-name",
+            help="Name for this device's snapshot file in --sync-dir (default: hostname). "
+            "Give two devices distinct names if their hostnames collide.",
+        ),
+    ] = None,
 ) -> None:
     """Wire Memex into Claude Code end to end, in one command.
 
@@ -1123,8 +1287,32 @@ def setup(
     the Chrome extension steps. Every step is idempotent, so this is safe to
     re-run. Each step degrades to a warning instead of aborting the rest, so a
     missing `claude` CLI or a non-repo install still gets you as far as it can.
+
+    With `--sync` the live-capture service also comes up reachable for
+    multi-device sync on this device's Tailscale address (opt-in and persisted:
+    set it once and a plain re-run keeps it). Install Tailscale first so the
+    address is detectable. Prints the one `memex sync connect` line the other
+    devices run.
     """
     from memex.transports import http_ingest
+
+    # What the sync-reachable choice WOULD be after applying the flag, computed
+    # without writing yet so the plan can mention it. --sync -> on, --no-sync ->
+    # off, omitted -> the saved choice. The actual gate write happens only AFTER
+    # the user confirms (declining must not leave the gate flipped).
+    if sync is True:
+        serve_sync_on = True
+    elif sync is False:
+        serve_sync_on = False
+    else:
+        serve_sync_on = sync_state.is_serve_sync() and sync_state.is_enabled()
+
+    # File-based sync (dual-boot mode): a shared folder, no network. Resolve the
+    # device name now so the plan can name it; the actual write waits for consent.
+    file_dir_resolved = sync_dir.expanduser() if sync_dir is not None else None
+    file_device: str | None = None
+    if file_dir_resolved is not None:
+        file_device = (device_name or socket.gethostname() or "device").strip() or "device"
 
     console.print("[bold]Memex setup[/bold]\n")
     planned = []
@@ -1132,6 +1320,10 @@ def setup(
         planned.append("register the MCP server with Claude Code")
     if autostart:
         planned.append("install the always-on live-capture service")
+    if serve_sync_on:
+        planned.append("make the service sync-reachable over Tailscale and auto-sync your devices")
+    if file_dir_resolved is not None:
+        planned.append(f"set up file-based sync (dual-boot) in {file_dir_resolved}")
     if ingest:
         planned.append("index your local Claude Code sessions")
     planned.append("show the Chrome extension pairing token")
@@ -1141,6 +1333,27 @@ def setup(
     console.print()
     if not yes and not typer.confirm("Proceed?", default=True):
         raise typer.Exit(code=0)
+
+    # Persist the sync-reachable choice only now that the user has confirmed, so a
+    # declined setup never leaves the gate flipped (the autostart service runs
+    # plain `serve`, which reads these flags). --sync turns on the master gate,
+    # sync-reachable serve, AND periodic auto-sync (set-and-forget); --no-sync
+    # turns all off; omitted leaves the saved choice untouched.
+    if sync is True:
+        sync_state.set_gate(enabled=True, serve_sync=True, sync_auto=True)
+    elif sync is False:
+        sync_state.set_gate(enabled=False, serve_sync=False, sync_auto=False)
+
+    # File-based sync (dual-boot) needs the master gate + auto-sync on (it rides the
+    # same auto-sync loop) but NOT serve_sync (it opens no network port). Persisted
+    # after the network-sync write so it wins if both were somehow requested.
+    if file_dir_resolved is not None:
+        sync_state.set_gate(
+            enabled=True,
+            sync_auto=True,
+            sync_dir=str(file_dir_resolved),
+            device_name=file_device,
+        )
 
     results: list[tuple[str, str, str]] = []
 
@@ -1167,11 +1380,39 @@ def setup(
             )
         )
 
-    # 4. Index local Claude Code sessions.
+    # 4. Sync-reachable mode (opt-in, persisted). The service runs plain `serve`,
+    #    which reads the flag set above; here we just report it + the address.
+    sync_addr: str | None = None
+    if serve_sync_on:
+        sync_addr = detect_tailscale_ip()
+        results.append(
+            (
+                "Sync",
+                "OK" if sync_addr else "WARN",
+                f"reachable on {sync_addr}:5777"
+                if sync_addr
+                else "on; start Tailscale for an address",
+            )
+        )
+        # Windows drops inbound to 0.0.0.0:5777 until a firewall rule allows it, so
+        # a peer times out even though the serve is up. Open it here (idempotent;
+        # falls back to a printed admin command if setup is not elevated). No-op on
+        # macOS/Linux, where sync-reachable needs no firewall change.
+        if sys.platform == "win32":
+            from memex.cli import services
+
+            fw_ok, fw_msg = services.windows_ensure_sync_firewall(5777)
+            results.append(("Firewall", "OK" if fw_ok else "WARN", fw_msg))
+
+    # 4b. File-based sync (dual-boot): create the shared folder + initial sync.
+    if file_dir_resolved is not None and file_device is not None:
+        results.append(_setup_file_sync(file_dir_resolved, file_device))
+
+    # 5. Index local Claude Code sessions.
     if ingest:
         results.append(_setup_ingest())
 
-    # 5. Pairing token (created on first call if missing).
+    # 6. Pairing token (created on first call if missing).
     token = http_ingest.load_or_create_ingest_token()
 
     table = Table(title="Memex setup", show_header=True, header_style="bold")
@@ -1191,6 +1432,49 @@ def setup(
     console.print(f"  1. Install it: [cyan]{_EXTENSION_URL}[/cyan]")
     console.print("  2. Open the extension popup and paste this access token:")
     console.print(f"     [bold cyan]{token}[/bold cyan]")
+
+    if serve_sync_on:
+        console.print("\n[bold]Multi-device sync is on[/bold] (this device is sync-reachable).")
+        if sync_addr:
+            name = socket.gethostname() or "this-device"
+            url = f"http://{sync_addr}:5777"
+            console.print("  On each OTHER device, run this one command:")
+            console.print(
+                f"    [bold cyan]memex sync connect --url {url} "
+                f"--token {token} --name {name}[/bold cyan]"
+            )
+        else:
+            console.print(
+                "  [yellow]No Tailscale address detected yet.[/yellow] Start Tailscale, then "
+                "run [bold]memex sync serve[/bold] to print the connect line."
+            )
+        console.print(
+            f"  Paired devices auto-reconcile every {settings.sync_interval_seconds // 60} min "
+            "while both are online; run [bold]memex sync now[/bold] to sync immediately."
+        )
+
+    if file_dir_resolved is not None:
+        console.print("\n[bold]File-based sync is on[/bold] (dual-boot / offline mode).")
+        console.print(
+            f"  This device ([cyan]{file_device}[/cyan]) syncs through the shared folder:"
+        )
+        console.print(f"    [cyan]{file_dir_resolved}[/cyan]")
+        console.print(
+            "  On your OTHER OS, point it at the SAME folder (its path there), with its own name:"
+        )
+        console.print(
+            "    [bold cyan]memex setup --sync-dir <that-folder> "
+            "--device-name <other-name>[/bold cyan]"
+        )
+        console.print(
+            "  The folder must be readable from both OSes (on a dual-boot, put it on the "
+            "Windows/NTFS partition: Linux reads NTFS, Windows cannot read ext4)."
+        )
+        console.print(
+            f"  Each boot auto-syncs every {settings.sync_interval_seconds // 60} min; run "
+            "[bold]memex sync now[/bold] to sync immediately."
+        )
+
     console.print(
         "\n[dim]Re-run `memex token` to see the token again, or `memex doctor` to "
         "check everything is healthy.[/dim]"
