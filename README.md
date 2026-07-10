@@ -309,6 +309,8 @@ Then re-run with `uv tool install --force memex-chats` (or `uv tool install --re
 
 **Windows: a paired device times out reaching your sync port (5777).** In sync-reachable mode the always-on server binds `0.0.0.0:5777`, but Windows Firewall silently drops inbound connections (the peer just times out, never "connection refused") until a rule allows the port. `memex setup --sync` adds it for you (idempotent, best-effort); if setup was not elevated it prints the one-time admin command to run yourself: `New-NetFirewallRule -DisplayName "Memex sync 5777" -Direction Inbound -Protocol TCP -LocalPort 5777 -Action Allow`.
 
+**Sync times out even though `tailscale ping` works.** If `tailscale ping <peer>` succeeds but regular ping/TCP (and memex sync) time out in BOTH directions, the problem is a local TUN/routing conflict on one of the machines, not memex and not the firewall rule: another VPN-style adapter (Hamachi, another VPN, a virtual switch) is swallowing the OS traffic that should ride the Tailscale interface. Disable or remove the other adapter and restart the Tailscale service. (Seen live: a Hamachi adapter installed for game hosting broke a Windows box's Tailscale traffic while `tailscale ping` kept working.)
+
 **The first backfill (or first ingest) is slow.** The first embed downloads a ~130 MB quantized model; that is one-time, later runs are fast. The backfill is incremental and safe to re-run, so a slow or interrupted first pass simply resumes where it left off.
 
 **Ingest uses too much memory.** Peak RAM scales with the embed batch size. Lower it: set `MEMEX_EMBED_BATCH_SIZE=1` (about 0.67 GB peak) in your environment or `.env`.
@@ -587,6 +589,12 @@ box; Windows cannot read Linux's ext4. (For two separate machines that are rarel
 on together, any shared location works: a USB drive, or a cloud-synced folder like
 Dropbox.)
 
+Dual-boot gotcha: Windows **Fast Startup** (and hibernation) leaves the NTFS
+partition dirty, so Linux mounts it **read-only**, and file sync needs to write
+its snapshot there (the initial export fails loudly if it cannot). If the folder
+mounts read-only on Linux, disable Fast Startup on Windows (or `powercfg /h off`)
+and shut Windows down fully once.
+
 How it converges: a device only ever writes its own `<device>.memexsync.gz` and
 reads the others', so they never clash. Sync is last-writer-wins by update time,
 exactly like the network mode, and a same-timestamp conflict (a fork) is left
@@ -597,6 +605,25 @@ would overwrite each other's snapshot. The snapshot carries your conversation te
 and vectors, so keep the shared folder somewhere only you can read (the same "only
 share what you control" rule as pairing a peer). The two modes are independent: you
 can use file sync, network sync, or both.
+
+### Rotating a token
+
+Each device has one access token (the `ingest_token` file next to its database;
+`memex doctor` shows the folder). Rotate it whenever it was pasted somewhere it
+should not live: a chat, a screenshot, a ticket. There is no rotate command yet,
+and the running server reads the file only once, so the **order matters**:
+
+1. Delete the token file (`rm <data-dir>/ingest_token`; PowerShell:
+   `Remove-Item -Force $env:LOCALAPPDATA\memex\ingest_token`).
+2. **Restart the always-on serve** (macOS: `launchctl unload` then `load` on
+   `com.memex.serve`; Linux: `systemctl --user restart memex-serve`; Windows:
+   `schtasks /End /TN MemexServe` then `schtasks /Run /TN MemexServe`). Skipping
+   this leaves the OLD token accepted (it is cached in memory) and the new file
+   ignored.
+3. Run `memex token` to see the new value. Re-paste it into that machine's Chrome
+   extension popup, and **re-pair every device that dials this one**:
+   `memex sync connect --url http://<this-device>:5777 --name <name> --token "..."`
+   (passing `--token` avoids the hidden prompt, which is easy to mistype).
 
 ## Running always-on
 
