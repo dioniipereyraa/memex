@@ -6,6 +6,10 @@ Format: date, what was done, decisions, blockers, next step.
 
 ---
 
+## 2026-07-10: 0.5.0 PUBLISHED
+
+Merged to main (PR #6, CI green), working branch deleted (local + GitHub), CHANGELOG dated, tagged `v0.5.0`, built and published to PyPI by the user (wheel + sdist up 21:45 UTC). Smoke-tested from PyPI: `uvx --from memex-chats@0.5.0 memex --version` -> `0.5.0`. Announced on Discord. Post-publish remaining: switch Windows + Linux from the (now deleted) branch installs to PyPI with `uv tool install --force memex-chats` (NOT `uv tool upgrade`, the branch ref is gone), restart Claude Code where the MCP tools run, republish the MCP registry entry (server.json already 0.5.0), upload the 0.2.5 extension to the Web Store (live is 0.2.1).
+
 ## 2026-07-10: `sync status` lied about auto-sync; the loop itself verified live (0.5.0)
 
 - **User report on release day:** his Windows terminal chats from 2026-07-09 had not reached the Mac by themselves, and `memex sync status` on the Mac said "Auto-sync: off" despite `setup --sync` (2026-07-04). The diagnosis separated three suspects:
