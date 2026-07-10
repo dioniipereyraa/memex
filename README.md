@@ -399,7 +399,7 @@ Security model in short: loopback bind + tunnel, OAuth proxy over GitHub with a 
 
 ## Indexing Claude Code / terminal sessions (Phase 6)
 
-Memex also indexes your local Claude Code and terminal sessions, so a single search covers both halves of your history: what you discussed on claude.ai and what you built with Claude Code. Claude Code records each session as a JSONL file under `~/.claude/projects/`; Memex reads them directly (no extension, no network).
+Memex also indexes your local Claude Code and terminal sessions, so a single search covers both halves of your history: what you discussed on claude.ai and what you built with Claude Code. Claude Code records each session as a JSONL file under `~/.claude/projects/`; Memex reads them directly (no extension, no network). This covers Claude Code wherever it runs, the terminal CLI and the VS Code / JetBrains extensions alike: they all write the same transcripts.
 
 ```bash
 uv run memex ingest-claude-code        # scans ~/.claude/projects/**/*.jsonl
@@ -413,9 +413,15 @@ These sessions are stored under the `claude_code` source, searchable like any ot
 - **What is indexed:** your prompts, the assistant replies, and tool calls as `[tool_use: ...]` / `[result]` markers. Excluded: assistant internal reasoning (`thinking`), parallel sub-agent side threads, and CLI plumbing (slash-command echoes, bash wrappers). Everything stays in the local SQLite DB.
 - **Secret redaction.** Session logs capture real terminal output and file contents, which often contain credentials. Before storing, Memex masks common secret shapes (API keys, bearer/JWT tokens, PEM private keys, `KEY=`/`SECRET=` assignments, URLs with embedded passwords) as `[REDACTED:...]`, and does not persist the raw block content for this source. Best-effort, not a guarantee: it catches well-known formats so third-party credentials that were never really part of a conversation stay out of the index (this matters because the remote connector can surface indexed text to claude.ai).
 
-### Automatic sync (keep Claude Code sessions fresh)
+### Getting a Claude Code session indexed
 
-`memex ingest-claude-code` is manual. To index sessions automatically, use two complementary mechanisms (both run in the background at low priority, and the embedding model only loads when there is something new, so they barely cost anything):
+A session becomes searchable once its transcript is scanned. Day to day there are three ways to trigger that yourself:
+
+- **Ask Claude.** Say "index this session" and Claude calls the `index_terminal_sessions` MCP tool (the current conversation is captured up to what Claude Code has flushed to its transcript at that point). Follow with "sync my devices" (`sync_now`) if you want it on your other machines right away.
+- **Close the conversation.** With the SessionEnd hook below installed, ending the Claude Code chat (just the conversation, not the whole terminal) ingests that session the moment it closes.
+- **Run the command.** `memex ingest-claude-code` scans everything new right now.
+
+Even if you do none of these, the periodic backstop below picks up new and grown sessions within about 15 minutes of their last write. The two automatic mechanisms complement each other (both run in the background at low priority, and the embedding model only loads when there is something new, so they barely cost anything):
 
 1. **SessionEnd hook** — ingests a session the moment it closes (no delay, nothing lost). Add to `~/.claude/settings.json`:
    ```json
@@ -437,7 +443,9 @@ These sessions are stored under the `claude_code` source, searchable like any ot
      > ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
    launchctl load ~/Library/LaunchAgents/com.memex.ingest-claude-code.plist
    ```
-   It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. On Linux, run the same script from a systemd user timer or cron; the script is OS-agnostic. (On Windows, the hook needs a PowerShell equivalent of `session-end-hook.sh`, not yet included; until then, schedule `memex ingest-claude-code` with Task Scheduler.)
+   It runs `scripts/scheduled-ingest.sh` every 15 minutes as a low-priority background job. A PyPI install does not need these manual steps on macOS or Windows: `memex setup` (or `memex install-service`) already schedules the backstop there (the `com.memex.ingest-claude-code` launchd agent / the `MemexIngest` Scheduled Task). On Linux the installer sets up only the serve, so wire the backstop yourself with a systemd user timer or cron running `memex ingest-claude-code`.
+
+   Per-OS state of the two mechanisms: the SessionEnd hook script is bash, so it works on macOS and Linux; on Windows it needs a PowerShell equivalent of `session-end-hook.sh`, not yet included, so there the ways in are the backstop task, asking Claude, or the manual command.
 
 ## Syncing across your devices
 
